@@ -104,8 +104,7 @@ bool isConvertible(linalg::MatvecOp op) {
 
   int64_t reductionSize = weightType.getDimSize(1);
   bool isNativeReduction = reductionSize == 64;
-  bool isFullKTileReduction =
-      outputSize == 16 && reductionSize >= 128 && reductionSize % 64 == 0;
+  bool isFullKTileReduction = reductionSize >= 128 && reductionSize % 64 == 0;
   if (!isNativeReduction && !isFullKTileReduction)
     return false;
 
@@ -139,38 +138,85 @@ public:
           RankedTensorType::get({64}, weightType.getElementType());
       auto weightTileType =
           RankedTensorType::get({16, 64}, weightType.getElementType());
-      auto partialType = cast<RankedTensorType>(op->getResult(0).getType());
+      auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
+      auto partialType =
+          RankedTensorType::get({16}, resultType.getElementType());
       auto accumulationType = RankedTensorType::get(
           {16}, IntegerType::get(op.getContext(), accumulationWidth));
-      Value sum;
-      for (int64_t offset = 0; offset < reductionSize; offset += 64) {
-        SmallVector<OpFoldResult> inputOffsets{rewriter.getIndexAttr(offset)};
-        SmallVector<OpFoldResult> inputSizes{rewriter.getIndexAttr(64)};
-        SmallVector<OpFoldResult> inputStrides{rewriter.getIndexAttr(1)};
-        auto inputTile = tensor::ExtractSliceOp::create(
-            rewriter, location, inputTileType, inputs[1], inputOffsets,
-            inputSizes, inputStrides);
+      SmallVector<Value> tileResults;
+      tileResults.reserve(outputSize / 16 + (outputSize % 16 != 0));
 
-        SmallVector<OpFoldResult> weightOffsets{rewriter.getIndexAttr(0),
-                                                rewriter.getIndexAttr(offset)};
-        SmallVector<OpFoldResult> weightSizes{rewriter.getIndexAttr(16),
-                                              rewriter.getIndexAttr(64)};
-        SmallVector<OpFoldResult> weightStrides{rewriter.getIndexAttr(1),
-                                                rewriter.getIndexAttr(1)};
-        auto weightTile = tensor::ExtractSliceOp::create(
-            rewriter, location, weightTileType, inputs[0], weightOffsets,
-            weightSizes, weightStrides);
-        Value partial =
-            VMMOp::create(rewriter, location, partialType,
-                          inputTile.getResult(), weightTile.getResult());
-        Value extended = arith::ExtSIOp::create(rewriter, location,
-                                                accumulationType, partial);
-        sum = sum ? arith::AddIOp::create(rewriter, location, sum, extended)
-                  : extended;
+      for (int64_t outputOffset = 0; outputOffset < outputSize;
+           outputOffset += 16) {
+        int64_t tileOutputSize =
+            outputSize - outputOffset < 16 ? outputSize - outputOffset : 16;
+        Value zero;
+        Value sum;
+        for (int64_t reductionOffset = 0; reductionOffset < reductionSize;
+             reductionOffset += 64) {
+          SmallVector<OpFoldResult> inputOffsets{
+              rewriter.getIndexAttr(reductionOffset)};
+          SmallVector<OpFoldResult> inputSizes{rewriter.getIndexAttr(64)};
+          SmallVector<OpFoldResult> inputStrides{rewriter.getIndexAttr(1)};
+          auto inputTile = tensor::ExtractSliceOp::create(
+              rewriter, location, inputTileType, inputs[1], inputOffsets,
+              inputSizes, inputStrides);
+
+          auto weightSliceType = RankedTensorType::get(
+              {tileOutputSize, 64}, weightType.getElementType());
+          SmallVector<OpFoldResult> weightOffsets{
+              rewriter.getIndexAttr(outputOffset),
+              rewriter.getIndexAttr(reductionOffset)};
+          SmallVector<OpFoldResult> weightSizes{
+              rewriter.getIndexAttr(tileOutputSize), rewriter.getIndexAttr(64)};
+          SmallVector<OpFoldResult> weightStrides{rewriter.getIndexAttr(1),
+                                                  rewriter.getIndexAttr(1)};
+          auto weightSlice = tensor::ExtractSliceOp::create(
+              rewriter, location, weightSliceType, inputs[0], weightOffsets,
+              weightSizes, weightStrides);
+          Value weightTile = weightSlice.getResult();
+          if (tileOutputSize < 16) {
+            if (!zero)
+              zero = arith::ConstantOp::create(
+                  rewriter, location,
+                  rewriter.getIntegerAttr(weightType.getElementType(), 0));
+            SmallVector<OpFoldResult> low{rewriter.getIndexAttr(0),
+                                          rewriter.getIndexAttr(0)};
+            SmallVector<OpFoldResult> high{
+                rewriter.getIndexAttr(16 - tileOutputSize),
+                rewriter.getIndexAttr(0)};
+            weightTile = tensor::PadOp::create(
+                rewriter, location, weightTileType, weightTile, low, high, zero,
+                /*nofold=*/false);
+          }
+
+          Value partial = VMMOp::create(rewriter, location, partialType,
+                                        inputTile.getResult(), weightTile);
+          Value extended = arith::ExtSIOp::create(rewriter, location,
+                                                  accumulationType, partial);
+          sum = sum ? arith::AddIOp::create(rewriter, location, sum, extended)
+                    : extended;
+        }
+
+        tileResults.push_back(
+            arith::TruncIOp::create(rewriter, location, partialType, sum));
       }
 
-      rewriter.replaceOpWithNewOp<arith::TruncIOp>(
-          op, op->getResult(0).getType(), sum);
+      Value tiledResult = tileResults.front();
+      if (tileResults.size() > 1)
+        tiledResult =
+            tensor::ConcatOp::create(rewriter, location, 0, tileResults);
+
+      if (outputSize % 16 == 0) {
+        rewriter.replaceOp(op, tiledResult);
+        return success();
+      }
+
+      SmallVector<OpFoldResult> offsets{rewriter.getIndexAttr(0)};
+      SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(outputSize)};
+      SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1)};
+      rewriter.replaceOpWithNewOp<tensor::ExtractSliceOp>(
+          op, resultType, tiledResult, offsets, sizes, strides);
       return success();
     }
 
