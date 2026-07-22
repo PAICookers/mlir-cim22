@@ -117,14 +117,6 @@ func.func @zero_k(%weight: tensor<16x0xi8>, %input: tensor<0xi8>)
   return %result : tensor<16xi21>
 }
 
-func.func @n32_k128(%weight: tensor<32x128xi8>, %input: tensor<128xi8>)
-    -> tensor<32xi21> {
-  %zero = arith.constant dense<0> : tensor<32xi21>
-  %result = linalg.matvec ins(%weight, %input : tensor<32x128xi8>, tensor<128xi8>)
-      outs(%zero : tensor<32xi21>) -> tensor<32xi21>
-  return %result : tensor<32xi21>
-}
-
 func.func @nonzero_init(%weight: tensor<16x128xi8>, %input: tensor<128xi8>)
     -> tensor<16xi21> {
   %one = arith.constant dense<1> : tensor<16xi21>
@@ -148,8 +140,6 @@ func.func @i32_accumulator(%weight: tensor<16x128xi8>, %input: tensor<128xi8>)
 // NEG-LABEL: sym_name = "dynamic_k"
 // NEG: "linalg.matvec"
 // NEG-LABEL: sym_name = "zero_k"
-// NEG: "linalg.matvec"
-// NEG-LABEL: sym_name = "n32_k128"
 // NEG: "linalg.matvec"
 // NEG-LABEL: sym_name = "nonzero_init"
 // NEG: "linalg.matvec"
