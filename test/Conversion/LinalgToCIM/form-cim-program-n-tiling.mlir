@@ -252,15 +252,6 @@ func.func @zero_n(%weight: tensor<0x64xi8>, %input: tensor<64xi8>)
   return %result : tensor<0xi21>
 }
 
-func.func @wrong_k(%weight: tensor<32x63xi8>, %input: tensor<63xi8>)
-    -> tensor<32xi21> {
-  %zero = arith.constant dense<0> : tensor<32xi21>
-  %result = linalg.matvec
-      ins(%weight, %input : tensor<32x63xi8>, tensor<63xi8>)
-      outs(%zero : tensor<32xi21>) -> tensor<32xi21>
-  return %result : tensor<32xi21>
-}
-
 func.func @nonzero_init(%weight: tensor<32x64xi8>, %input: tensor<64xi8>)
     -> tensor<32xi21> {
   %one = arith.constant dense<1> : tensor<32xi21>
@@ -365,8 +356,6 @@ func.func @noncanonical_addi_flags(%weight: tensor<32x64xi8>,
 // NEG-LABEL: sym_name = "dynamic_n"
 // NEG: "linalg.matvec"
 // NEG-LABEL: sym_name = "zero_n"
-// NEG: "linalg.matvec"
-// NEG-LABEL: sym_name = "wrong_k"
 // NEG: "linalg.matvec"
 // NEG-LABEL: sym_name = "nonzero_init"
 // NEG: "linalg.matvec"

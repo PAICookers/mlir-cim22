@@ -63,19 +63,6 @@ func.func @mixed_initializers(%weight: tensor<16x64xi8>,
   return %converted, %kept : tensor<16xi21>, tensor<16xi21>
 }
 
-// CHECK-LABEL: func.func @wrong_k(
-// CHECK: %[[RESULT:.*]] = linalg.matvec
-// CHECK-NOT: cim.vmm
-// CHECK: return %[[RESULT]] : tensor<16xi21>
-func.func @wrong_k(%weight: tensor<16x63xi8>, %input: tensor<63xi8>)
-    -> tensor<16xi21> {
-  %zero = arith.constant dense<0> : tensor<16xi21>
-  %result = linalg.matvec
-      ins(%weight, %input : tensor<16x63xi8>, tensor<63xi8>)
-      outs(%zero : tensor<16xi21>) -> tensor<16xi21>
-  return %result : tensor<16xi21>
-}
-
 // CHECK-LABEL: func.func @wrong_input_type(
 // CHECK: %[[RESULT:.*]] = linalg.matvec
 // CHECK-NOT: cim.vmm

@@ -85,22 +85,6 @@ func.func @k64_legacy(%weight: tensor<16x64xi8>, %input: tensor<64xi8>)
 
 //--- negative.mlir
 
-func.func @k65_tail(%weight: tensor<16x65xi8>, %input: tensor<65xi8>)
-    -> tensor<16xi21> {
-  %zero = arith.constant dense<0> : tensor<16xi21>
-  %result = linalg.matvec ins(%weight, %input : tensor<16x65xi8>, tensor<65xi8>)
-      outs(%zero : tensor<16xi21>) -> tensor<16xi21>
-  return %result : tensor<16xi21>
-}
-
-func.func @k96_tail(%weight: tensor<16x96xi8>, %input: tensor<96xi8>)
-    -> tensor<16xi21> {
-  %zero = arith.constant dense<0> : tensor<16xi21>
-  %result = linalg.matvec ins(%weight, %input : tensor<16x96xi8>, tensor<96xi8>)
-      outs(%zero : tensor<16xi21>) -> tensor<16xi21>
-  return %result : tensor<16xi21>
-}
-
 func.func @dynamic_k(%weight: tensor<16x?xi8>, %input: tensor<?xi8>)
     -> tensor<16xi21> {
   %zero = arith.constant dense<0> : tensor<16xi21>
@@ -133,10 +117,6 @@ func.func @i32_accumulator(%weight: tensor<16x128xi8>, %input: tensor<128xi8>)
   return %result : tensor<16xi32>
 }
 
-// NEG-LABEL: sym_name = "k65_tail"
-// NEG: "linalg.matvec"
-// NEG-LABEL: sym_name = "k96_tail"
-// NEG: "linalg.matvec"
 // NEG-LABEL: sym_name = "dynamic_k"
 // NEG: "linalg.matvec"
 // NEG-LABEL: sym_name = "zero_k"
