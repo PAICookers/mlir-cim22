@@ -54,13 +54,13 @@ CheckOptions:
   - key:             readability-identifier-naming.FunctionCase
     value:           camelBack
   - key:             readability-identifier-naming.MemberCase
-    value:           camelBack
+    value:           CamelCase
   - key:             readability-identifier-naming.ParameterCase
-    value:           camelBack
+    value:           CamelCase
   - key:             readability-identifier-naming.UnionCase
     value:           CamelCase
   - key:             readability-identifier-naming.VariableCase
-    value:           camelBack
+    value:           CamelCase
   - key:             readability-identifier-naming.IgnoreMainLikeFunctions
     value:           1
   - key:             modernize-use-default-member-init.UseAssignment
