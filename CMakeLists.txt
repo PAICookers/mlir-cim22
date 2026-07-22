@@ -33,6 +33,7 @@ include_directories(${PROJECT_BINARY_DIR}/include)
 link_directories(${LLVM_BUILD_LIBRARY_DIR})
 add_definitions(${LLVM_DEFINITIONS})
 
+add_subdirectory(lib/Support)
 add_subdirectory(include/CIM22/Dialect/CIM/IR)
 add_subdirectory(include/CIM22/Dialect/CIMFrame/IR)
 add_subdirectory(include/CIM22/Dialect/CIMFrame/Transforms)

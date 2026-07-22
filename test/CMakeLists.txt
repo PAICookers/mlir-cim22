@@ -5,8 +5,19 @@ configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py
 )
 
+add_executable(mlir-cim22-int8-weight-layout-test EXCLUDE_FROM_ALL
+  Support/Int8WeightLayoutTest.cpp
+)
+target_link_libraries(mlir-cim22-int8-weight-layout-test PRIVATE
+  MLIRCIM22Support
+)
+set_target_properties(mlir-cim22-int8-weight-layout-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR}
+)
+
 set(MLIRCIM22_TEST_DEPENDS
   FileCheck
+  mlir-cim22-int8-weight-layout-test
   mlir-cim22-opt
 )
 
