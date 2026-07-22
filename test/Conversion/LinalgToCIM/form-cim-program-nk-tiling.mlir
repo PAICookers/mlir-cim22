@@ -1,6 +1,7 @@
 // RUN: mlir-cim22-opt %s -form-cim-program > %t.once.mlir
 // RUN: mlir-cim22-opt %t.once.mlir -form-cim-program > %t.twice.mlir
 // RUN: diff %t.once.mlir %t.twice.mlir
+// RUN: not grep -q 'linalg.matvec' %t.once.mlir
 // RUN: FileCheck %s --check-prefix=N32 < %t.once.mlir
 // RUN: FileCheck %s --check-prefix=N17 < %t.once.mlir
 
