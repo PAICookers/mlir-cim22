@@ -14,6 +14,8 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Transforms/DialectConversion.h"
 
+#include "llvm/Support/MathExtras.h"
+
 namespace mlir::cim {
 #define GEN_PASS_DEF_FORMCIMPROGRAM
 #include "CIM22/Conversion/LinalgToCIM/Passes.h.inc"
@@ -82,9 +84,10 @@ bool hasCanonicalMatvecIndexingMaps(linalg::MatvecOp op) {
          maps[2] == AffineMap::get(2, 0, getAffineDimExpr(0, context));
 }
 
-// FIXME(CTQ-013): Linalg i21 arithmetic wraps on overflow, while CIM22
-// overflow behavior is not frozen. This software-only conversion assumes every
-// accumulation is exactly representable as signed i21.
+// TODO(CTQ-013): Linalg i21 arithmetic wraps on overflow, while CIM22 overflow
+// behavior is not frozen. These software-only conversions assume every 64-term
+// partial and final mathematical accumulation is exactly representable as
+// signed i21.
 bool isConvertible(linalg::MatvecOp op) {
   auto inputs = op.getDpsInputs();
   auto inits = op.getDpsInits();
@@ -99,8 +102,16 @@ bool isConvertible(linalg::MatvecOp op) {
   if (outputSize <= 0)
     return false;
 
-  return hasType(inputs[0], {outputSize, 64}, 8) &&
-         hasType(inputs[1], {64}, 8) && hasType(inits[0], {outputSize}, 21) &&
+  int64_t reductionSize = weightType.getDimSize(1);
+  bool isNativeReduction = reductionSize == 64;
+  bool isFullKTileReduction =
+      outputSize == 16 && reductionSize >= 128 && reductionSize % 64 == 0;
+  if (!isNativeReduction && !isFullKTileReduction)
+    return false;
+
+  return hasType(inputs[0], {outputSize, reductionSize}, 8) &&
+         hasType(inputs[1], {reductionSize}, 8) &&
+         hasType(inits[0], {outputSize}, 21) &&
          hasType(op->getResult(0), {outputSize}, 21) && isZeroSplat(inits[0]) &&
          hasCanonicalInt8MatvecBody(op) && hasCanonicalMatvecIndexingMaps(op);
 }
@@ -118,6 +129,51 @@ public:
     auto inputs = adaptor.getInputs();
     auto weightType = cast<RankedTensorType>(inputs[0].getType());
     int64_t outputSize = weightType.getDimSize(0);
+    int64_t reductionSize = weightType.getDimSize(1);
+    if (reductionSize > 64) {
+      Location location = op.getLoc();
+      int64_t tileCount = reductionSize / 64;
+      unsigned accumulationWidth =
+          21 + llvm::Log2_64_Ceil(static_cast<uint64_t>(tileCount));
+      auto inputTileType =
+          RankedTensorType::get({64}, weightType.getElementType());
+      auto weightTileType =
+          RankedTensorType::get({16, 64}, weightType.getElementType());
+      auto partialType = cast<RankedTensorType>(op->getResult(0).getType());
+      auto accumulationType = RankedTensorType::get(
+          {16}, IntegerType::get(op.getContext(), accumulationWidth));
+      Value sum;
+      for (int64_t offset = 0; offset < reductionSize; offset += 64) {
+        SmallVector<OpFoldResult> inputOffsets{rewriter.getIndexAttr(offset)};
+        SmallVector<OpFoldResult> inputSizes{rewriter.getIndexAttr(64)};
+        SmallVector<OpFoldResult> inputStrides{rewriter.getIndexAttr(1)};
+        auto inputTile = tensor::ExtractSliceOp::create(
+            rewriter, location, inputTileType, inputs[1], inputOffsets,
+            inputSizes, inputStrides);
+
+        SmallVector<OpFoldResult> weightOffsets{rewriter.getIndexAttr(0),
+                                                rewriter.getIndexAttr(offset)};
+        SmallVector<OpFoldResult> weightSizes{rewriter.getIndexAttr(16),
+                                              rewriter.getIndexAttr(64)};
+        SmallVector<OpFoldResult> weightStrides{rewriter.getIndexAttr(1),
+                                                rewriter.getIndexAttr(1)};
+        auto weightTile = tensor::ExtractSliceOp::create(
+            rewriter, location, weightTileType, inputs[0], weightOffsets,
+            weightSizes, weightStrides);
+        Value partial =
+            VMMOp::create(rewriter, location, partialType,
+                          inputTile.getResult(), weightTile.getResult());
+        Value extended = arith::ExtSIOp::create(rewriter, location,
+                                                accumulationType, partial);
+        sum = sum ? arith::AddIOp::create(rewriter, location, sum, extended)
+                  : extended;
+      }
+
+      rewriter.replaceOpWithNewOp<arith::TruncIOp>(
+          op, op->getResult(0).getType(), sum);
+      return success();
+    }
+
     if (outputSize == 16) {
       rewriter.replaceOpWithNewOp<VMMOp>(op, op->getResult(0).getType(),
                                          inputs[1], inputs[0]);
