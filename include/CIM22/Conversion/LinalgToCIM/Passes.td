@@ -13,7 +13,8 @@ include "mlir/Pass/PassBase.td"
 
 def FormCIMProgram : Pass<"form-cim-program", "::mlir::ModuleOp"> {
   let summary = "Form CIM VMM operations from supported Linalg operations";
-  let dependentDialects = ["::mlir::cim::CIMDialect",
+  let dependentDialects = ["::mlir::arith::ArithDialect",
+                           "::mlir::cim::CIMDialect",
                            "::mlir::tensor::TensorDialect"];
 }
 

@@ -96,7 +96,7 @@ bool isConvertible(linalg::MatvecOp op) {
     return false;
 
   int64_t outputSize = weightType.getDimSize(0);
-  if (outputSize <= 0 || outputSize % 16 != 0)
+  if (outputSize <= 0)
     return false;
 
   return hasType(inputs[0], {outputSize, 64}, 8) &&
@@ -130,8 +130,10 @@ public:
     auto resultTileType = RankedTensorType::get(
         {16}, cast<ShapedType>(op->getResult(0).getType()).getElementType());
     SmallVector<Value> tileResults;
-    tileResults.reserve(outputSize / 16);
-    for (int64_t offset = 0; offset < outputSize; offset += 16) {
+    int64_t tailSize = outputSize % 16;
+    int64_t fullSize = outputSize - tailSize;
+    tileResults.reserve(fullSize / 16 + (tailSize != 0));
+    for (int64_t offset = 0; offset < fullSize; offset += 16) {
       SmallVector<OpFoldResult> offsets{rewriter.getIndexAttr(offset),
                                         rewriter.getIndexAttr(0)};
       SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(16),
@@ -145,7 +147,47 @@ public:
                                           inputs[1], weightTile.getResult()));
     }
 
-    rewriter.replaceOpWithNewOp<tensor::ConcatOp>(op, 0, tileResults);
+    if (tailSize != 0) {
+      auto tailType =
+          RankedTensorType::get({tailSize, 64}, weightType.getElementType());
+      SmallVector<OpFoldResult> offsets{rewriter.getIndexAttr(fullSize),
+                                        rewriter.getIndexAttr(0)};
+      SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(tailSize),
+                                      rewriter.getIndexAttr(64)};
+      SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1),
+                                        rewriter.getIndexAttr(1)};
+      auto tail = tensor::ExtractSliceOp::create(
+          rewriter, location, tailType, inputs[0], offsets, sizes, strides);
+      Value zero = arith::ConstantOp::create(
+          rewriter, location,
+          rewriter.getIntegerAttr(weightType.getElementType(), 0));
+      SmallVector<OpFoldResult> low{rewriter.getIndexAttr(0),
+                                    rewriter.getIndexAttr(0)};
+      SmallVector<OpFoldResult> high{rewriter.getIndexAttr(16 - tailSize),
+                                     rewriter.getIndexAttr(0)};
+      auto padded = tensor::PadOp::create(rewriter, location, weightTileType,
+                                          tail.getResult(), low, high, zero,
+                                          /*nofold=*/false);
+      tileResults.push_back(VMMOp::create(rewriter, location, resultTileType,
+                                          inputs[1], padded.getResult()));
+    }
+
+    Value tiledResult = tileResults.front();
+    if (tileResults.size() > 1)
+      tiledResult =
+          tensor::ConcatOp::create(rewriter, location, 0, tileResults);
+
+    if (tailSize == 0) {
+      rewriter.replaceOp(op, tiledResult);
+      return success();
+    }
+
+    SmallVector<OpFoldResult> offsets{rewriter.getIndexAttr(0)};
+    SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(outputSize)};
+    SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1)};
+    rewriter.replaceOpWithNewOp<tensor::ExtractSliceOp>(
+        op, cast<RankedTensorType>(op->getResult(0).getType()), tiledResult,
+        offsets, sizes, strides);
     return success();
   }
 };
