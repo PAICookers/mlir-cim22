@@ -1,0 +1,11 @@
+# Agent configuration and vendored skills are not project source.
+/.agents/
+/.claude/
+/.codex/
+
+# Hardware references and local project notes use dedicated document indexes.
+/docs/
+/tasks/
+
+# Do not index the generated graph artifact itself.
+/.codebase-memory/
