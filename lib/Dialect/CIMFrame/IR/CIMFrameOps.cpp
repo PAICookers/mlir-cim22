@@ -42,6 +42,13 @@ LogicalResult verifyMacro(Operation *op, uint32_t macro) {
   return success();
 }
 
+LogicalResult verifyWords(Operation *op, ArrayRef<int32_t> words) {
+  // FIXME(CTQ-007): The 256-word address range is provisional.
+  if (words.size() != 256)
+    return op->emitOpError("expects words to contain 256 i32 values");
+  return success();
+}
+
 LogicalResult verifyRoutedOperation(Operation *op, ArrayRef<int32_t> route,
                                     ArrayRef<StringRef> allowed) {
   if (failed(verifyProtocolAttributes(op, allowed)))
@@ -57,6 +64,15 @@ LogicalResult StartInt8OnceOp::verify() {
   return verifyMacro(getOperation(), getMacro());
 }
 
+LogicalResult WriteInt8WeightsOp::verify() {
+  if (failed(verifyRoutedOperation(getOperation(), getRoute(),
+                                   {"route", "macro", "words"})))
+    return failure();
+  if (failed(verifyMacro(getOperation(), getMacro())))
+    return failure();
+  return verifyWords(getOperation(), getWords());
+}
+
 LogicalResult ControlInt8PacketOp::verify() {
   if (failed(verifyRoutedOperation(getOperation(), getRoute(),
                                    {"route", "macro"})))
@@ -66,6 +82,13 @@ LogicalResult ControlInt8PacketOp::verify() {
 
 LogicalResult WorkOncePacketOp::verify() {
   return verifyRoutedOperation(getOperation(), getRoute(), {"route"});
+}
+
+LogicalResult CIMInt8WeightPacketOp::verify() {
+  if (failed(verifyRoutedOperation(getOperation(), getRoute(),
+                                   {"route", "words"})))
+    return failure();
+  return verifyWords(getOperation(), getWords());
 }
 
 #define GET_OP_CLASSES

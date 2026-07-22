@@ -119,7 +119,7 @@ module {
   // CF-N06: reversed pair.
   // expected-error@+1 {{expects work_once_packet immediately preceded by control_int8_packet}}
   cimframe.work_once_packet {route = array<i32: 0, 0, 0, 0, 0, 0>}
-  // expected-error@+1 {{expects control_int8_packet immediately followed by work_once_packet}}
+  // expected-error@+1 {{expects control_int8_packet immediately followed by work_once_packet or cim_int8_weight_packet}}
   cimframe.control_int8_packet {route = array<i32: 0, 0, 0, 0, 0, 0>, macro = 0 : i32}
 }
 
@@ -127,7 +127,7 @@ module {
 
 module {
   // CF-N07: every direct operation participates in adjacency.
-  // expected-error@+1 {{expects control_int8_packet immediately followed by work_once_packet}}
+  // expected-error@+1 {{expects control_int8_packet immediately followed by work_once_packet or cim_int8_weight_packet}}
   cimframe.control_int8_packet {route = array<i32: 0, 0, 0, 0, 0, 0>, macro = 0 : i32}
   func.func private @separator()
   // expected-error@+1 {{expects work_once_packet immediately preceded by control_int8_packet}}
@@ -172,6 +172,261 @@ module {
     // CF-N11: work packet must be a direct ModuleOp child.
     // expected-error@+1 {{expects parent op 'builtin.module'}}
     cimframe.work_once_packet {route = array<i32: 0, 0, 0, 0, 0, 0>}
+    return
+  }
+}
+
+
+// -----
+
+#words255 = array<i32:
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+>
+module {
+  // M2.3: weight payload below the frozen semantic address count.
+  // expected-error@+1 {{expects words to contain 256 i32 values}}
+  cimframe.write_int8_weights {route = array<i32: 0, 0, 0, 0, 0, 0>, macro = 0 : i32, words = #words255}
+}
+
+// -----
+
+#words256 = array<i32:
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+>
+
+module {
+  // M2.3: write command directly rejects an unrepresentable route.
+  // expected-error@+1 {{expects each route distance in [-31, 31]}}
+  cimframe.write_int8_weights {route = array<i32: 32, 0, 0, 0, 0, 0>, macro = 0 : i32, words = #words256}
+}
+
+// -----
+
+#words256 = array<i32:
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+>
+
+module {
+  // M2.3: write command directly rejects an unknown Macro selector.
+  // expected-error@+1 {{expects macro to be 0 or 1}}
+  cimframe.write_int8_weights {route = array<i32: 0, 0, 0, 0, 0, 0>, macro = 2 : i32, words = #words256}
+}
+
+// -----
+
+#words257 = array<i32:
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0
+>
+
+module {
+  // M2.3: weight payload above the frozen semantic address count.
+  // expected-error@+1 {{expects words to contain 256 i32 values}}
+  cimframe.write_int8_weights {route = array<i32: 0, 0, 0, 0, 0, 0>, macro = 0 : i32, words = #words257}
+}
+
+// -----
+
+module {
+  // M2.3: words are required.
+  // expected-error@+1 {{requires attribute 'words'}}
+  "cimframe.write_int8_weights"() {route = array<i32: 0, 0, 0, 0, 0, 0>, macro = 0 : i32} : () -> ()
+}
+
+// -----
+
+#words256 = array<i32:
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+>
+
+module {
+  cimframe.control_int8_packet {route = array<i32: 0, 0, 0, 0, 0, 0>, macro = 0 : i32}
+  // M2.3: the compound packet does not own Macro selection.
+  // expected-error@+1 {{unexpected protocol attribute 'macro'}}
+  cimframe.cim_int8_weight_packet {route = array<i32: 0, 0, 0, 0, 0, 0>, words = #words256, macro = 0 : i32}
+}
+
+// -----
+
+#words256 = array<i32:
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+>
+
+// M2.3: command and packet operations cannot share one module stage.
+// expected-error@+1 {{cannot mix cimframe command and packet stages in one module}}
+module {
+  cimframe.write_int8_weights {route = array<i32: 0, 0, 0, 0, 0, 0>, macro = 0 : i32, words = #words256}
+  cimframe.control_int8_packet {route = array<i32: 0, 0, 0, 0, 0, 0>, macro = 0 : i32}
+  cimframe.cim_int8_weight_packet {route = array<i32: 0, 0, 0, 0, 0, 0>, words = #words256}
+}
+
+// -----
+
+#words256 = array<i32:
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+>
+
+module {
+  // M2.3: orphan/reversed weight consumer.
+  // expected-error@+1 {{expects cim_int8_weight_packet immediately preceded by control_int8_packet}}
+  cimframe.cim_int8_weight_packet {route = array<i32: 0, 0, 0, 0, 0, 0>, words = #words256}
+
+  // M2.3: any direct operation between control and consumer is illegal.
+  // expected-error@+1 {{expects control_int8_packet immediately followed by work_once_packet or cim_int8_weight_packet}}
+  cimframe.control_int8_packet {route = array<i32: 0, 0, 0, 0, 0, 0>, macro = 0 : i32}
+  func.func private @separator()
+  // expected-error@+1 {{expects cim_int8_weight_packet immediately preceded by control_int8_packet}}
+  cimframe.cim_int8_weight_packet {route = array<i32: 0, 0, 0, 0, 0, 0>, words = #words256}
+
+  cimframe.control_int8_packet {route = array<i32: 0, 0, 0, 0, 0, 0>, macro = 0 : i32}
+  // M2.3: paired routes must be identical.
+  // expected-error@+1 {{expects control/weight routes to match}}
+  cimframe.cim_int8_weight_packet {route = array<i32: 0, 0, 0, 0, 0, 1>, words = #words256}
+
+  // M2.3: controls cannot be consecutive or shared.
+  // expected-error@+1 {{expects control_int8_packet immediately followed by work_once_packet or cim_int8_weight_packet}}
+  cimframe.control_int8_packet {route = array<i32: 0, 0, 0, 0, 0, 0>, macro = 0 : i32}
+  cimframe.control_int8_packet {route = array<i32: 0, 0, 0, 0, 0, 0>, macro = 1 : i32}
+  cimframe.work_once_packet {route = array<i32: 0, 0, 0, 0, 0, 0>}
+}
+
+// -----
+
+#words256 = array<i32:
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+>
+
+module {
+  func.func @nested_weight_command() {
+    // M2.3: command must be a direct ModuleOp child.
+    // expected-error@+1 {{expects parent op 'builtin.module'}}
+    cimframe.write_int8_weights {route = array<i32: 0, 0, 0, 0, 0, 0>, macro = 0 : i32, words = #words256}
+    return
+  }
+  func.func @nested_weight_packet() {
+    // M2.3: packet must be a direct ModuleOp child.
+    // expected-error@+1 {{expects parent op 'builtin.module'}}
+    cimframe.cim_int8_weight_packet {route = array<i32: 0, 0, 0, 0, 0, 0>, words = #words256}
     return
   }
 }
