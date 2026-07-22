@@ -10,6 +10,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Transforms/DialectConversion.h"
 
@@ -87,11 +88,21 @@ bool hasCanonicalMatvecIndexingMaps(linalg::MatvecOp op) {
 bool isConvertible(linalg::MatvecOp op) {
   auto inputs = op.getDpsInputs();
   auto inits = op.getDpsInits();
-  return inputs.size() == 2 && inits.size() == 1 && op->getNumResults() == 1 &&
-         hasType(inputs[0], {16, 64}, 8) && hasType(inputs[1], {64}, 8) &&
-         hasType(inits[0], {16}, 21) && hasType(op->getResult(0), {16}, 21) &&
-         isZeroSplat(inits[0]) && hasCanonicalInt8MatvecBody(op) &&
-         hasCanonicalMatvecIndexingMaps(op);
+  if (inputs.size() != 2 || inits.size() != 1 || op->getNumResults() != 1)
+    return false;
+
+  auto weightType = dyn_cast<RankedTensorType>(inputs[0].getType());
+  if (!weightType || weightType.getRank() != 2)
+    return false;
+
+  int64_t outputSize = weightType.getDimSize(0);
+  if (outputSize <= 0 || outputSize % 16 != 0)
+    return false;
+
+  return hasType(inputs[0], {outputSize, 64}, 8) &&
+         hasType(inputs[1], {64}, 8) && hasType(inits[0], {outputSize}, 21) &&
+         hasType(op->getResult(0), {outputSize}, 21) && isZeroSplat(inits[0]) &&
+         hasCanonicalInt8MatvecBody(op) && hasCanonicalMatvecIndexingMaps(op);
 }
 
 class FormMatvec final : public OpConversionPattern<linalg::MatvecOp> {
@@ -105,8 +116,36 @@ public:
       return rewriter.notifyMatchFailure(op, "not an exact CIM VMM candidate");
 
     auto inputs = adaptor.getInputs();
-    rewriter.replaceOpWithNewOp<VMMOp>(op, op->getResult(0).getType(),
-                                       inputs[1], inputs[0]);
+    auto weightType = cast<RankedTensorType>(inputs[0].getType());
+    int64_t outputSize = weightType.getDimSize(0);
+    if (outputSize == 16) {
+      rewriter.replaceOpWithNewOp<VMMOp>(op, op->getResult(0).getType(),
+                                         inputs[1], inputs[0]);
+      return success();
+    }
+
+    Location location = op.getLoc();
+    auto weightTileType =
+        RankedTensorType::get({16, 64}, weightType.getElementType());
+    auto resultTileType = RankedTensorType::get(
+        {16}, cast<ShapedType>(op->getResult(0).getType()).getElementType());
+    SmallVector<Value> tileResults;
+    tileResults.reserve(outputSize / 16);
+    for (int64_t offset = 0; offset < outputSize; offset += 16) {
+      SmallVector<OpFoldResult> offsets{rewriter.getIndexAttr(offset),
+                                        rewriter.getIndexAttr(0)};
+      SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(16),
+                                      rewriter.getIndexAttr(64)};
+      SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1),
+                                        rewriter.getIndexAttr(1)};
+      auto weightTile =
+          tensor::ExtractSliceOp::create(rewriter, location, weightTileType,
+                                         inputs[0], offsets, sizes, strides);
+      tileResults.push_back(VMMOp::create(rewriter, location, resultTileType,
+                                          inputs[1], weightTile.getResult()));
+    }
+
+    rewriter.replaceOpWithNewOp<tensor::ConcatOp>(op, 0, tileResults);
     return success();
   }
 };
@@ -118,6 +157,7 @@ public:
   void runOnOperation() override {
     ConversionTarget target(getContext());
     target.addLegalDialect<CIMDialect>();
+    target.addLegalDialect<tensor::TensorDialect>();
     target.addDynamicallyLegalOp<linalg::MatvecOp>(
         [](linalg::MatvecOp op) { return !isConvertible(op); });
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });

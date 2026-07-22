@@ -11,6 +11,7 @@
 
 #include "CIM22/Dialect/CIM/IR/CIMDialect.h"
 #include "CIM22/Dialect/CIM/IR/CIMOps.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Pass/Pass.h"
 
 namespace mlir::cim {
