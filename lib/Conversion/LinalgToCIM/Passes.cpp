@@ -103,9 +103,7 @@ bool isConvertible(linalg::MatvecOp op) {
     return false;
 
   int64_t reductionSize = weightType.getDimSize(1);
-  bool isNativeReduction = reductionSize == 64;
-  bool isFullKTileReduction = reductionSize >= 128 && reductionSize % 64 == 0;
-  if (!isNativeReduction && !isFullKTileReduction)
+  if (reductionSize <= 0)
     return false;
 
   return hasType(inputs[0], {outputSize, reductionSize}, 8) &&
@@ -129,11 +127,11 @@ public:
     auto weightType = cast<RankedTensorType>(inputs[0].getType());
     int64_t outputSize = weightType.getDimSize(0);
     int64_t reductionSize = weightType.getDimSize(1);
-    if (reductionSize > 64) {
+    if (reductionSize != 64) {
       Location location = op.getLoc();
-      int64_t tileCount = reductionSize / 64;
-      unsigned accumulationWidth =
-          21 + llvm::Log2_64_Ceil(static_cast<uint64_t>(tileCount));
+      uint64_t tileCount =
+          llvm::divideCeil(static_cast<uint64_t>(reductionSize), uint64_t{64});
+      unsigned accumulationWidth = 21 + llvm::Log2_64_Ceil(tileCount);
       auto inputTileType =
           RankedTensorType::get({64}, weightType.getElementType());
       auto weightTileType =
@@ -152,30 +150,51 @@ public:
             outputSize - outputOffset < 16 ? outputSize - outputOffset : 16;
         Value zero;
         Value sum;
-        for (int64_t reductionOffset = 0; reductionOffset < reductionSize;
-             reductionOffset += 64) {
+        for (uint64_t reductionTile = 0; reductionTile < tileCount;
+             ++reductionTile) {
+          int64_t reductionOffset = static_cast<int64_t>(reductionTile * 64);
+          int64_t tileReductionSize = reductionSize - reductionOffset < 64
+                                          ? reductionSize - reductionOffset
+                                          : 64;
+          auto inputSliceType = RankedTensorType::get(
+              {tileReductionSize}, weightType.getElementType());
           SmallVector<OpFoldResult> inputOffsets{
               rewriter.getIndexAttr(reductionOffset)};
-          SmallVector<OpFoldResult> inputSizes{rewriter.getIndexAttr(64)};
+          SmallVector<OpFoldResult> inputSizes{
+              rewriter.getIndexAttr(tileReductionSize)};
           SmallVector<OpFoldResult> inputStrides{rewriter.getIndexAttr(1)};
-          auto inputTile = tensor::ExtractSliceOp::create(
-              rewriter, location, inputTileType, inputs[1], inputOffsets,
+          auto inputSlice = tensor::ExtractSliceOp::create(
+              rewriter, location, inputSliceType, inputs[1], inputOffsets,
               inputSizes, inputStrides);
 
           auto weightSliceType = RankedTensorType::get(
-              {tileOutputSize, 64}, weightType.getElementType());
+              {tileOutputSize, tileReductionSize}, weightType.getElementType());
           SmallVector<OpFoldResult> weightOffsets{
               rewriter.getIndexAttr(outputOffset),
               rewriter.getIndexAttr(reductionOffset)};
           SmallVector<OpFoldResult> weightSizes{
-              rewriter.getIndexAttr(tileOutputSize), rewriter.getIndexAttr(64)};
+              rewriter.getIndexAttr(tileOutputSize),
+              rewriter.getIndexAttr(tileReductionSize)};
           SmallVector<OpFoldResult> weightStrides{rewriter.getIndexAttr(1),
                                                   rewriter.getIndexAttr(1)};
           auto weightSlice = tensor::ExtractSliceOp::create(
               rewriter, location, weightSliceType, inputs[0], weightOffsets,
               weightSizes, weightStrides);
+          Value inputTile = inputSlice.getResult();
           Value weightTile = weightSlice.getResult();
-          if (tileOutputSize < 16) {
+          if (tileReductionSize < 64) {
+            if (!zero)
+              zero = arith::ConstantOp::create(
+                  rewriter, location,
+                  rewriter.getIntegerAttr(weightType.getElementType(), 0));
+            SmallVector<OpFoldResult> low{rewriter.getIndexAttr(0)};
+            SmallVector<OpFoldResult> high{
+                rewriter.getIndexAttr(64 - tileReductionSize)};
+            inputTile = tensor::PadOp::create(rewriter, location, inputTileType,
+                                              inputTile, low, high, zero,
+                                              /*nofold=*/false);
+          }
+          if (tileOutputSize < 16 || tileReductionSize < 64) {
             if (!zero)
               zero = arith::ConstantOp::create(
                   rewriter, location,
@@ -184,22 +203,29 @@ public:
                                           rewriter.getIndexAttr(0)};
             SmallVector<OpFoldResult> high{
                 rewriter.getIndexAttr(16 - tileOutputSize),
-                rewriter.getIndexAttr(0)};
+                rewriter.getIndexAttr(64 - tileReductionSize)};
             weightTile = tensor::PadOp::create(
                 rewriter, location, weightTileType, weightTile, low, high, zero,
                 /*nofold=*/false);
           }
 
           Value partial = VMMOp::create(rewriter, location, partialType,
-                                        inputTile.getResult(), weightTile);
+                                        inputTile, weightTile);
+          if (tileCount == 1) {
+            sum = partial;
+            continue;
+          }
           Value extended = arith::ExtSIOp::create(rewriter, location,
                                                   accumulationType, partial);
           sum = sum ? arith::AddIOp::create(rewriter, location, sum, extended)
                     : extended;
         }
 
-        tileResults.push_back(
-            arith::TruncIOp::create(rewriter, location, partialType, sum));
+        if (tileCount == 1)
+          tileResults.push_back(sum);
+        else
+          tileResults.push_back(
+              arith::TruncIOp::create(rewriter, location, partialType, sum));
       }
 
       Value tiledResult = tileResults.front();
