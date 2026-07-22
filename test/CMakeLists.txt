@@ -19,6 +19,7 @@ set(MLIRCIM22_TEST_DEPENDS
   FileCheck
   mlir-cim22-int8-weight-layout-test
   mlir-cim22-opt
+  split-file
 )
 
 add_lit_testsuite(check-mlir-cim22 "Running mlir-cim22 regression tests"
