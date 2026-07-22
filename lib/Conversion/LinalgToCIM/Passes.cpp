@@ -37,8 +37,7 @@ bool isZeroSplat(Value value) {
          elements.getSplatValue<APInt>().isZero();
 }
 
-bool hasCanonicalInt8MatvecBody(linalg::MatvecOp op) {
-  Region &region = op->getRegion(0);
+bool hasCanonicalInt8ContractionBody(Region &region) {
   if (!region.hasOneBlock())
     return false;
 
@@ -84,6 +83,13 @@ bool hasCanonicalMatvecIndexingMaps(linalg::MatvecOp op) {
          maps[2] == AffineMap::get(2, 0, getAffineDimExpr(0, context));
 }
 
+bool hasCanonicalMatmulIndexingMaps(linalg::MatmulOp op) {
+  SmallVector<AffineMap> maps = op.getIndexingMapsArray();
+  SmallVector<AffineMap> expectedMaps =
+      linalg::MatmulOp::getDefaultIndexingMaps(op.getContext());
+  return maps == expectedMaps;
+}
+
 // TODO(CTQ-013): Linalg i21 arithmetic wraps on overflow, while CIM22 overflow
 // behavior is not frozen. These software-only conversions assume every 64-term
 // partial and final mathematical accumulation is exactly representable as
@@ -110,7 +116,35 @@ bool isConvertible(linalg::MatvecOp op) {
          hasType(inputs[1], {reductionSize}, 8) &&
          hasType(inits[0], {outputSize}, 21) &&
          hasType(op->getResult(0), {outputSize}, 21) && isZeroSplat(inits[0]) &&
-         hasCanonicalInt8MatvecBody(op) && hasCanonicalMatvecIndexingMaps(op);
+         hasCanonicalInt8ContractionBody(op.getRegion()) &&
+         hasCanonicalMatvecIndexingMaps(op);
+}
+
+bool isConvertible(linalg::MatmulOp op) {
+  auto inputs = op.getDpsInputs();
+  auto inits = op.getDpsInits();
+  if (inputs.size() != 2 || inits.size() != 1 || op->getNumResults() != 1)
+    return false;
+
+  auto weightType = dyn_cast<RankedTensorType>(inputs[0].getType());
+  auto inputType = dyn_cast<RankedTensorType>(inputs[1].getType());
+  if (!weightType || weightType.getRank() != 2 || !inputType ||
+      inputType.getRank() != 2)
+    return false;
+
+  int64_t outputSize = weightType.getDimSize(0);
+  int64_t reductionSize = weightType.getDimSize(1);
+  int64_t columnCount = inputType.getDimSize(1);
+  if (outputSize <= 0 || reductionSize <= 0 || columnCount <= 0)
+    return false;
+
+  return hasType(inputs[0], {outputSize, reductionSize}, 8) &&
+         hasType(inputs[1], {reductionSize, columnCount}, 8) &&
+         hasType(inits[0], {outputSize, columnCount}, 21) &&
+         hasType(op->getResult(0), {outputSize, columnCount}, 21) &&
+         isZeroSplat(inits[0]) && op.getCast() == linalg::TypeFn::cast_signed &&
+         hasCanonicalInt8ContractionBody(op.getRegion()) &&
+         hasCanonicalMatmulIndexingMaps(op);
 }
 
 class FormMatvec final : public OpConversionPattern<linalg::MatvecOp> {
@@ -320,6 +354,67 @@ public:
   }
 };
 
+class FormMatmul final : public OpConversionPattern<linalg::MatmulOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(linalg::MatmulOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!isConvertible(op))
+      return rewriter.notifyMatchFailure(op,
+                                         "not an exact CIM MatMul candidate");
+
+    Location location = op.getLoc();
+    auto inputs = adaptor.getInputs();
+    auto weightType = cast<RankedTensorType>(inputs[0].getType());
+    auto inputType = cast<RankedTensorType>(inputs[1].getType());
+    int64_t outputSize = weightType.getDimSize(0);
+    int64_t reductionSize = weightType.getDimSize(1);
+    int64_t columnCount = inputType.getDimSize(1);
+    auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
+    auto columnType =
+        RankedTensorType::get({reductionSize}, inputType.getElementType());
+    auto columnResultType =
+        RankedTensorType::get({outputSize}, resultType.getElementType());
+    auto expandedResultType =
+        RankedTensorType::get({outputSize, 1}, resultType.getElementType());
+    auto zeroAttr = DenseElementsAttr::get(
+        columnResultType,
+        rewriter.getIntegerAttr(resultType.getElementType(), 0));
+    Value zero = arith::ConstantOp::create(rewriter, location, columnResultType,
+                                           zeroAttr);
+    SmallVector<ReassociationIndices> reassociation{{0, 1}};
+    SmallVector<Value> expandedColumns;
+    expandedColumns.reserve(columnCount);
+
+    for (int64_t column = 0; column < columnCount; ++column) {
+      SmallVector<OpFoldResult> offsets{rewriter.getIndexAttr(0),
+                                        rewriter.getIndexAttr(column)};
+      SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(reductionSize),
+                                      rewriter.getIndexAttr(1)};
+      SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1),
+                                        rewriter.getIndexAttr(1)};
+      auto inputColumn = tensor::ExtractSliceOp::create(
+          rewriter, location, columnType, inputs[1], offsets, sizes, strides);
+      auto matvec = linalg::MatvecOp::create(
+          rewriter, location, TypeRange{columnResultType},
+          ValueRange{inputs[0], inputColumn.getResult()}, ValueRange{zero});
+      expandedColumns.push_back(
+          tensor::ExpandShapeOp::create(rewriter, location, expandedResultType,
+                                        matvec.getResult(0), reassociation));
+    }
+
+    if (columnCount == 1) {
+      rewriter.replaceOp(op, expandedColumns.front());
+      return success();
+    }
+
+    rewriter.replaceOpWithNewOp<tensor::ConcatOp>(op, 1, expandedColumns);
+    return success();
+  }
+};
+
 class FormCIMProgram final : public impl::FormCIMProgramBase<FormCIMProgram> {
 public:
   using Base::Base;
@@ -330,10 +425,12 @@ public:
     target.addLegalDialect<tensor::TensorDialect>();
     target.addDynamicallyLegalOp<linalg::MatvecOp>(
         [](linalg::MatvecOp op) { return !isConvertible(op); });
+    target.addDynamicallyLegalOp<linalg::MatmulOp>(
+        [](linalg::MatmulOp op) { return !isConvertible(op); });
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
     RewritePatternSet patterns(&getContext());
-    patterns.add<FormMatvec>(&getContext());
+    patterns.add<FormMatvec, FormMatmul>(&getContext());
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
       signalPassFailure();
