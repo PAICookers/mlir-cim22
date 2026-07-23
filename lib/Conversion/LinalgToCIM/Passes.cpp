@@ -9,21 +9,115 @@
 #include "CIM22/Conversion/LinalgToCIM/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Transforms/DialectConversion.h"
 
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
+#include <limits>
+#include <optional>
 
 namespace mlir::cim {
 #define GEN_PASS_DEF_FORMCIMPROGRAM
+#define GEN_PASS_DEF_MATERIALIZECIMSCHEDULE
 #include "CIM22/Conversion/LinalgToCIM/Passes.h.inc"
 
 namespace {
 constexpr llvm::StringLiteral kMatMulIntegerMarker = "cim.onnx.matmul_integer";
+constexpr llvm::StringLiteral kMatTileMarker = "__cim_m_tile";
+constexpr llvm::StringLiteral kTileAttrs[] = {"m_tile", "n_tile", "k_tile"};
+constexpr llvm::StringLiteral kScheduleAttrs[] = {"work_id", "group_id",
+                                                  "core_slot", "macro_slot"};
+constexpr int64_t kCoreCount = 20;
+constexpr int64_t kMacrosPerCore = 2;
+
+struct TileIdentity {
+  int64_t m;
+  int64_t n;
+  int64_t k;
+};
+
+int64_t getMatTile(Operation *op) {
+  if (auto attribute = op->getAttrOfType<IntegerAttr>(kMatTileMarker))
+    return attribute.getInt();
+  return 0;
+}
+
+VMMOp createIdentifiedVMM(OpBuilder &builder, Location location,
+                          Type resultType, Value input, Value weight,
+                          int64_t mTile, int64_t nTile, int64_t kTile) {
+  auto vmm = VMMOp::create(builder, location, resultType, input, weight);
+  vmm->setAttr("m_tile", builder.getI64IntegerAttr(mTile));
+  vmm->setAttr("n_tile", builder.getI64IntegerAttr(nTile));
+  vmm->setAttr("k_tile", builder.getI64IntegerAttr(kTile));
+  return vmm;
+}
+
+unsigned countPresent(Operation *op,
+                      ArrayRef<llvm::StringLiteral> attributeNames) {
+  return llvm::count_if(attributeNames,
+                        [op](StringRef name) { return op->hasAttr(name); });
+}
+
+std::optional<int64_t> readNonNegativeI64(VMMOp op, StringRef name) {
+  Attribute attribute = op->getAttr(name);
+  auto integer = dyn_cast_or_null<IntegerAttr>(attribute);
+  if (!integer || !integer.getType().isSignlessInteger(64)) {
+    op.emitOpError("expects '") << name << "' to be an i64 attribute";
+    return std::nullopt;
+  }
+  if (integer.getInt() < 0) {
+    op.emitOpError("expects '") << name << "' to be non-negative";
+    return std::nullopt;
+  }
+  return integer.getInt();
+}
+
+std::optional<TileIdentity> readTileIdentity(VMMOp op) {
+  if (countPresent(op, kTileAttrs) != std::size(kTileAttrs)) {
+    op.emitOpError("materialize-cim-schedule requires complete m_tile, "
+                   "n_tile, and k_tile identity");
+    return std::nullopt;
+  }
+  auto m = readNonNegativeI64(op, "m_tile");
+  auto n = readNonNegativeI64(op, "n_tile");
+  auto k = readNonNegativeI64(op, "k_tile");
+  if (!m || !n || !k)
+    return std::nullopt;
+  return TileIdentity{*m, *n, *k};
+}
+
+int64_t getGroupId(int64_t workId) {
+  // TODO(CTQ-031): Keep software-only groups as two-wide same-core barriers;
+  // form-cim-schedule tests cover this policy until cross-core waves are known.
+  return workId / kMacrosPerCore;
+}
+
+bool dependsOn(Operation *operation, Operation *possibleDependency) {
+  SmallVector<Operation *> worklist;
+  for (Value operand : operation->getOperands())
+    if (Operation *definition = operand.getDefiningOp())
+      worklist.push_back(definition);
+
+  llvm::SmallPtrSet<Operation *, 16> visited;
+  while (!worklist.empty()) {
+    Operation *current = worklist.pop_back_val();
+    if (current == possibleDependency)
+      return true;
+    if (!visited.insert(current).second)
+      continue;
+    for (Value operand : current->getOperands())
+      if (Operation *definition = operand.getDefiningOp())
+        worklist.push_back(definition);
+  }
+  return false;
+}
 
 bool hasType(Value value, ArrayRef<int64_t> shape, unsigned bitWidth) {
   auto type = dyn_cast<RankedTensorType>(value.getType());
@@ -606,6 +700,7 @@ public:
     Location location = op.getLoc();
     auto inputs = adaptor.getInputs();
     auto weightType = cast<RankedTensorType>(inputs[0].getType());
+    int64_t matTile = getMatTile(op);
     auto opResultType = cast<RankedTensorType>(op->getResult(0).getType());
     int64_t outputSize = weightType.getDimSize(0);
     int64_t reductionSize = weightType.getDimSize(1);
@@ -680,8 +775,10 @@ public:
                                              /*nofold=*/false);
         }
 
-        Value partial = VMMOp::create(rewriter, location, partialType,
-                                      inputTile, weightTile);
+        Value partial = createIdentifiedVMM(
+            rewriter, location, partialType, inputTile, weightTile, matTile,
+            outputOffset / kOutputTileSize,
+            reductionOffset / kReductionTileSize);
         Value extended =
             arith::ExtSIOp::create(rewriter, location, resultTileType, partial);
         sum = sum ? arith::AddIOp::create(rewriter, location, sum, extended)
@@ -760,6 +857,7 @@ public:
           rewriter, location, TypeRange{columnResultType},
           ValueRange{inputs[0], inputColumn.getResult()}, ValueRange{zero});
       matvec->setAttr(kMatMulIntegerMarker, rewriter.getUnitAttr());
+      matvec->setAttr(kMatTileMarker, rewriter.getI64IntegerAttr(column));
       expandedColumns.push_back(
           tensor::ExpandShapeOp::create(rewriter, location, expandedResultType,
                                         matvec.getResult(0), reassociation));
@@ -796,6 +894,152 @@ public:
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
       signalPassFailure();
+  }
+};
+
+class MaterializeCIMSchedule final
+    : public impl::MaterializeCIMScheduleBase<MaterializeCIMSchedule> {
+public:
+  using Base::Base;
+
+  void runOnOperation() override {
+    func::FuncOp function = getOperation();
+    SmallVector<VMMOp> vmms;
+    function.walk([&](VMMOp op) { vmms.push_back(op); });
+    if (vmms.empty())
+      return;
+
+    if (!function.getBody().hasOneBlock()) {
+      function.emitError(
+          "materialize-cim-schedule requires one straight-line block");
+      return signalPassFailure();
+    }
+    Block *body = &function.getBody().front();
+    if (llvm::any_of(vmms,
+                     [body](VMMOp op) { return op->getBlock() != body; })) {
+      function.emitError(
+          "materialize-cim-schedule cannot represent nested control flow");
+      return signalPassFailure();
+    }
+
+    SmallVector<TileIdentity> identities;
+    identities.reserve(vmms.size());
+    int64_t maxM = 0;
+    int64_t maxN = 0;
+    int64_t maxK = 0;
+    bool anyScheduled = false;
+    bool allScheduled = true;
+    for (VMMOp vmm : vmms) {
+      auto identity = readTileIdentity(vmm);
+      if (!identity)
+        return signalPassFailure();
+      identities.push_back(*identity);
+      maxM = std::max(maxM, identity->m);
+      maxN = std::max(maxN, identity->n);
+      maxK = std::max(maxK, identity->k);
+
+      unsigned scheduleCount = countPresent(vmm, kScheduleAttrs);
+      if (scheduleCount != 0 && scheduleCount != std::size(kScheduleAttrs)) {
+        vmm.emitOpError("materialize-cim-schedule requires complete work_id, "
+                        "group_id, core_slot, and macro_slot attributes");
+        return signalPassFailure();
+      }
+      anyScheduled |= scheduleCount != 0;
+      allScheduled &= scheduleCount != 0;
+    }
+    if (anyScheduled != allScheduled) {
+      function.emitError("materialize-cim-schedule rejects mixed scheduled "
+                         "and unscheduled cim.vmm operations");
+      return signalPassFailure();
+    }
+
+    if (maxM == std::numeric_limits<int64_t>::max() ||
+        maxN == std::numeric_limits<int64_t>::max() ||
+        maxK == std::numeric_limits<int64_t>::max()) {
+      function.emitError("materialize-cim-schedule tile extent overflows i64");
+      return signalPassFailure();
+    }
+    int64_t mTiles = maxM + 1;
+    int64_t nTiles = maxN + 1;
+    int64_t kTiles = maxK + 1;
+    int64_t mnTiles = 0;
+    int64_t expectedWorkCount = 0;
+    if (llvm::MulOverflow(mTiles, nTiles, mnTiles) ||
+        llvm::MulOverflow(mnTiles, kTiles, expectedWorkCount)) {
+      function.emitError("materialize-cim-schedule tile rectangle overflows "
+                         "i64");
+      return signalPassFailure();
+    }
+
+    llvm::DenseSet<int64_t> seenWork;
+    seenWork.reserve(vmms.size());
+    for (auto [index, identity] : llvm::enumerate(identities)) {
+      int64_t workId =
+          ((identity.m * nTiles) + identity.n) * kTiles + identity.k;
+      if (!seenWork.insert(workId).second) {
+        vmms[index].emitOpError(
+            "materialize-cim-schedule rejects duplicate tile identity");
+        return signalPassFailure();
+      }
+    }
+    if (expectedWorkCount != static_cast<int64_t>(vmms.size())) {
+      function.emitError("materialize-cim-schedule requires a complete "
+                         "rectangular tile identity space");
+      return signalPassFailure();
+    }
+
+    for (auto [index, identity] : llvm::enumerate(identities)) {
+      int64_t workId =
+          ((identity.m * nTiles) + identity.n) * kTiles + identity.k;
+      if (workId != static_cast<int64_t>(index)) {
+        vmms[index].emitOpError("materialize-cim-schedule requires contiguous "
+                                "M-major/N-major/K-minor tile order");
+        return signalPassFailure();
+      }
+    }
+
+    for (size_t index = 0; index + 1 < vmms.size(); index += 2) {
+      if (dependsOn(vmms[index], vmms[index + 1]) ||
+          dependsOn(vmms[index + 1], vmms[index])) {
+        vmms[index + 1].emitOpError(
+            "materialize-cim-schedule cannot pair SSA-dependent VMM work");
+        return signalPassFailure();
+      }
+    }
+
+    Builder builder(function.getContext());
+    for (auto [index, vmm] : llvm::enumerate(vmms)) {
+      int64_t workId = static_cast<int64_t>(index);
+      int64_t groupId = getGroupId(workId);
+      int64_t coreSlot = groupId % kCoreCount;
+      int64_t macroSlot = workId % kMacrosPerCore;
+      if (allScheduled) {
+        struct ExpectedAttribute {
+          StringRef name;
+          int64_t value;
+        };
+        ExpectedAttribute expected[] = {{"work_id", workId},
+                                        {"group_id", groupId},
+                                        {"core_slot", coreSlot},
+                                        {"macro_slot", macroSlot}};
+        for (const ExpectedAttribute &attribute : expected) {
+          auto actual = readNonNegativeI64(vmm, attribute.name);
+          if (!actual)
+            return signalPassFailure();
+          if (*actual != attribute.value) {
+            vmm.emitOpError("materialize-cim-schedule expects '")
+                << attribute.name << "' = " << attribute.value << ", but got "
+                << *actual;
+            return signalPassFailure();
+          }
+        }
+        continue;
+      }
+      vmm->setAttr("work_id", builder.getI64IntegerAttr(workId));
+      vmm->setAttr("group_id", builder.getI64IntegerAttr(groupId));
+      vmm->setAttr("core_slot", builder.getI64IntegerAttr(coreSlot));
+      vmm->setAttr("macro_slot", builder.getI64IntegerAttr(macroSlot));
+    }
   }
 };
 } // namespace

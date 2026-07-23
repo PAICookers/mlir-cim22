@@ -19,4 +19,9 @@ def FormCIMProgram : Pass<"form-cim-program", "::mlir::ModuleOp"> {
                            "::mlir::tensor::TensorDialect"];
 }
 
+def MaterializeCIMSchedule
+    : Pass<"materialize-cim-schedule", "::mlir::func::FuncOp"> {
+  let summary = "Validate and materialize the software-only CIM schedule";
+}
+
 #endif // CIM22_CONVERSION_LINALGTOCIM_PASSES
