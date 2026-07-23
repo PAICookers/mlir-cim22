@@ -1,0 +1,3 @@
+// RUN: %python -m pytest -q %S/test_schedule_oracle.py | FileCheck %s
+
+// CHECK: passed
