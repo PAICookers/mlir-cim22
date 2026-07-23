@@ -1,6 +1,6 @@
 // RUN: mlir-cim22-opt %s -split-input-file -verify-diagnostics
 
-// Software-only evidence: VMM-N01 through VMM-N09 verifier/parser coverage.
+// Software-only evidence: VMM-N01 through VMM-N15 verifier/parser coverage.
 
 // VMM-N01: input rank.
 func.func @input_rank(%input: tensor<1x64xi8>, %weight: tensor<16x64xi8>) {
@@ -78,5 +78,83 @@ func.func @result_dtype(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
 func.func @operand_arity(%input: tensor<64xi8>) {
   // expected-error@+1 {{expected 2 operands, but found 1}}
   %0 = "cim.vmm"(%input) : (tensor<64xi8>) -> tensor<16xi21>
+  return
+}
+
+// -----
+
+// VMM-N10: tile identity is all-or-none.
+func.func @partial_tile_identity(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
+  // expected-error@+1 {{requires m_tile, n_tile, and k_tile together}}
+  %0 = cim.vmm %input, %weight {m_tile = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  return
+}
+
+// -----
+
+// VMM-N11: schedule attributes are all-or-none.
+func.func @partial_schedule(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
+  // expected-error@+1 {{requires work_id, group_id, core_slot, and macro_slot together}}
+  %0 = cim.vmm %input, %weight {m_tile = 0 : i64, n_tile = 0 : i64, k_tile = 0 : i64, work_id = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  return
+}
+
+// -----
+
+// VMM-N12: a schedule requires logical tile identity.
+func.func @schedule_without_tile(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
+  // expected-error@+1 {{requires tile identity before schedule attributes}}
+  %0 = cim.vmm %input, %weight {work_id = 0 : i64, group_id = 0 : i64, core_slot = 0 : i64, macro_slot = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  return
+}
+
+// -----
+
+// VMM-N13: logical identifiers are non-negative.
+func.func @negative_tile(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
+  // expected-error@+1 {{expects 'k_tile' to be non-negative}}
+  %0 = cim.vmm %input, %weight {m_tile = 0 : i64, n_tile = 0 : i64, k_tile = -1 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  return
+}
+
+// -----
+
+func.func @negative_schedule(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
+  // expected-error@+1 {{expects 'group_id' to be non-negative}}
+  %0 = cim.vmm %input, %weight {m_tile = 0 : i64, n_tile = 0 : i64, k_tile = 0 : i64, work_id = 0 : i64, group_id = -1 : i64, core_slot = 0 : i64, macro_slot = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  return
+}
+
+// -----
+
+// VMM-N14: identity and schedule attributes use i64.
+func.func @wrong_tile_attribute_type(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
+  // expected-error@+1 {{expects 'm_tile' to be an i64 attribute}}
+  %0 = cim.vmm %input, %weight {m_tile = 0 : i32, n_tile = 0 : i64, k_tile = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  return
+}
+
+// -----
+
+func.func @wrong_schedule_attribute_type(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
+  // expected-error@+1 {{expects 'work_id' to be an i64 attribute}}
+  %0 = cim.vmm %input, %weight {m_tile = 0 : i64, n_tile = 0 : i64, k_tile = 0 : i64, work_id = 0 : i32, group_id = 0 : i64, core_slot = 0 : i64, macro_slot = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  return
+}
+
+// -----
+
+// VMM-N15: resource slots are bounded by the current target inventory.
+func.func @invalid_core_slot(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
+  // expected-error@+1 {{expects core_slot in [0, 19]}}
+  %0 = cim.vmm %input, %weight {m_tile = 0 : i64, n_tile = 0 : i64, k_tile = 0 : i64, work_id = 0 : i64, group_id = 0 : i64, core_slot = 20 : i64, macro_slot = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  return
+}
+
+// -----
+
+func.func @invalid_macro_slot(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
+  // expected-error@+1 {{expects macro_slot in [0, 1]}}
+  %0 = cim.vmm %input, %weight {m_tile = 0 : i64, n_tile = 0 : i64, k_tile = 0 : i64, work_id = 0 : i64, group_id = 0 : i64, core_slot = 0 : i64, macro_slot = 2 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
   return
 }

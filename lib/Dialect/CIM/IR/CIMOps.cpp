@@ -9,10 +9,37 @@
 #include "CIM22/Dialect/CIM/IR/CIMOps.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/LogicalResult.h"
 
 using namespace mlir;
 using namespace mlir::cim;
+
+namespace {
+constexpr llvm::StringLiteral kTileAttrs[] = {"m_tile", "n_tile", "k_tile"};
+constexpr llvm::StringLiteral kScheduleAttrs[] = {"work_id", "group_id",
+                                                  "core_slot", "macro_slot"};
+
+unsigned countPresent(Operation *op, ArrayRef<llvm::StringLiteral> names) {
+  return llvm::count_if(names,
+                        [op](StringRef name) { return op->hasAttr(name); });
+}
+
+LogicalResult verifyNonNegative(Operation *op,
+                                ArrayRef<llvm::StringLiteral> names) {
+  for (StringRef name : names) {
+    Attribute attribute = op->getAttr(name);
+    if (!attribute)
+      continue;
+    auto value = dyn_cast<IntegerAttr>(attribute);
+    if (!value || !value.getType().isSignlessInteger(64))
+      return op->emitOpError("expects '") << name << "' to be an i64 attribute";
+    if (value.getInt() < 0)
+      return op->emitOpError("expects '") << name << "' to be non-negative";
+  }
+  return success();
+}
+} // namespace
 
 LogicalResult VMMOp::verify() {
   RankedTensorType inputType = getInput().getType();
@@ -27,6 +54,28 @@ LogicalResult VMMOp::verify() {
            << weightType;
   if (resultType.getShape() != llvm::ArrayRef<int64_t>{16})
     return emitOpError("expects result shape [16], but got ") << resultType;
+
+  unsigned tileAttrCount = countPresent(getOperation(), kTileAttrs);
+  if (tileAttrCount != 0 && tileAttrCount != std::size(kTileAttrs))
+    return emitOpError("requires m_tile, n_tile, and k_tile together");
+  if (failed(verifyNonNegative(getOperation(), kTileAttrs)))
+    return failure();
+
+  unsigned scheduleAttrCount = countPresent(getOperation(), kScheduleAttrs);
+  if (scheduleAttrCount != 0 && scheduleAttrCount != std::size(kScheduleAttrs))
+    return emitOpError(
+        "requires work_id, group_id, core_slot, and macro_slot together");
+  if (scheduleAttrCount != 0 && tileAttrCount == 0)
+    return emitOpError("requires tile identity before schedule attributes");
+  if (failed(verifyNonNegative(getOperation(), kScheduleAttrs)))
+    return failure();
+
+  if (auto core = getOperation()->getAttrOfType<IntegerAttr>("core_slot");
+      core && core.getInt() >= 20)
+    return emitOpError("expects core_slot in [0, 19]");
+  if (auto macro = getOperation()->getAttrOfType<IntegerAttr>("macro_slot");
+      macro && macro.getInt() >= 2)
+    return emitOpError("expects macro_slot in [0, 1]");
   return success();
 }
 

@@ -21,8 +21,11 @@ def CIM_VMMOp : CIM_Op<"vmm", [Pure]> {
     the rows of a 16x64 weight tensor. Operands are interpreted as signed INT8
     values and each result is represented by a signless `i21` value.
 
-    This operation does not model placement, physical weight layout, frames,
-    or runtime behavior.
+    Before M5 scheduling this operation may carry zero-based `m_tile`,
+    `n_tile`, and `k_tile` identity. After M5 scheduling it additionally
+    carries a logical work/barrier identifier and a core/Macro resource slot.
+    These attributes do not model physical routing, weight layout, frames, or
+    runtime behavior.
 
     TODO(CTQ-013): Confirm the signed INT8 input domain.
     FIXME(CTQ-013): Overflow behavior is not a deployable contract.
