@@ -1,9 +1,13 @@
 from collections import Counter
+from pathlib import Path
 import re
 import sys
 import unittest
 
 import schedule_oracle as oracle
+
+
+F0_FIXTURE = Path(__file__).parents[2] / "Inputs/ONNX/int8_linear_model.onnx"
 
 
 SMALL_MAPPING = [
@@ -70,6 +74,17 @@ class ScheduleOracleTest(unittest.TestCase):
                 self.assertLessEqual(oracle.I21_MIN, partial_min)
                 self.assertLessEqual(partial_min, partial_max)
                 self.assertLessEqual(partial_max, oracle.I21_MAX)
+
+    def test_real_f0_fixture_int32_direct_equals_tiled_reconstruction(self):
+        weight = oracle.load_onnx_weight(F0_FIXTURE, 512, 1024)
+        self.assertEqual(weight.shape, (512, 1024))
+        self.assertEqual(weight.dtype.name, "int8")
+        result_shape, partial_min, partial_max = oracle.verify_numeric(
+            32, 512, 1024, seed=2205, weight=weight)
+        self.assertEqual(result_shape, (32, 1024))
+        self.assertLessEqual(oracle.I21_MIN, partial_min)
+        self.assertLessEqual(partial_min, partial_max)
+        self.assertLessEqual(partial_max, oracle.I21_MAX)
 
     def test_fault_injection_is_rejected(self):
         faults = ("work", "tile", "group", "core", "macro",

@@ -1,4 +1,4 @@
 // RUN: %python %S/test_schedule_oracle.py | FileCheck %s
 
-// CHECK: Ran 4 tests
+// CHECK: Ran 5 tests
 // CHECK: OK

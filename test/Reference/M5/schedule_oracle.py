@@ -127,10 +127,38 @@ def validate_dump(text: str, m: int, k: int, n: int) -> list[Work]:
     return actual
 
 
-def verify_numeric(m: int, k: int, n: int, seed: int) -> tuple[tuple[int, int], int, int]:
+def load_onnx_weight(model_path: Path, k: int, n: int) -> np.ndarray:
+    import onnx
+    from onnx import numpy_helper
+
+    model = onnx.load(model_path)
+    onnx.checker.check_model(model)
+    if len(model.graph.node) != 1 or model.graph.node[0].op_type != "MatMulInteger":
+        raise OracleError("ONNX fixture must contain one MatMulInteger node")
+    node = model.graph.node[0]
+    if len(node.input) != 2:
+        raise OracleError("ONNX fixture must omit MatMulInteger zero points")
+    initializers = {initializer.name: initializer for initializer in model.graph.initializer}
+    if node.input[1] not in initializers:
+        raise OracleError("ONNX MatMulInteger B must be an embedded initializer")
+    initializer = initializers[node.input[1]]
+    if initializer.data_location == onnx.TensorProto.EXTERNAL or initializer.external_data:
+        raise OracleError("ONNX MatMulInteger B must not use external data")
+    weight = numpy_helper.to_array(initializer)
+    if weight.dtype != np.int8 or weight.shape != (k, n):
+        raise OracleError(
+            f"ONNX weight: expected int8[{k},{n}], actual {weight.dtype}{weight.shape}")
+    return weight
+
+
+def verify_numeric(m: int, k: int, n: int, seed: int,
+                   weight: np.ndarray | None = None) -> tuple[tuple[int, int], int, int]:
     rng = np.random.default_rng(seed)
     activation = rng.integers(-128, 128, size=(m, k), dtype=np.int8)
-    weight = rng.integers(-128, 128, size=(k, n), dtype=np.int8)
+    if weight is None:
+        weight = rng.integers(-128, 128, size=(k, n), dtype=np.int8)
+    elif weight.dtype != np.int8 or weight.shape != (k, n):
+        raise OracleError(f"weight: expected int8[{k},{n}], actual {weight.dtype}{weight.shape}")
     expected = activation.astype(np.int32) @ weight.astype(np.int32)
     actual = np.zeros((m, n), dtype=np.int32)
     partial_min = I21_MAX
@@ -166,17 +194,21 @@ def main() -> None:
     parser.add_argument("--k", type=int, required=True)
     parser.add_argument("--n", type=int, required=True)
     parser.add_argument("--seed", type=int, default=2205)
+    parser.add_argument("--onnx", type=Path)
     args = parser.parse_args()
 
     work = validate_dump(args.mlir.read_text(), args.m, args.k, args.n)
-    shape, partial_min, partial_max = verify_numeric(args.m, args.k, args.n, args.seed)
+    weight = load_onnx_weight(args.onnx, args.k, args.n) if args.onnx else None
+    shape, partial_min, partial_max = verify_numeric(
+        args.m, args.k, args.n, args.seed, weight)
     groups = ceil_div(len(work), 2)
     core19 = [item for item in work if item.group_id == 19]
     wrap = next((item for item in work if item.group_id == 20), None)
     last_pair = work[-2:] if len(work) > 1 else work
     print(f"PASS software-only M={args.m} K={args.k} N={args.n} "
           f"work={len(work)} groups={groups} dtype=int32 shape={shape} "
-          f"seed={args.seed} partial=[{partial_min},{partial_max}]")
+          f"seed={args.seed} weight={'onnx' if args.onnx else 'random'} "
+          f"partial=[{partial_min},{partial_max}]")
     print(f"boundaries first={_format(work[0])} "
           f"core19=[{','.join(map(_format, core19)) or 'NA'}] "
           f"wrap={_format(wrap) if wrap else 'NA'} "
