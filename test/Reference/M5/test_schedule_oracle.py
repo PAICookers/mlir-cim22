@@ -1,7 +1,7 @@
 from collections import Counter
 import re
-
-import pytest
+import sys
+import unittest
 
 import schedule_oracle as oracle
 
@@ -39,62 +39,70 @@ def replace_attr(text, line_index, attr, value):
     return "\n".join(lines)
 
 
-def test_m2_k65_n17_exact_mapping_and_operation_counts():
-    assert oracle.expected_schedule(2, 65, 17) == SMALL_MAPPING
-    oracle.validate_dump(render_dump(SMALL_MAPPING, 2, 65, 17), 2, 65, 17)
+class ScheduleOracleTest(unittest.TestCase):
+    def test_m2_k65_n17_exact_mapping_and_operation_counts(self):
+        self.assertEqual(oracle.expected_schedule(2, 65, 17), SMALL_MAPPING)
+        oracle.validate_dump(render_dump(SMALL_MAPPING, 2, 65, 17), 2, 65, 17)
+
+    def test_f0_boundaries_dense_ids_and_group_size(self):
+        work = oracle.expected_schedule(32, 512, 1024)
+        self.assertEqual(len(work), 16384)
+        self.assertEqual(work[0], oracle.Work(0, 0, 0, 0, 0, 0, 0))
+        self.assertEqual(work[38:40], [
+            oracle.Work(38, 0, 4, 6, 19, 19, 0),
+            oracle.Work(39, 0, 4, 7, 19, 19, 1),
+        ])
+        self.assertEqual(work[40], oracle.Work(40, 0, 5, 0, 20, 0, 0))
+        self.assertEqual(work[-2:], [
+            oracle.Work(16382, 31, 63, 6, 8191, 11, 0),
+            oracle.Work(16383, 31, 63, 7, 8191, 11, 1),
+        ])
+        self.assertEqual([item.work_id for item in work], list(range(16384)))
+        self.assertEqual(max(Counter(item.group_id for item in work).values()), 2)
+        oracle.validate_dump(render_dump(work, 32, 512, 1024), 32, 512, 1024)
+
+    def test_fixed_seed_int32_direct_equals_tiled_reconstruction(self):
+        for shape in ((2, 65, 17), (32, 512, 1024)):
+            with self.subTest(shape=shape):
+                result_shape, partial_min, partial_max = oracle.verify_numeric(
+                    *shape, seed=2205)
+                self.assertEqual(result_shape, (shape[0], shape[2]))
+                self.assertLessEqual(oracle.I21_MIN, partial_min)
+                self.assertLessEqual(partial_min, partial_max)
+                self.assertLessEqual(partial_max, oracle.I21_MAX)
+
+    def test_fault_injection_is_rejected(self):
+        faults = ("work", "tile", "group", "core", "macro",
+                  "duplicate", "missing", "trunci")
+        for fault in faults:
+            with self.subTest(fault=fault):
+                dump = render_dump(SMALL_MAPPING, 2, 65, 17)
+                if fault == "work":
+                    dump = replace_attr(dump, 1, "work_id", 0)
+                elif fault == "tile":
+                    dump = replace_attr(dump, 1, "k_tile", 0)
+                elif fault == "group":
+                    dump = replace_attr(dump, 1, "group_id", 1)
+                elif fault == "core":
+                    dump = replace_attr(dump, 1, "core_slot", 1)
+                elif fault == "macro":
+                    dump = replace_attr(dump, 1, "macro_slot", 0)
+                elif fault == "duplicate":
+                    dump = dump.splitlines()[0] + "\n" + dump
+                elif fault == "missing":
+                    dump = "\n".join(dump.splitlines()[1:])
+                else:
+                    dump += ("\n%bad = arith.trunci %value : "
+                             "tensor<16xi32> to tensor<16xi21>")
+                expected_error = {
+                    "duplicate": "VMM count",
+                    "missing": "VMM count",
+                    "trunci": "arith.trunci count",
+                }.get(fault, "first divergent work 1")
+                with self.assertRaisesRegex(oracle.OracleError, expected_error):
+                    oracle.validate_dump(dump, 2, 65, 17)
 
 
-def test_f0_boundaries_dense_ids_and_group_size():
-    work = oracle.expected_schedule(32, 512, 1024)
-    assert len(work) == 16384
-    assert work[0] == oracle.Work(0, 0, 0, 0, 0, 0, 0)
-    assert work[38:40] == [
-        oracle.Work(38, 0, 4, 6, 19, 19, 0),
-        oracle.Work(39, 0, 4, 7, 19, 19, 1),
-    ]
-    assert work[40] == oracle.Work(40, 0, 5, 0, 20, 0, 0)
-    assert work[-2:] == [
-        oracle.Work(16382, 31, 63, 6, 8191, 11, 0),
-        oracle.Work(16383, 31, 63, 7, 8191, 11, 1),
-    ]
-    assert [item.work_id for item in work] == list(range(16384))
-    assert max(Counter(item.group_id for item in work).values()) == 2
-    oracle.validate_dump(render_dump(work, 32, 512, 1024), 32, 512, 1024)
-
-
-@pytest.mark.parametrize("shape", [(2, 65, 17), (32, 512, 1024)])
-def test_fixed_seed_int32_direct_equals_tiled_reconstruction(shape):
-    result_shape, partial_min, partial_max = oracle.verify_numeric(*shape, seed=2205)
-    assert result_shape == (shape[0], shape[2])
-    assert oracle.I21_MIN <= partial_min <= partial_max <= oracle.I21_MAX
-
-
-@pytest.mark.parametrize(
-    "fault",
-    ["work", "tile", "group", "core", "macro", "duplicate", "missing", "trunci"],
-)
-def test_fault_injection_is_rejected(fault):
-    dump = render_dump(SMALL_MAPPING, 2, 65, 17)
-    if fault == "work":
-        dump = replace_attr(dump, 1, "work_id", 0)
-    elif fault == "tile":
-        dump = replace_attr(dump, 1, "k_tile", 0)
-    elif fault == "group":
-        dump = replace_attr(dump, 1, "group_id", 1)
-    elif fault == "core":
-        dump = replace_attr(dump, 1, "core_slot", 1)
-    elif fault == "macro":
-        dump = replace_attr(dump, 1, "macro_slot", 0)
-    elif fault == "duplicate":
-        dump = dump.splitlines()[0] + "\n" + dump
-    elif fault == "missing":
-        dump = "\n".join(dump.splitlines()[1:])
-    else:
-        dump += "\n%bad = arith.trunci %value : tensor<16xi32> to tensor<16xi21>"
-    expected_error = {
-        "duplicate": "VMM count",
-        "missing": "VMM count",
-        "trunci": "arith.trunci count",
-    }.get(fault, "first divergent work 1")
-    with pytest.raises(oracle.OracleError, match=expected_error):
-        oracle.validate_dump(dump, 2, 65, 17)
+if __name__ == "__main__":
+    unittest.main(
+        testRunner=unittest.TextTestRunner(stream=sys.stdout, verbosity=2))
