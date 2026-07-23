@@ -5,6 +5,20 @@ configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py
 )
 
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+execute_process(
+  COMMAND ${Python3_EXECUTABLE} -c
+    "import numpy, onnx; assert onnx.__version__ == '1.21.0'"
+  RESULT_VARIABLE MLIRCIM22_PYTHON_TEST_DEPS_RESULT
+  ERROR_VARIABLE MLIRCIM22_PYTHON_TEST_DEPS_ERROR
+)
+if(NOT MLIRCIM22_PYTHON_TEST_DEPS_RESULT EQUAL 0)
+  message(FATAL_ERROR
+    "mlir-cim22 tests require the packages in requirements-test.txt for "
+    "${Python3_EXECUTABLE}: ${MLIRCIM22_PYTHON_TEST_DEPS_ERROR}"
+  )
+endif()
+
 add_executable(mlir-cim22-int8-weight-layout-test EXCLUDE_FROM_ALL
   Support/Int8WeightLayoutTest.cpp
 )
@@ -15,9 +29,27 @@ set_target_properties(mlir-cim22-int8-weight-layout-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR}
 )
 
+add_executable(mlir-cim22-f0-importer-test EXCLUDE_FROM_ALL
+  Frontend/ONNX/F0ImporterTest.cpp
+)
+target_link_libraries(mlir-cim22-f0-importer-test PRIVATE
+  MLIRCIM22LinalgToCIM
+  MLIRCIM22ONNXFrontend
+  MLIRArithDialect
+  MLIRFuncDialect
+  MLIRLinalgDialect
+  MLIRPass
+  MLIRTensorDialect
+)
+set_target_properties(mlir-cim22-f0-importer-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR}
+)
+
 set(MLIRCIM22_TEST_DEPENDS
   FileCheck
+  mlir-cim22-f0-importer-test
   mlir-cim22-int8-weight-layout-test
+  mlir-cim22-onnx-import
   mlir-cim22-opt
   split-file
 )

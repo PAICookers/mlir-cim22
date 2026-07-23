@@ -18,6 +18,12 @@ tool_dirs = [
     config.llvm_tools_dir,
 ]
 llvm_config.add_tool_substitutions(
-    ["FileCheck", "mlir-cim22-int8-weight-layout-test", "mlir-cim22-opt"],
+    [
+        "FileCheck",
+        "mlir-cim22-f0-importer-test",
+        "mlir-cim22-int8-weight-layout-test",
+        "mlir-cim22-onnx-import",
+        "mlir-cim22-opt",
+    ],
     tool_dirs,
 )

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20.0)
+cmake_minimum_required(VERSION 3.28.0)
 
 if(POLICY CMP0219)
   cmake_policy(SET CMP0219 NEW)
@@ -11,6 +11,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(MLIR REQUIRED CONFIG)
+
+list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake/modules)
+include(MLIRCIM22Dependencies)
 
 set(LLVM_LIT_ARGS "-sv" CACHE STRING "Default options for lit")
 set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/bin)
@@ -42,7 +45,9 @@ add_subdirectory(lib/Dialect/CIM/IR)
 add_subdirectory(lib/Dialect/CIMFrame/IR)
 add_subdirectory(lib/Dialect/CIMFrame/Transforms)
 add_subdirectory(lib/Conversion/LinalgToCIM)
+add_subdirectory(lib/Frontend/ONNX)
 add_subdirectory(tools/mlir-cim22-opt)
+add_subdirectory(tools/mlir-cim22-onnx-import)
 
 option(MLIRCIM22_INCLUDE_TESTS "Build mlir-cim22 tests" ON)
 if(MLIRCIM22_INCLUDE_TESTS)
