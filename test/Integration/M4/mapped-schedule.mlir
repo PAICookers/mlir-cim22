@@ -6,7 +6,7 @@
 // RUN: FileCheck %s --check-prefix=MAP < %t.once
 
 // M5: PASS software-only M=1 K=128 N=320 work=40 groups=20 dtype=int32 shape=(1, 320) seed=2205 weight=random
-// M5: boundaries first=0:(0,0,0)/g0/c0/m0 core19=[38:(0,19,0)/g19/c19/m0,39:(0,19,1)/g19/c19/m1] wrap=NA last=[38:(0,19,0)/g19/c19/m0,39:(0,19,1)/g19/c19/m1]
+// M5: boundaries first=0:(0,0,0)/g0 group19=[38:(0,19,0)/g19,39:(0,19,1)/g19] next=NA last=[38:(0,19,0)/g19,39:(0,19,1)/g19]
 
 // M4: PASS software-only profile=cim22-4x5-v1 version=1 work=40 cores=20 macros=[0,1]
 // M4: boundaries zero=w0/c0/m0 route=[0,0,0,0,0,0] corner=w38/c19/m0 route=[3,1,0,0,0,0]
