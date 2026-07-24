@@ -17,8 +17,9 @@ using namespace mlir::cim;
 
 namespace {
 constexpr llvm::StringLiteral kTileAttrs[] = {"m_tile", "n_tile", "k_tile"};
-constexpr llvm::StringLiteral kScheduleAttrs[] = {"work_id", "group_id",
-                                                  "core_slot", "macro_slot"};
+constexpr llvm::StringLiteral kScheduleAttrs[] = {"work_id", "group_id"};
+constexpr llvm::StringLiteral kMappingAttrs[] = {"core_slot", "macro_slot",
+                                                 "cim.mapping"};
 
 unsigned countPresent(Operation *op, ArrayRef<llvm::StringLiteral> names) {
   return llvm::count_if(names,
@@ -63,19 +64,25 @@ LogicalResult VMMOp::verify() {
 
   unsigned scheduleAttrCount = countPresent(getOperation(), kScheduleAttrs);
   if (scheduleAttrCount != 0 && scheduleAttrCount != std::size(kScheduleAttrs))
-    return emitOpError(
-        "requires work_id, group_id, core_slot, and macro_slot together");
+    return emitOpError("requires work_id and group_id together");
   if (scheduleAttrCount != 0 && tileAttrCount == 0)
     return emitOpError("requires tile identity before schedule attributes");
   if (failed(verifyNonNegative(getOperation(), kScheduleAttrs)))
     return failure();
 
-  if (auto core = getOperation()->getAttrOfType<IntegerAttr>("core_slot");
-      core && core.getInt() >= 20)
-    return emitOpError("expects core_slot in [0, 19]");
-  if (auto macro = getOperation()->getAttrOfType<IntegerAttr>("macro_slot");
-      macro && macro.getInt() >= 2)
-    return emitOpError("expects macro_slot in [0, 1]");
+  unsigned mappingAttrCount = countPresent(getOperation(), kMappingAttrs);
+  if (mappingAttrCount != 0 && mappingAttrCount != std::size(kMappingAttrs))
+    return emitOpError(
+        "requires core_slot, macro_slot, and cim.mapping together");
+  if (mappingAttrCount != 0 && scheduleAttrCount == 0)
+    return emitOpError("requires logical schedule before target mapping");
+  if (failed(verifyNonNegative(
+          getOperation(),
+          ArrayRef<llvm::StringLiteral>(kMappingAttrs).take_front(2))))
+    return failure();
+  if (Attribute mapping = getOperation()->getAttr("cim.mapping");
+      mapping && !isa<DictionaryAttr>(mapping))
+    return emitOpError("expects 'cim.mapping' to be a dictionary attribute");
   return success();
 }
 

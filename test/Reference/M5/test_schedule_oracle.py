@@ -10,15 +10,15 @@ import schedule_oracle as oracle
 F0_FIXTURE = Path(__file__).parents[2] / "Inputs/ONNX/int8_linear_model.onnx"
 
 
-SMALL_MAPPING = [
-    oracle.Work(0, 0, 0, 0, 0, 0, 0),
-    oracle.Work(1, 0, 0, 1, 0, 0, 1),
-    oracle.Work(2, 0, 1, 0, 1, 1, 0),
-    oracle.Work(3, 0, 1, 1, 1, 1, 1),
-    oracle.Work(4, 1, 0, 0, 2, 2, 0),
-    oracle.Work(5, 1, 0, 1, 2, 2, 1),
-    oracle.Work(6, 1, 1, 0, 3, 3, 0),
-    oracle.Work(7, 1, 1, 1, 3, 3, 1),
+SMALL_SCHEDULE = [
+    oracle.Work(0, 0, 0, 0, 0),
+    oracle.Work(1, 0, 0, 1, 0),
+    oracle.Work(2, 0, 1, 0, 1),
+    oracle.Work(3, 0, 1, 1, 1),
+    oracle.Work(4, 1, 0, 0, 2),
+    oracle.Work(5, 1, 0, 1, 2),
+    oracle.Work(6, 1, 1, 0, 3),
+    oracle.Work(7, 1, 1, 1, 3),
 ]
 
 
@@ -44,22 +44,22 @@ def replace_attr(text, line_index, attr, value):
 
 
 class ScheduleOracleTest(unittest.TestCase):
-    def test_m2_k65_n17_exact_mapping_and_operation_counts(self):
-        self.assertEqual(oracle.expected_schedule(2, 65, 17), SMALL_MAPPING)
-        oracle.validate_dump(render_dump(SMALL_MAPPING, 2, 65, 17), 2, 65, 17)
+    def test_m2_k65_n17_exact_schedule_and_operation_counts(self):
+        self.assertEqual(oracle.expected_schedule(2, 65, 17), SMALL_SCHEDULE)
+        oracle.validate_dump(render_dump(SMALL_SCHEDULE, 2, 65, 17), 2, 65, 17)
 
     def test_f0_boundaries_dense_ids_and_group_size(self):
         work = oracle.expected_schedule(32, 512, 1024)
         self.assertEqual(len(work), 16384)
-        self.assertEqual(work[0], oracle.Work(0, 0, 0, 0, 0, 0, 0))
+        self.assertEqual(work[0], oracle.Work(0, 0, 0, 0, 0))
         self.assertEqual(work[38:40], [
-            oracle.Work(38, 0, 4, 6, 19, 19, 0),
-            oracle.Work(39, 0, 4, 7, 19, 19, 1),
+            oracle.Work(38, 0, 4, 6, 19),
+            oracle.Work(39, 0, 4, 7, 19),
         ])
-        self.assertEqual(work[40], oracle.Work(40, 0, 5, 0, 20, 0, 0))
+        self.assertEqual(work[40], oracle.Work(40, 0, 5, 0, 20))
         self.assertEqual(work[-2:], [
-            oracle.Work(16382, 31, 63, 6, 8191, 11, 0),
-            oracle.Work(16383, 31, 63, 7, 8191, 11, 1),
+            oracle.Work(16382, 31, 63, 6, 8191),
+            oracle.Work(16383, 31, 63, 7, 8191),
         ])
         self.assertEqual([item.work_id for item in work], list(range(16384)))
         self.assertEqual(max(Counter(item.group_id for item in work).values()), 2)
@@ -87,21 +87,16 @@ class ScheduleOracleTest(unittest.TestCase):
         self.assertLessEqual(partial_max, oracle.I21_MAX)
 
     def test_fault_injection_is_rejected(self):
-        faults = ("work", "tile", "group", "core", "macro",
-                  "duplicate", "missing", "trunci")
+        faults = ("work", "tile", "group", "duplicate", "missing", "trunci")
         for fault in faults:
             with self.subTest(fault=fault):
-                dump = render_dump(SMALL_MAPPING, 2, 65, 17)
+                dump = render_dump(SMALL_SCHEDULE, 2, 65, 17)
                 if fault == "work":
                     dump = replace_attr(dump, 1, "work_id", 0)
                 elif fault == "tile":
                     dump = replace_attr(dump, 1, "k_tile", 0)
                 elif fault == "group":
                     dump = replace_attr(dump, 1, "group_id", 1)
-                elif fault == "core":
-                    dump = replace_attr(dump, 1, "core_slot", 1)
-                elif fault == "macro":
-                    dump = replace_attr(dump, 1, "macro_slot", 0)
                 elif fault == "duplicate":
                     dump = dump.splitlines()[0] + "\n" + dump
                 elif fault == "missing":

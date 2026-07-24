@@ -12,7 +12,7 @@ import numpy as np
 
 ATTRS = (
     "work_id", "m_tile", "n_tile", "k_tile",
-    "group_id", "core_slot", "macro_slot",
+    "group_id",
 )
 OP_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_.])"
@@ -32,8 +32,6 @@ class Work(NamedTuple):
     n_tile: int
     k_tile: int
     group_id: int
-    core_slot: int
-    macro_slot: int
 
 
 def ceil_div(value: int, divisor: int) -> int:
@@ -49,8 +47,7 @@ def expected_schedule(m: int, k: int, n: int) -> list[Work]:
             for k_tile in range(ceil_div(k, 64)):
                 work_id = len(work)
                 group_id = work_id // 2
-                work.append(Work(work_id, m_tile, n_tile, k_tile, group_id,
-                                 group_id % 20, work_id % 2))
+                work.append(Work(work_id, m_tile, n_tile, k_tile, group_id))
     return work
 
 
@@ -106,12 +103,6 @@ def validate_dump(text: str, m: int, k: int, n: int) -> list[Work]:
         raise OracleError("group_id values are not dense and strictly ordered")
     if max(map(len, groups.values()), default=0) > 2:
         raise OracleError("schedule group contains more than two work items")
-    for group_id, items in groups.items():
-        if len({item.core_slot for item in items}) != 1:
-            raise OracleError(f"group {group_id} spans multiple cores")
-        if [item.macro_slot for item in items] != list(range(len(items))):
-            raise OracleError(f"group {group_id} does not use Macro 0/1 order")
-
     counts = _operation_counts(text)
     k_tiles = ceil_div(k, 64)
     expected_counts = {
@@ -183,7 +174,7 @@ def verify_numeric(m: int, k: int, n: int, seed: int,
 
 def _format(item: Work) -> str:
     return (f"{item.work_id}:({item.m_tile},{item.n_tile},{item.k_tile})/"
-            f"g{item.group_id}/c{item.core_slot}/m{item.macro_slot}")
+            f"g{item.group_id}")
 
 
 def main() -> None:
@@ -202,16 +193,16 @@ def main() -> None:
     shape, partial_min, partial_max = verify_numeric(
         args.m, args.k, args.n, args.seed, weight)
     groups = ceil_div(len(work), 2)
-    core19 = [item for item in work if item.group_id == 19]
-    wrap = next((item for item in work if item.group_id == 20), None)
+    group19 = [item for item in work if item.group_id == 19]
+    next_group = next((item for item in work if item.group_id == 20), None)
     last_pair = work[-2:] if len(work) > 1 else work
     print(f"PASS software-only M={args.m} K={args.k} N={args.n} "
           f"work={len(work)} groups={groups} dtype=int32 shape={shape} "
           f"seed={args.seed} weight={'onnx' if args.onnx else 'random'} "
           f"partial=[{partial_min},{partial_max}]")
     print(f"boundaries first={_format(work[0])} "
-          f"core19=[{','.join(map(_format, core19)) or 'NA'}] "
-          f"wrap={_format(wrap) if wrap else 'NA'} "
+          f"group19=[{','.join(map(_format, group19)) or 'NA'}] "
+          f"next={_format(next_group) if next_group else 'NA'} "
           f"last=[{','.join(map(_format, last_pair))}]")
 
 

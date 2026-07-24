@@ -32,10 +32,7 @@ namespace {
 constexpr llvm::StringLiteral kMatMulIntegerMarker = "cim.onnx.matmul_integer";
 constexpr llvm::StringLiteral kMatTileMarker = "__cim_m_tile";
 constexpr llvm::StringLiteral kTileAttrs[] = {"m_tile", "n_tile", "k_tile"};
-constexpr llvm::StringLiteral kScheduleAttrs[] = {"work_id", "group_id",
-                                                  "core_slot", "macro_slot"};
-constexpr int64_t kCoreCount = 20;
-constexpr int64_t kMacrosPerCore = 2;
+constexpr llvm::StringLiteral kScheduleAttrs[] = {"work_id", "group_id"};
 
 struct TileIdentity {
   int64_t m;
@@ -94,9 +91,9 @@ std::optional<TileIdentity> readTileIdentity(VMMOp op) {
 }
 
 int64_t getGroupId(int64_t workId) {
-  // TODO(CTQ-031): Keep software-only groups as two-wide same-core barriers;
-  // form-cim-schedule tests cover this policy until cross-core waves are known.
-  return workId / kMacrosPerCore;
+  // TODO(CTQ-031): Keep software-only groups two-wide; M4 maps each group to
+  // one core until cross-core waves are known.
+  return workId / 2;
 }
 
 bool dependsOn(Operation *operation, Operation *possibleDependency) {
@@ -940,8 +937,8 @@ public:
 
       unsigned scheduleCount = countPresent(vmm, kScheduleAttrs);
       if (scheduleCount != 0 && scheduleCount != std::size(kScheduleAttrs)) {
-        vmm.emitOpError("materialize-cim-schedule requires complete work_id, "
-                        "group_id, core_slot, and macro_slot attributes");
+        vmm.emitOpError("materialize-cim-schedule requires complete work_id "
+                        "and group_id attributes");
         return signalPassFailure();
       }
       anyScheduled |= scheduleCount != 0;
@@ -1011,17 +1008,13 @@ public:
     for (auto [index, vmm] : llvm::enumerate(vmms)) {
       int64_t workId = static_cast<int64_t>(index);
       int64_t groupId = getGroupId(workId);
-      int64_t coreSlot = groupId % kCoreCount;
-      int64_t macroSlot = workId % kMacrosPerCore;
       if (allScheduled) {
         struct ExpectedAttribute {
           StringRef name;
           int64_t value;
         };
         ExpectedAttribute expected[] = {{"work_id", workId},
-                                        {"group_id", groupId},
-                                        {"core_slot", coreSlot},
-                                        {"macro_slot", macroSlot}};
+                                        {"group_id", groupId}};
         for (const ExpectedAttribute &attribute : expected) {
           auto actual = readNonNegativeI64(vmm, attribute.name);
           if (!actual)
@@ -1037,8 +1030,6 @@ public:
       }
       vmm->setAttr("work_id", builder.getI64IntegerAttr(workId));
       vmm->setAttr("group_id", builder.getI64IntegerAttr(groupId));
-      vmm->setAttr("core_slot", builder.getI64IntegerAttr(coreSlot));
-      vmm->setAttr("macro_slot", builder.getI64IntegerAttr(macroSlot));
     }
   }
 };

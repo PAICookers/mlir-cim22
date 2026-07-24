@@ -6,8 +6,7 @@
 func.func @mixed_schedule(%input: tensor<64xi8>,
                           %weight: tensor<16x64xi8>) {
   %0 = cim.vmm %input, %weight {m_tile = 0 : i64, n_tile = 0 : i64,
-      k_tile = 0 : i64, work_id = 0 : i64, group_id = 0 : i64,
-      core_slot = 0 : i64, macro_slot = 0 : i64}
+      k_tile = 0 : i64, work_id = 0 : i64, group_id = 0 : i64}
       : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
   %1 = cim.vmm %input, %weight {m_tile = 0 : i64, n_tile = 0 : i64,
       k_tile = 1 : i64}
@@ -20,13 +19,11 @@ func.func @mixed_schedule(%input: tensor<64xi8>,
 func.func @wrong_formula(%input: tensor<64xi8>,
                          %weight: tensor<16x64xi8>) {
   %0 = cim.vmm %input, %weight {m_tile = 0 : i64, n_tile = 0 : i64,
-      k_tile = 0 : i64, work_id = 0 : i64, group_id = 0 : i64,
-      core_slot = 0 : i64, macro_slot = 0 : i64}
+      k_tile = 0 : i64, work_id = 0 : i64, group_id = 0 : i64}
       : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
   // expected-error@+1 {{expects 'group_id' = 0, but got 1}}
   %1 = cim.vmm %input, %weight {m_tile = 0 : i64, n_tile = 0 : i64,
-      k_tile = 1 : i64, work_id = 1 : i64, group_id = 1 : i64,
-      core_slot = 0 : i64, macro_slot = 1 : i64}
+      k_tile = 1 : i64, work_id = 1 : i64, group_id = 1 : i64}
       : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
   return
 }

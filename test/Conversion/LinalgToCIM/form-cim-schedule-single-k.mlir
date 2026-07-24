@@ -8,7 +8,7 @@
 // Software-only evidence for one M1.8 K tile and one schedule work item.
 
 // CHECK-LABEL: func.func @single_k_tile
-// CHECK: %[[PARTIAL:.*]] = cim.vmm {{.*}} {core_slot = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_slot = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+// CHECK: %[[PARTIAL:.*]] = cim.vmm {{.*}} {group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
 // CHECK-NEXT: %[[EXTENDED:.*]] = arith.extsi %[[PARTIAL]] : tensor<16xi21> to tensor<16xi32>
 // CHECK: return {{.*}} : tensor<16x1xi32>
 func.func @single_k_tile(%input: tensor<64x1xi8>) -> tensor<16x1xi32> {
