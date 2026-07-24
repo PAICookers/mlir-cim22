@@ -10,6 +10,7 @@
 #include "CIM22/Dialect/CIM/IR/CIMDialect.h"
 #include "CIM22/Dialect/CIMFrame/IR/CIMFrameDialect.h"
 #include "CIM22/Dialect/CIMFrame/Transforms/Passes.h"
+#include "CIM22/Target/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -20,6 +21,7 @@
 int main(int argc, char **argv) {
   mlir::cim::registerPasses();
   mlir::cimframe::registerPasses();
+  mlir::cim22::target::registerPasses();
 
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect, mlir::cim::CIMDialect,

@@ -6,6 +6,7 @@ target_link_libraries(mlir-cim22-opt PRIVATE
   MLIRCIM22Dialect
   MLIRCIM22CIMFrameDialect
   MLIRCIM22CIMFrameTransforms
+  MLIRCIM22Target
   MLIRArithDialect
   MLIRFuncDialect
   MLIRLinalgDialect

@@ -26,9 +26,10 @@ def CIMFrame_StartInt8OnceOp
     followed by one once-work packet. It is not a complete invocation and has
     no hardware artifact translation.
 
-    TODO(CTQ-003): The route is supplied manually and only field magnitude is
-    checked. Project policy emits complete control for every command and never
-    relies on reset or retained state. TODO(CTQ-010): Add idle only if required.
+    The route remains supplied manually at this M2 boundary; M4
+    `map-cim-schedule` owns production route calculation and verification.
+    Project policy emits complete control for every command and never relies on
+    reset or retained state. TODO(CTQ-010): Add idle only if required.
   }];
   let arguments = (ins DenseI32ArrayAttr:$route, I32Attr:$macro);
   let assemblyFormat = "attr-dict";
@@ -42,9 +43,10 @@ def CIMFrame_WriteInt8WeightsOp
     An effectful command carrying 256 opaque i32 words in semantic CIM address
     order. It does not define frame payload encoding or a deployable artifact.
 
-    TODO(CTQ-003): The route is supplied manually and only field magnitude is
-    checked. Project policy emits complete control for every command and never
-    relies on reset or retained state. TODO(CTQ-010): Add idle only if required.
+    The route remains supplied manually at this M2 boundary; M4
+    `map-cim-schedule` owns production route calculation and verification.
+    Project policy emits complete control for every command and never relies on
+    reset or retained state. TODO(CTQ-010): Add idle only if required.
     FIXME(CTQ-016): The logical weight-to-word mapping remains provisional.
     FIXME(CTQ-020): Supplier fixture agreement is not board verification.
   }];
