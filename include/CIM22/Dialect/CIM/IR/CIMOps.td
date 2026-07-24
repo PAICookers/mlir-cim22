@@ -22,10 +22,10 @@ def CIM_VMMOp : CIM_Op<"vmm", [Pure]> {
     values and each result is represented by a signless `i21` value.
 
     Before M5 scheduling this operation may carry zero-based `m_tile`,
-    `n_tile`, and `k_tile` identity. After M5 scheduling it additionally
-    carries a logical work/barrier identifier and a core/Macro resource slot.
-    These attributes do not model physical routing, weight layout, frames, or
-    runtime behavior.
+    `n_tile`, and `k_tile` identity. M5 adds logical `work_id` and `group_id`.
+    M4 then adds profile-local `core_slot` and `macro_slot` placement plus a
+    verified `cim.mapping` semantic route result. These attributes do not model
+    physical addresses, weight layout, frames, or runtime behavior.
 
     TODO(CTQ-013): Confirm the signed INT8 input domain.
     FIXME(CTQ-013): Overflow behavior is not a deployable contract.
