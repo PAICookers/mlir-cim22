@@ -63,7 +63,7 @@ set_target_properties(check-mlir-cim22 PROPERTIES FOLDER "Tests")
 add_lit_testsuites(MLIRCIM22 ${CMAKE_CURRENT_SOURCE_DIR}
   BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${MLIRCIM22_TEST_DEPENDS}
-  SKIP "^Conversion$" "^Dialect/CIM$"
+  SKIP "^Conversion$" "^Dialect/CIM$" "^Target$"
 )
 
 add_lit_target(check-mlircim22-conversion
@@ -78,10 +78,17 @@ add_lit_target(check-mlircim22-dialect-cim
   DEPENDS ${MLIRCIM22_TEST_DEPENDS}
   ARGS --filter=Dialect/CIM/
 )
+add_lit_target(check-mlircim22-target
+  "Running lit suite ${CMAKE_CURRENT_SOURCE_DIR}/Target"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS FileCheck mlir-cim22-opt
+  ARGS --filter=Target/
+)
 get_subproject_title(mlircim22_subproject_title)
 set_target_properties(
   check-mlircim22-conversion
   check-mlircim22-dialect-cim
+  check-mlircim22-target
   PROPERTIES
   FOLDER "${mlircim22_subproject_title}/Tests/LIT Testsuites"
 )
