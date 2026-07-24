@@ -11,6 +11,7 @@
 
 include "CIM22/Dialect/CIM/IR/CIMDialect.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/IR/SymbolInterfaces.td"
 
 def CIM_I21 : I<21>;
 
@@ -39,6 +40,57 @@ def CIM_VMMOp : CIM_Op<"vmm", [Pure]> {
     $input `,` $weight attr-dict `:` type($input) `,` type($weight)
         `->` type($result)
   }];
+  let hasVerifier = 1;
+}
+
+def CIM_StaticWeightOp
+    : CIM_Op<"static_weight", [HasParent<"ModuleOp">, Symbol]> {
+  let summary = "Define one immutable INT8 VMM weight tile";
+  let arguments = (ins SymbolNameAttr:$sym_name,
+      SignlessIntElementsAttr<8>:$value);
+  let assemblyFormat = "$sym_name `=` $value attr-dict";
+  let hasVerifier = 1;
+}
+
+def CIM_ConfigureInputOp
+    : CIM_Op<"configure_input", [HasParent<"func::FuncOp">]> {
+  let summary = "Configure one mapped Macro input tile";
+  let arguments = (ins RankedTensorOf<[I8]>:$input);
+  let assemblyFormat = "$input attr-dict `:` type($input)";
+  let hasVerifier = 1;
+}
+
+def CIM_ConfigureWeightOp
+    : CIM_Op<"configure_weight", [HasParent<"func::FuncOp">]> {
+  let summary = "Configure one mapped Macro static weight tile";
+  let arguments = (ins SymbolRefAttr:$resource);
+  let assemblyFormat = "$resource attr-dict";
+  let hasVerifier = 1;
+}
+
+def CIM_DispatchOp : CIM_Op<"dispatch", [HasParent<"func::FuncOp">]> {
+  let summary = "Describe one mapped VMM dispatch";
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+def CIM_OnceOp : CIM_Op<"once", [HasParent<"func::FuncOp">]> {
+  let summary = "Trigger one mapped core group once";
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+def CIM_ReadbackOp : CIM_Op<"readback", [HasParent<"func::FuncOp">]> {
+  let summary = "Read back one mapped i21 VMM partial";
+  let results = (outs RankedTensorOf<[CIM_I21]>:$result);
+  let assemblyFormat = "attr-dict `:` type($result)";
+  let hasVerifier = 1;
+}
+
+def CIM_GroupBarrierOp
+    : CIM_Op<"group_barrier", [HasParent<"func::FuncOp">]> {
+  let summary = "Complete one mapped invocation group";
+  let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
 }
 

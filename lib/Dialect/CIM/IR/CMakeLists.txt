@@ -9,6 +9,8 @@ add_mlir_dialect_library(MLIRCIM22Dialect
   MLIRCIMOpsIncGen
 
   LINK_LIBS PUBLIC
+  MLIRFuncDialect
   MLIRIR
   MLIRSideEffectInterfaces
+  MLIRSupport
 )

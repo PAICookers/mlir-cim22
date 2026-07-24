@@ -9,10 +9,13 @@
 #ifndef CIM22_DIALECT_CIM_IR_CIMOPS_H
 #define CIM22_DIALECT_CIM_IR_CIMOPS_H
 
+#include "mlir/Bytecode/BytecodeOpInterface.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #define GET_OP_CLASSES

@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Transforms/DialectConversion.h"
 
 #include "llvm/ADT/DenseSet.h"
@@ -25,6 +26,7 @@
 
 namespace mlir::cim {
 #define GEN_PASS_DEF_FORMCIMPROGRAM
+#define GEN_PASS_DEF_MATERIALIZECIMINVOCATION
 #define GEN_PASS_DEF_MATERIALIZECIMSCHEDULE
 #include "CIM22/Conversion/LinalgToCIM/Passes.h.inc"
 
@@ -39,6 +41,76 @@ struct TileIdentity {
   int64_t n;
   int64_t k;
 };
+
+FailureOr<DenseElementsAttr> evaluateDenseTensor(Value value) {
+  if (auto constant = value.getDefiningOp<arith::ConstantOp>())
+    if (auto elements = dyn_cast<DenseElementsAttr>(constant.getValue()))
+      return elements;
+
+  if (auto slice = value.getDefiningOp<tensor::ExtractSliceOp>()) {
+    FailureOr<DenseElementsAttr> source =
+        evaluateDenseTensor(slice.getSource());
+    if (failed(source))
+      return failure();
+    auto resultType = dyn_cast<RankedTensorType>(slice.getType());
+    auto sourceType = dyn_cast<RankedTensorType>((*source).getType());
+    ArrayRef<int64_t> offsets = slice.getStaticOffsets();
+    ArrayRef<int64_t> sizes = slice.getStaticSizes();
+    ArrayRef<int64_t> strides = slice.getStaticStrides();
+    if (!resultType || !sourceType || resultType.getRank() != 2 ||
+        sourceType.getRank() != 2 || offsets.size() != 2 || sizes.size() != 2 ||
+        strides.size() != 2 ||
+        llvm::is_contained(offsets, ShapedType::kDynamic) ||
+        llvm::is_contained(sizes, ShapedType::kDynamic) ||
+        llvm::is_contained(strides, ShapedType::kDynamic))
+      return failure();
+
+    SmallVector<APInt> sourceValues((*source).getValues<APInt>());
+    SmallVector<APInt> resultValues;
+    resultValues.reserve(resultType.getNumElements());
+    int64_t sourceColumns = sourceType.getDimSize(1);
+    for (int64_t row = 0; row < sizes[0]; ++row)
+      for (int64_t column = 0; column < sizes[1]; ++column) {
+        int64_t sourceRow = offsets[0] + row * strides[0];
+        int64_t sourceColumn = offsets[1] + column * strides[1];
+        resultValues.push_back(
+            sourceValues[sourceRow * sourceColumns + sourceColumn]);
+      }
+    return DenseElementsAttr::get(resultType, resultValues);
+  }
+
+  if (auto pad = value.getDefiningOp<tensor::PadOp>()) {
+    FailureOr<DenseElementsAttr> source = evaluateDenseTensor(pad.getSource());
+    if (failed(source))
+      return failure();
+    auto resultType = dyn_cast<RankedTensorType>(pad.getType());
+    auto sourceType = dyn_cast<RankedTensorType>((*source).getType());
+    ArrayRef<int64_t> low = pad.getStaticLow();
+    ArrayRef<int64_t> high = pad.getStaticHigh();
+    Value padding = pad.getConstantPaddingValue();
+    auto constant = padding ? padding.getDefiningOp<arith::ConstantOp>()
+                            : arith::ConstantOp{};
+    auto scalar =
+        constant ? dyn_cast<IntegerAttr>(constant.getValue()) : IntegerAttr{};
+    if (!resultType || !sourceType || resultType.getRank() != 2 ||
+        sourceType.getRank() != 2 || low.size() != 2 || high.size() != 2 ||
+        llvm::is_contained(low, ShapedType::kDynamic) ||
+        llvm::is_contained(high, ShapedType::kDynamic) || !scalar)
+      return failure();
+
+    SmallVector<APInt> sourceValues((*source).getValues<APInt>());
+    SmallVector<APInt> resultValues(resultType.getNumElements(),
+                                    scalar.getValue());
+    int64_t sourceColumns = sourceType.getDimSize(1);
+    int64_t resultColumns = resultType.getDimSize(1);
+    for (int64_t row = 0; row < sourceType.getDimSize(0); ++row)
+      for (int64_t column = 0; column < sourceColumns; ++column)
+        resultValues[(row + low[0]) * resultColumns + column + low[1]] =
+            sourceValues[row * sourceColumns + column];
+    return DenseElementsAttr::get(resultType, resultValues);
+  }
+  return failure();
+}
 
 int64_t getMatTile(Operation *op) {
   if (auto attribute = op->getAttrOfType<IntegerAttr>(kMatTileMarker))
@@ -1030,6 +1102,299 @@ public:
       }
       vmm->setAttr("work_id", builder.getI64IntegerAttr(workId));
       vmm->setAttr("group_id", builder.getI64IntegerAttr(groupId));
+    }
+  }
+};
+
+constexpr llvm::StringLiteral kInvocationProvenanceAttrs[] = {
+    "m_tile",   "n_tile",    "k_tile",     "work_id",
+    "group_id", "core_slot", "macro_slot", "cim.mapping"};
+
+void copyInvocationProvenance(Operation *from, Operation *to) {
+  for (StringRef name : kInvocationProvenanceAttrs)
+    to->setAttr(name, from->getAttr(name));
+}
+
+bool isInvocationOp(Operation *op) {
+  return isa<ConfigureInputOp, ConfigureWeightOp, DispatchOp, OnceOp,
+             ReadbackOp, GroupBarrierOp>(op);
+}
+
+LogicalResult verifySameInvocationWork(Operation *expected, Operation *actual) {
+  for (StringRef name : kInvocationProvenanceAttrs)
+    if (expected->getAttr(name) != actual->getAttr(name))
+      return actual->emitOpError("expects '")
+             << name << "' to match its configure_input operation";
+  return success();
+}
+
+LogicalResult verifyInvocationStructure(func::FuncOp function) {
+  if (!function.getBody().hasOneBlock())
+    return function.emitError(
+        "materialize-cim-invocation requires one straight-line block");
+
+  SmallVector<Operation *> operations;
+  for (Operation &op : function.getBody().front())
+    if (isInvocationOp(&op))
+      operations.push_back(&op);
+
+  size_t cursor = 0;
+  int64_t expectedWork = 0;
+  int64_t expectedGroup = 0;
+  while (cursor < operations.size()) {
+    SmallVector<ConfigureInputOp> inputs;
+    while (cursor < operations.size() &&
+           isa<ConfigureInputOp>(operations[cursor]) && inputs.size() < 2) {
+      auto input = cast<ConfigureInputOp>(operations[cursor++]);
+      if (cursor >= operations.size() ||
+          !isa<ConfigureWeightOp>(operations[cursor]))
+        return input.emitOpError(
+            "must be followed by a per-Macro configure_weight operation");
+      Operation *weight = operations[cursor++];
+      if (failed(verifySameInvocationWork(input, weight)))
+        return failure();
+      auto work = input->getAttrOfType<IntegerAttr>("work_id");
+      auto group = input->getAttrOfType<IntegerAttr>("group_id");
+      auto macro = input->getAttrOfType<IntegerAttr>("macro_slot");
+      if (!work || work.getInt() != expectedWork || !group ||
+          group.getInt() != expectedGroup || !macro ||
+          macro.getInt() != static_cast<int64_t>(inputs.size()))
+        return input.emitOpError(
+            "does not match contiguous work/group/Macro ordering");
+      inputs.push_back(input);
+      ++expectedWork;
+    }
+    if (inputs.empty())
+      return operations[cursor]->emitOpError(
+          "expected group to start with configure_input/configure_weight");
+
+    for (ConfigureInputOp input : inputs) {
+      if (cursor >= operations.size() || !isa<DispatchOp>(operations[cursor]))
+        return input.emitOpError(
+            "expects one dispatch for each configured Macro payload");
+      if (failed(verifySameInvocationWork(input, operations[cursor++])))
+        return failure();
+    }
+    if (cursor >= operations.size() || !isa<OnceOp>(operations[cursor]))
+      return inputs.front().emitOpError(
+          "expects exactly one core-level once after all dispatches");
+    Operation *once = operations[cursor++];
+    if (once->getAttr("group_id") != inputs.front()->getAttr("group_id") ||
+        once->getAttr("core_slot") != inputs.front()->getAttr("core_slot") ||
+        once->getAttr("cim.mapping") != inputs.front()->getAttr("cim.mapping"))
+      return once->emitOpError("does not match its invocation group");
+
+    for (ConfigureInputOp input : inputs) {
+      if (cursor >= operations.size() || !isa<ReadbackOp>(operations[cursor]))
+        return input.emitOpError(
+            "expects one readback for each configured Macro payload");
+      if (failed(verifySameInvocationWork(input, operations[cursor++])))
+        return failure();
+    }
+    if (cursor >= operations.size() || !isa<GroupBarrierOp>(operations[cursor]))
+      return inputs.front().emitOpError("expects a terminating group barrier");
+    Operation *barrier = operations[cursor++];
+    if (barrier->getAttr("group_id") != inputs.front()->getAttr("group_id"))
+      return barrier->emitOpError("does not match its invocation group");
+    if (inputs.size() == 1 && cursor != operations.size())
+      return inputs.front().emitOpError(
+          "single-Macro group is only valid as the final group");
+    ++expectedGroup;
+  }
+  return success();
+}
+
+class MaterializeCIMInvocation final
+    : public impl::MaterializeCIMInvocationBase<MaterializeCIMInvocation> {
+public:
+  using Base::Base;
+
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    struct WorkPlan {
+      VMMOp vmm;
+      DenseIntElementsAttr weight;
+      int64_t workId;
+      int64_t groupId;
+      int64_t coreSlot;
+      int64_t macroSlot;
+    };
+    struct FunctionPlan {
+      func::FuncOp function;
+      SmallVector<WorkPlan> works;
+    };
+    SmallVector<FunctionPlan> plans;
+
+    for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+      SmallVector<VMMOp> vmms;
+      function.walk([&](VMMOp op) { vmms.push_back(op); });
+      bool hasInvocation = false;
+      function.walk(
+          [&](Operation *op) { hasInvocation |= isInvocationOp(op); });
+      if (vmms.empty()) {
+        if (hasInvocation) {
+          auto schema = function->getAttrOfType<IntegerAttr>(
+              "cim.artifact_schema_version");
+          if (!schema || !schema.getType().isSignlessInteger(64) ||
+              schema.getInt() != 1) {
+            function.emitError("materialize-cim-invocation expects "
+                               "cim.artifact_schema_version = 1 : i64");
+            return signalPassFailure();
+          }
+          if (failed(verifyInvocationStructure(function)))
+            return signalPassFailure();
+        }
+        continue;
+      }
+      if (hasInvocation) {
+        function.emitError(
+            "materialize-cim-invocation rejects mixed VMM and invocation ops");
+        return signalPassFailure();
+      }
+      if (!function.getBody().hasOneBlock()) {
+        function.emitError(
+            "materialize-cim-invocation requires one straight-line block");
+        return signalPassFailure();
+      }
+      if (function->hasAttr("cim.artifact_schema_version")) {
+        function.emitError("materialize-cim-invocation rejects stale artifact "
+                           "schema attribute");
+        return signalPassFailure();
+      }
+
+      FunctionPlan plan{function, {}};
+      plan.works.reserve(vmms.size());
+      for (auto [index, vmm] : llvm::enumerate(vmms)) {
+        if (countPresent(vmm, kInvocationProvenanceAttrs) !=
+            std::size(kInvocationProvenanceAttrs)) {
+          vmm.emitOpError("materialize-cim-invocation requires complete mapped "
+                          "work provenance");
+          return signalPassFailure();
+        }
+        auto workId = readNonNegativeI64(vmm, "work_id");
+        auto groupId = readNonNegativeI64(vmm, "group_id");
+        auto coreSlot = readNonNegativeI64(vmm, "core_slot");
+        auto macroSlot = readNonNegativeI64(vmm, "macro_slot");
+        if (!workId || !groupId || !coreSlot || !macroSlot)
+          return signalPassFailure();
+        if (*workId != static_cast<int64_t>(index) || *groupId != *workId / 2 ||
+            *macroSlot < 0 || *macroSlot > 1) {
+          vmm.emitOpError(
+              "materialize-cim-invocation rejects invalid work placement");
+          return signalPassFailure();
+        }
+        FailureOr<DenseElementsAttr> weight =
+            evaluateDenseTensor(vmm.getWeight());
+        if (failed(weight) ||
+            (*weight).getType() != vmm.getWeight().getType()) {
+          vmm.emitOpError("materialize-cim-invocation requires a compile-time "
+                          "constant weight tile");
+          return signalPassFailure();
+        }
+        auto intWeight = dyn_cast<DenseIntElementsAttr>(*weight);
+        if (!intWeight) {
+          vmm.emitOpError("materialize-cim-invocation requires INT8 weight "
+                          "elements");
+          return signalPassFailure();
+        }
+        plan.works.push_back(
+            {vmm, intWeight, *workId, *groupId, *coreSlot, *macroSlot});
+      }
+
+      for (size_t index = 0; index < plan.works.size(); index += 2) {
+        WorkPlan &first = plan.works[index];
+        if (index + 1 == plan.works.size())
+          continue;
+        WorkPlan &second = plan.works[index + 1];
+        if (first.groupId != second.groupId ||
+            first.coreSlot != second.coreSlot || first.macroSlot != 0 ||
+            second.macroSlot != 1 ||
+            first.vmm->getAttr("cim.mapping") !=
+                second.vmm->getAttr("cim.mapping")) {
+          second.vmm.emitOpError(
+              "materialize-cim-invocation requires a same-route Macro 0/1 "
+              "pair per two-work group");
+          return signalPassFailure();
+        }
+      }
+      plans.push_back(std::move(plan));
+    }
+
+    OpBuilder moduleBuilder(module.getContext());
+    moduleBuilder.setInsertionPointToStart(module.getBody());
+    for (FunctionPlan &plan : plans) {
+      SmallVector<FlatSymbolRefAttr> resources;
+      resources.reserve(plan.works.size());
+      for (WorkPlan &work : plan.works) {
+        std::string name =
+            (Twine("__cim_weight_") + plan.function.getSymName() + "_w" +
+             Twine(work.workId))
+                .str();
+        StaticWeightOp::create(moduleBuilder, work.vmm.getLoc(), name,
+                               work.weight);
+        resources.push_back(FlatSymbolRefAttr::get(module.getContext(), name));
+      }
+
+      plan.function->setAttr("cim.artifact_schema_version",
+                             moduleBuilder.getI64IntegerAttr(1));
+      for (size_t index = 0; index < plan.works.size(); index += 2) {
+        size_t count = std::min<size_t>(2, plan.works.size() - index);
+        WorkPlan &last = plan.works[index + count - 1];
+        SmallVector<Operation *> earlyUsers;
+        if (count == 2) {
+          for (Operation *op = plan.works[index].vmm->getNextNode();
+               op && op != last.vmm.getOperation(); op = op->getNextNode())
+            if (dependsOn(op, plan.works[index].vmm))
+              earlyUsers.push_back(op);
+        }
+
+        OpBuilder builder(last.vmm);
+        SmallVector<ReadbackOp> readbacks;
+        readbacks.reserve(count);
+        for (size_t offset = 0; offset < count; ++offset) {
+          WorkPlan &work = plan.works[index + offset];
+          auto input = ConfigureInputOp::create(builder, work.vmm.getLoc(),
+                                                work.vmm.getInput());
+          copyInvocationProvenance(work.vmm, input);
+          auto weight = ConfigureWeightOp::create(builder, work.vmm.getLoc(),
+                                                  resources[index + offset]);
+          copyInvocationProvenance(work.vmm, weight);
+        }
+        for (size_t offset = 0; offset < count; ++offset) {
+          WorkPlan &work = plan.works[index + offset];
+          auto dispatch = DispatchOp::create(builder, work.vmm.getLoc());
+          copyInvocationProvenance(work.vmm, dispatch);
+        }
+        WorkPlan &first = plan.works[index];
+        auto once = OnceOp::create(builder, first.vmm.getLoc());
+        once->setAttr("group_id", first.vmm->getAttr("group_id"));
+        once->setAttr("core_slot", first.vmm->getAttr("core_slot"));
+        once->setAttr("cim.mapping", first.vmm->getAttr("cim.mapping"));
+        for (size_t offset = 0; offset < count; ++offset) {
+          WorkPlan &work = plan.works[index + offset];
+          auto readback = ReadbackOp::create(builder, work.vmm.getLoc(),
+                                             work.vmm.getResult().getType());
+          copyInvocationProvenance(work.vmm, readback);
+          readbacks.push_back(readback);
+        }
+        auto barrier = GroupBarrierOp::create(builder, first.vmm.getLoc());
+        barrier->setAttr("group_id", first.vmm->getAttr("group_id"));
+
+        Operation *anchor = barrier;
+        for (Operation *op : earlyUsers) {
+          op->moveAfter(anchor);
+          anchor = op;
+        }
+        for (size_t offset = 0; offset < count; ++offset) {
+          WorkPlan &work = plan.works[index + offset];
+          work.vmm.getResult().replaceAllUsesWith(
+              readbacks[offset].getResult());
+        }
+        for (size_t offset = 0; offset < count; ++offset)
+          plan.works[index + offset].vmm.erase();
+      }
+      if (failed(verifyInvocationStructure(plan.function)))
+        return signalPassFailure();
     }
   }
 };
