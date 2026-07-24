@@ -1,0 +1,9 @@
+// RUN: mlir-cim22-onnx-import %S/../../Inputs/ONNX/int8_linear_model.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t
+// RUN: %python %S/../../Reference/M5/schedule_oracle.py %t --m 32 --k 512 --n 1024 --onnx %S/../../Inputs/ONNX/int8_linear_model.onnx | FileCheck %s --check-prefix=M5
+// RUN: %python %S/../../Reference/M4/route_oracle.py %t --require-all-slots | FileCheck %s --check-prefix=M4
+
+// M5: PASS software-only M=32 K=512 N=1024 work=16384 groups=8192 dtype=int32 shape=(32, 1024) seed=2205 weight=onnx
+// M5: boundaries first=0:(0,0,0)/g0/c0/m0 core19=[38:(0,4,6)/g19/c19/m0,39:(0,4,7)/g19/c19/m1] wrap=40:(0,5,0)/g20/c0/m0 last=[16382:(31,63,6)/g8191/c11/m0,16383:(31,63,7)/g8191/c11/m1]
+
+// M4: PASS software-only profile=cim22-4x5-v1 version=1 work=16384 cores=20 macros=[0,1]
+// M4: boundaries zero=w0/c0/m0 route=[0,0,0,0,0,0] corner=w38/c19/m0 route=[3,1,0,0,0,0]
