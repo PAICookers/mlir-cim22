@@ -76,12 +76,17 @@ LogicalResult verifyGroupOperation(Operation *op, bool withMapping) {
   if (!group || !group.getType().isSignlessInteger(64) || group.getInt() < 0)
     return op->emitOpError("expects non-negative i64 group_id");
   if (!withMapping)
-    return success();
+    return countPresent(op, {"m_tile", "n_tile", "k_tile", "work_id",
+                             "core_slot", "macro_slot", "cim.mapping"}) == 0
+               ? success()
+               : op->emitOpError("must carry only group_id provenance");
   auto core = op->getAttrOfType<IntegerAttr>("core_slot");
   if (!core || !core.getType().isSignlessInteger(64) || core.getInt() < 0)
     return op->emitOpError("expects non-negative i64 core_slot");
-  if (op->hasAttr("macro_slot"))
-    return op->emitOpError("must not carry macro_slot");
+  if (countPresent(
+          op, {"m_tile", "n_tile", "k_tile", "work_id", "macro_slot"}) != 0)
+    return op->emitOpError(
+        "must carry only group_id, core_slot, and cim.mapping provenance");
   return verifyMapping(op);
 }
 } // namespace
@@ -135,6 +140,8 @@ LogicalResult StaticWeightOp::verify() {
   if (!type || type.getShape() != llvm::ArrayRef<int64_t>{16, 64} ||
       !type.getElementType().isSignlessInteger(8))
     return emitOpError("expects value type tensor<16x64xi8>");
+  if (countPresent(getOperation(), kInvocationAttrs) != 0)
+    return emitOpError("must not carry work invocation provenance");
   return success();
 }
 
