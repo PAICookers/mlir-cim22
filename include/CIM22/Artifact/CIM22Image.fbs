@@ -1,0 +1,36 @@
+namespace cim22.image;
+
+table LogicalSlotRef {
+  work_id:ulong;
+  logical_slot:uint;
+}
+
+table SegmentRef {
+  group_id:ulong;
+  host_to_cim:[LogicalSlotRef] (required);
+  cim_to_host:[LogicalSlotRef] (required);
+}
+
+table OpaqueSection {
+  id:uint;
+  offset:ulong;
+  size:ulong;
+  sha256:[ubyte] (required);
+}
+
+table ProgramImage {
+  format_major:ushort;
+  format_minor:ushort;
+  target_profile:string (required);
+  target_profile_version:ulong;
+  invocation_schema_version:ulong;
+  logical_view_schema_version:ulong;
+  entry_function:string (required);
+  segments:[SegmentRef] (required);
+  section_alignment:uint = 8;
+  sections:[OpaqueSection] (required);
+}
+
+root_type ProgramImage;
+file_identifier "C22I";
+file_extension "cim22img";
