@@ -1,0 +1,7 @@
+add_subdirectory(Support)
+add_subdirectory(Dialect/CIM/IR)
+add_subdirectory(Dialect/CIMFrame/IR)
+add_subdirectory(Dialect/CIMFrame/Transforms)
+add_subdirectory(Conversion/LinalgToCIM)
+add_subdirectory(Target)
+add_subdirectory(Frontend/ONNX)

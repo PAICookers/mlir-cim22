@@ -16,14 +16,28 @@ implementation is software-only and is not a hardware deployment tool.
 - CMake 3.28 or newer
 - C++17 compiler
 - Ninja
-- Protobuf 4.25.1 or newer, including `protoc` and CMake config targets
 - Python 3 interpreter, used by the upstream ONNX protobuf generator
 - Python test packages declared in `requirements-test.txt`
 
 The default configuration downloads the pinned ONNX v1.21.0 source archive,
-verifies its SHA-256, and builds only the required `onnx_proto` target. To use
-an installed ONNX v1.21.0 package instead, configure with
+verifies its SHA-256, and lets ONNX build its matching Protobuf toolchain and
+transitive dependencies. To use an installed ONNX v1.21.0 package instead,
+configure with
 `-DMLIRCIM22_USE_SYSTEM_ONNX=ON -DONNX_DIR=/path/to/lib/cmake/ONNX`.
+The installed package is responsible for exporting its complete transitive
+link interface.
+
+For an offline source build, pre-populate CMake's FetchContent cache or set the
+standard `FETCHCONTENT_SOURCE_DIR_ONNX`, `FETCHCONTENT_SOURCE_DIR_PROTOBUF`, and
+`FETCHCONTENT_SOURCE_DIR_ABSL` cache variables.
+
+After changing dependency profiles in an existing build directory, clear the
+cached ONNX package hint once and reconfigure:
+
+```sh
+cmake -S . -B build -UONNX_DIR \
+  -DMLIR_DIR=/path/to/llvm-project/build/lib/cmake/mlir
+```
 
 ## Build and test
 

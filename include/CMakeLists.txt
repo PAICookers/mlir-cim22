@@ -1,0 +1,5 @@
+add_subdirectory(CIM22/Target)
+add_subdirectory(CIM22/Conversion/LinalgToCIM)
+add_subdirectory(CIM22/Dialect/CIM/IR)
+add_subdirectory(CIM22/Dialect/CIMFrame/IR)
+add_subdirectory(CIM22/Dialect/CIMFrame/Transforms)
