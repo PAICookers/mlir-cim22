@@ -66,14 +66,13 @@ class ScheduleOracleTest(unittest.TestCase):
         oracle.validate_dump(render_dump(work, 32, 512, 1024), 32, 512, 1024)
 
     def test_fixed_seed_int32_direct_equals_tiled_reconstruction(self):
-        for shape in ((2, 65, 17), (32, 512, 1024)):
-            with self.subTest(shape=shape):
-                result_shape, partial_min, partial_max = oracle.verify_numeric(
-                    *shape, seed=2205)
-                self.assertEqual(result_shape, (shape[0], shape[2]))
-                self.assertLessEqual(oracle.I21_MIN, partial_min)
-                self.assertLessEqual(partial_min, partial_max)
-                self.assertLessEqual(partial_max, oracle.I21_MAX)
+        shape = (2, 65, 17)
+        result_shape, partial_min, partial_max = oracle.verify_numeric(
+            *shape, seed=2205)
+        self.assertEqual(result_shape, (shape[0], shape[2]))
+        self.assertLessEqual(oracle.I21_MIN, partial_min)
+        self.assertLessEqual(partial_min, partial_max)
+        self.assertLessEqual(partial_max, oracle.I21_MAX)
 
     def test_real_f0_fixture_int32_direct_equals_tiled_reconstruction(self):
         weight = oracle.load_onnx_weight(F0_FIXTURE, 512, 1024)

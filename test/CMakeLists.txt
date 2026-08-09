@@ -75,7 +75,7 @@ set_target_properties(check-mlir-cim22 PROPERTIES FOLDER "Tests")
 add_lit_testsuites(MLIRCIM22 ${CMAKE_CURRENT_SOURCE_DIR}
   BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${MLIRCIM22_TEST_DEPENDS}
-  SKIP "^Conversion$" "^Dialect/CIM$" "^Target$"
+  SKIP "^Conversion($|/)" "^Dialect/CIM$" "^Target($|/)" "__pycache__"
 )
 
 add_lit_target(check-mlircim22-conversion

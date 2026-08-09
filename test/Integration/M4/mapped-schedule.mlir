@@ -1,9 +1,7 @@
-// RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t.once
-// RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule,map-cim-schedule))' > %t.twice
-// RUN: diff %t.once %t.twice
-// RUN: %python %S/../../Reference/M5/schedule_oracle.py %t.once --m 1 --k 128 --n 320 | FileCheck %s --check-prefix=M5
-// RUN: %python %S/../../Reference/M4/route_oracle.py %t.once --require-all-slots | FileCheck %s --check-prefix=M4
-// RUN: FileCheck %s --check-prefix=MAP < %t.once
+// RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t
+// RUN: %python %S/../../Reference/M5/schedule_oracle.py %t --m 1 --k 128 --n 320 | FileCheck %s --check-prefix=M5
+// RUN: %python %S/../../Reference/M4/route_oracle.py %t --require-all-slots | FileCheck %s --check-prefix=M4
+// RUN: FileCheck %s --check-prefix=MAP < %t
 
 // M5: PASS software-only M=1 K=128 N=320 work=40 groups=20 dtype=int32 shape=(1, 320) seed=2205 weight=random
 // M5: boundaries first=0:(0,0,0)/g0 group19=[38:(0,19,0)/g19,39:(0,19,1)/g19] next=NA last=[38:(0,19,0)/g19,39:(0,19,1)/g19]

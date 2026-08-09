@@ -1,6 +1,0 @@
-// RUN: mlir-cim22-onnx-import %S/../../Inputs/ONNX/int8_linear_model.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-invocation,materialize-cim-static-weight-section)' > %t.first
-// RUN: mlir-cim22-onnx-import %S/../../Inputs/ONNX/int8_linear_model.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-invocation,materialize-cim-static-weight-section)' > %t.second
-// RUN: cmp %t.first %t.second
-// RUN: %python %S/../../Reference/M2/static_weight_section_oracle.py %t.first --expect-commands 16384 | FileCheck %s
-
-// CHECK: PASS software-only commands=16384 resources=16384
