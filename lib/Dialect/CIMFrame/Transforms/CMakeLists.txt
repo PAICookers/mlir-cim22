@@ -8,7 +8,9 @@ add_mlir_library(MLIRCIM22CIMFrameTransforms
   MLIRCIM22CIMFramePassesIncGen
 
   LINK_LIBS PUBLIC
+  MLIRCIM22Dialect
   MLIRCIM22CIMFrameDialect
+  MLIRCIM22Support
   MLIRIR
   MLIRPass
   MLIRTransforms

@@ -8,15 +8,256 @@
 
 #include "CIM22/Dialect/CIMFrame/Transforms/Passes.h"
 
+#include "CIM22/Dialect/CIM/IR/CIMOps.h"
 #include "CIM22/Dialect/CIMFrame/IR/CIMFrameDialect.h"
+#include "CIM22/Support/Int8WeightLayout.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Transforms/DialectConversion.h"
 
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/bit.h"
+
+#include <array>
+#include <cstdint>
+
 namespace mlir::cimframe {
+#define GEN_PASS_DEF_MATERIALIZECIMSTATICWEIGHTSECTION
 #define GEN_PASS_DEF_LOWERCIMFRAMECOMMANDSTOPACKETS
 #define GEN_PASS_DEF_VERIFYCIMFRAME
 #include "CIM22/Dialect/CIMFrame/Transforms/Passes.h.inc"
 
 namespace {
+constexpr llvm::StringLiteral kProvenanceAttrs[] = {
+    "m_tile",   "n_tile",    "k_tile",     "work_id",
+    "group_id", "core_slot", "macro_slot", "cim.mapping"};
+
+struct StaticWeightCommandPlan {
+  Location location;
+  DenseI32ArrayAttr route;
+  IntegerAttr macro;
+  DenseI32ArrayAttr words;
+  DictionaryAttr provenance;
+};
+
+LogicalResult verifyExactFunctionContract(func::FuncOp function) {
+  auto requireI64 = [&](StringRef name, int64_t expected) {
+    auto value = function->getAttrOfType<IntegerAttr>(name);
+    if (!value || !value.getType().isSignlessInteger(64) ||
+        value.getInt() != expected) {
+      function.emitError("materialize-cim-static-weight-section requires ")
+          << name << " = " << expected << " : i64";
+      return failure();
+    }
+    return success();
+  };
+  auto requireString = [&](StringRef name, StringRef expected) {
+    auto value = function->getAttrOfType<StringAttr>(name);
+    if (!value || value.getValue() != expected) {
+      function.emitError("materialize-cim-static-weight-section requires ")
+          << name << " = '" << expected << "'";
+      return failure();
+    }
+    return success();
+  };
+
+  return success(
+      succeeded(requireI64("cim.artifact_schema_version", 1)) &&
+      succeeded(requireString("cim.target_profile", "cim22-4x5-v1")) &&
+      succeeded(requireI64("cim.target_profile_version", 1)) &&
+      succeeded(
+          requireString("cim.placement_policy", "core-major-dual-macro-v1")) &&
+      succeeded(requireString("cim.route_policy", "lower-left-maximal-xy-v1")));
+}
+
+FailureOr<IntegerAttr> readProvenanceI64(cim::ConfigureWeightOp op,
+                                         StringRef name) {
+  auto value = dyn_cast_or_null<IntegerAttr>(op->getAttr(name));
+  if (!value || !value.getType().isSignlessInteger(64)) {
+    op.emitOpError("materialize-cim-static-weight-section expects '")
+        << name << "' to be an i64 attribute";
+    return failure();
+  }
+  if (value.getInt() < 0) {
+    op.emitOpError("materialize-cim-static-weight-section expects '")
+        << name << "' to be non-negative";
+    return failure();
+  }
+  return value;
+}
+
+FailureOr<StaticWeightCommandPlan>
+planStaticWeightCommand(cim::ConfigureWeightOp op, func::FuncOp function,
+                        const llvm::StringMap<cim::StaticWeightOp> &weights,
+                        OpBuilder &builder) {
+  for (NamedAttribute attr : op->getAttrs()) {
+    StringRef name = attr.getName().strref();
+    if (name != "resource" && !llvm::is_contained(kProvenanceAttrs, name)) {
+      op.emitOpError("materialize-cim-static-weight-section rejects unexpected "
+                     "configure_weight attribute '")
+          << name << "'";
+      return failure();
+    }
+  }
+
+  auto resource = dyn_cast<FlatSymbolRefAttr>(op.getResource());
+  if (!resource) {
+    op.emitOpError("materialize-cim-static-weight-section requires a flat "
+                   "same-module static weight reference");
+    return failure();
+  }
+  auto weightIt = weights.find(resource.getValue());
+  if (weightIt == weights.end()) {
+    op.emitOpError("materialize-cim-static-weight-section cannot resolve "
+                   "same-module cim.static_weight ")
+        << resource;
+    return failure();
+  }
+  cim::StaticWeightOp weight = weightIt->second;
+  auto type = dyn_cast<RankedTensorType>(weight.getValue().getType());
+  if (!type || type.getShape() != ArrayRef<int64_t>({16, 64}) ||
+      !type.getElementType().isSignlessInteger(8)) {
+    weight.emitOpError("materialize-cim-static-weight-section requires "
+                       "tensor<16x64xi8>");
+    return failure();
+  }
+
+  SmallVector<IntegerAttr> integers;
+  integers.reserve(7);
+  for (StringRef name : ArrayRef(kProvenanceAttrs).drop_back()) {
+    FailureOr<IntegerAttr> value = readProvenanceI64(op, name);
+    if (failed(value))
+      return failure();
+    integers.push_back(*value);
+  }
+  IntegerAttr macroSlot = integers.back();
+  if (macroSlot.getInt() > 1) {
+    op.emitOpError("materialize-cim-static-weight-section expects macro_slot "
+                   "to be 0 or 1");
+    return failure();
+  }
+
+  auto mapping = dyn_cast_or_null<DictionaryAttr>(op->getAttr("cim.mapping"));
+  if (!mapping) {
+    op.emitOpError("materialize-cim-static-weight-section expects "
+                   "'cim.mapping' to be a dictionary attribute");
+    return failure();
+  }
+  auto sourceRoute = dyn_cast_or_null<DenseI64ArrayAttr>(mapping.get("route"));
+  if (!sourceRoute || sourceRoute.size() != 6) {
+    op.emitOpError("materialize-cim-static-weight-section expects "
+                   "cim.mapping.route to contain six i64 values");
+    return failure();
+  }
+  SmallVector<int32_t, 6> route;
+  for (auto [index, value] : llvm::enumerate(sourceRoute.asArrayRef())) {
+    if (value < 0 || value > 31) {
+      op.emitOpError("materialize-cim-static-weight-section expects each "
+                     "cim.mapping.route value in [0, 31]");
+      return failure();
+    }
+    if (index >= 3 && value != 0) {
+      op.emitOpError("materialize-cim-static-weight-section expects onecast "
+                     "route with zero Copy fields");
+      return failure();
+    }
+    route.push_back(static_cast<int32_t>(value));
+  }
+
+  std::array<uint8_t, 16 * 64> bytes{};
+  for (auto [index, value] :
+       llvm::enumerate(weight.getValue().getValues<APInt>()))
+    bytes[index] = static_cast<uint8_t>(value.getZExtValue());
+
+  // FIXME(CTQ-016): This software-only M2.4b pass uses the provisional
+  // logical tile mapping exercised by materialize-static-weight-section.mlir.
+  // FIXME(CTQ-020): That test remains software-only and is not board
+  // verification.
+  std::array<uint32_t, 256> rawWords =
+      cim22::mapInt8WeightTileToCIMWords(bytes);
+  SmallVector<int32_t, 256> words;
+  llvm::transform(rawWords, std::back_inserter(words),
+                  [](uint32_t word) { return llvm::bit_cast<int32_t>(word); });
+
+  SmallVector<NamedAttribute> provenance;
+  provenance.push_back(builder.getNamedAttr(
+      "function",
+      FlatSymbolRefAttr::get(function.getContext(), function.getSymName())));
+  provenance.push_back(builder.getNamedAttr("resource", resource));
+  for (auto [name, value] :
+       llvm::zip(ArrayRef(kProvenanceAttrs).drop_back(), integers))
+    provenance.push_back(builder.getNamedAttr(name, value));
+  provenance.push_back(builder.getNamedAttr("mapping", mapping));
+
+  return StaticWeightCommandPlan{
+      op.getLoc(), builder.getDenseI32ArrayAttr(route),
+      builder.getI32IntegerAttr(static_cast<int32_t>(macroSlot.getInt())),
+      builder.getDenseI32ArrayAttr(words),
+      builder.getDictionaryAttr(provenance)};
+}
+
+class MaterializeCIMStaticWeightSection final
+    : public impl::MaterializeCIMStaticWeightSectionBase<
+          MaterializeCIMStaticWeightSection> {
+public:
+  using Base::Base;
+
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    for (Operation &op : module.getBody()->getOperations()) {
+      if (op.getName().getDialectNamespace() ==
+          CIMFrameDialect::getDialectNamespace()) {
+        module.emitError("materialize-cim-static-weight-section rejects "
+                         "pre-existing top-level cimframe operations");
+        return signalPassFailure();
+      }
+    }
+
+    llvm::StringMap<cim::StaticWeightOp> weights;
+    for (cim::StaticWeightOp weight : module.getOps<cim::StaticWeightOp>()) {
+      if (!weights.try_emplace(weight.getSymName(), weight).second) {
+        weight.emitOpError("materialize-cim-static-weight-section rejects "
+                           "duplicate same-module static weight symbol");
+        return signalPassFailure();
+      }
+    }
+
+    OpBuilder builder(&getContext());
+    SmallVector<StaticWeightCommandPlan> plans;
+    for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+      SmallVector<cim::ConfigureWeightOp> configureWeights;
+      function.walk(
+          [&](cim::ConfigureWeightOp op) { configureWeights.push_back(op); });
+      if (configureWeights.empty())
+        continue;
+      if (failed(verifyExactFunctionContract(function))) {
+        signalPassFailure();
+        return;
+      }
+      for (cim::ConfigureWeightOp op : configureWeights) {
+        FailureOr<StaticWeightCommandPlan> plan =
+            planStaticWeightCommand(op, function, weights, builder);
+        if (failed(plan)) {
+          signalPassFailure();
+          return;
+        }
+        plans.push_back(*plan);
+      }
+    }
+    if (plans.empty())
+      return;
+
+    auto firstFunction = *module.getOps<func::FuncOp>().begin();
+    builder.setInsertionPoint(firstFunction);
+    for (const StaticWeightCommandPlan &plan : plans) {
+      WriteInt8WeightsOp command = WriteInt8WeightsOp::create(
+          builder, plan.location, plan.route, plan.macro, plan.words);
+      command->setAttr("cim.provenance", plan.provenance);
+    }
+  }
+};
+
 class LowerStartInt8Once final : public OpConversionPattern<StartInt8OnceOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
@@ -40,10 +281,14 @@ public:
   LogicalResult
   matchAndRewrite(WriteInt8WeightsOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    ControlInt8PacketOp::create(rewriter, op.getLoc(), adaptor.getRoute(),
-                                adaptor.getMacro());
-    CIMInt8WeightPacketOp::create(rewriter, op.getLoc(), adaptor.getRoute(),
-                                  adaptor.getWords());
+    ControlInt8PacketOp control = ControlInt8PacketOp::create(
+        rewriter, op.getLoc(), adaptor.getRoute(), adaptor.getMacro());
+    CIMInt8WeightPacketOp weight = CIMInt8WeightPacketOp::create(
+        rewriter, op.getLoc(), adaptor.getRoute(), adaptor.getWords());
+    if (Attribute provenance = op->getAttr("cim.provenance")) {
+      control->setAttr("cim.provenance", provenance);
+      weight->setAttr("cim.provenance", provenance);
+    }
     rewriter.eraseOp(op);
     return success();
   }

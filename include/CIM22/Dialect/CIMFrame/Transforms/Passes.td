@@ -11,6 +11,12 @@
 
 include "mlir/Pass/PassBase.td"
 
+def MaterializeCIMStaticWeightSection
+    : Pass<"materialize-cim-static-weight-section", "::mlir::ModuleOp"> {
+  let summary = "Materialize mapped static weights as CIMFrame commands";
+  let dependentDialects = ["::mlir::cimframe::CIMFrameDialect"];
+}
+
 def LowerCIMFrameCommandsToPackets
     : Pass<"lower-cimframe-commands-to-packets", "::mlir::ModuleOp"> {
   let summary = "Lower CIMFrame commands to typed packets";
