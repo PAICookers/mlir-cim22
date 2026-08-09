@@ -48,6 +48,7 @@ set_target_properties(mlir-cim22-f0-importer-test PROPERTIES
 add_executable(mlir-cim22-program-image-test EXCLUDE_FROM_ALL
   Artifact/ProgramImageTest.cpp
 )
+llvm_update_compile_flags(mlir-cim22-program-image-test)
 target_link_libraries(mlir-cim22-program-image-test PRIVATE
   MLIRCIM22Artifact
 )

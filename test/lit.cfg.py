@@ -24,6 +24,7 @@ llvm_config.add_tool_substitutions(
         "mlir-cim22-int8-weight-layout-test",
         "mlir-cim22-onnx-import",
         "mlir-cim22-opt",
+        "mlir-cim22-program-image-test",
     ],
     tool_dirs,
 )
