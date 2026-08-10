@@ -1,0 +1,20 @@
+// RUN: %python %S/../../Reference/F2/generate_conv_integer_onnx.py --emit-dir %t.first | FileCheck %s --check-prefix=GENERATE
+// RUN: %python %S/../../Reference/F2/generate_conv_integer_onnx.py --emit-dir %t.second
+// RUN: cmp %t.first/canonical.onnx %t.second/canonical.onnx
+// RUN: cmp %t.first/odd.onnx %t.second/odd.onnx
+// RUN: mlir-cim22-onnx-import %t.first/canonical.onnx | FileCheck %s --check-prefix=CANONICAL
+// RUN: mlir-cim22-onnx-import %t.first/odd.onnx | FileCheck %s --check-prefix=ODD
+
+// GENERATE: PASS ConvInteger ONNX generation: canonical and odd-work
+
+// CANONICAL-LABEL: func.func @main(%{{.*}}: tensor<1x8x8x8xi8>) -> tensor<1x19x8x8xi32>
+// CANONICAL: tensor.pad %{{.*}} low[0, 0, 1, 1] high[0, 0, 1, 1]
+// CANONICAL: arith.constant dense<{{.*}}> : tensor<19x8x3x3xi8>
+// CANONICAL: linalg.conv_2d_nchw_fchw {{.*}}cim.onnx.conv_integer{{.*}}
+// CANONICAL-NOT: f32
+// CANONICAL: return %{{.*}} : tensor<1x19x8x8xi32>
+
+// ODD-LABEL: func.func @main(%{{.*}}: tensor<1x1x3x3xi8>) -> tensor<1x1x3x3xi32>
+// ODD: tensor.pad %{{.*}} low[0, 0, 1, 1] high[0, 0, 1, 1]
+// ODD: linalg.conv_2d_nchw_fchw {{.*}}cim.onnx.conv_integer{{.*}}
+// ODD: return %{{.*}} : tensor<1x1x3x3xi32>

@@ -1,0 +1,24 @@
+// RUN: %python %S/../../Reference/F2/generate_conv_integer_onnx.py --emit-dir %t.models
+// RUN: mlir-cim22-onnx-import %t.models/canonical.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t.canonical.first
+// RUN: mlir-cim22-onnx-import %t.models/canonical.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t.canonical.second
+// RUN: diff %t.canonical.first %t.canonical.second
+// RUN: grep -c 'cim.vmm' %t.canonical.first | FileCheck %s --check-prefix=CANONICAL-COUNT
+// RUN: FileCheck %s --check-prefix=CANONICAL < %t.canonical.first
+// RUN: mlir-cim22-onnx-import %t.models/odd.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t.odd
+// RUN: grep -c 'cim.vmm' %t.odd | FileCheck %s --check-prefix=ODD-COUNT
+// RUN: FileCheck %s --check-prefix=ODD < %t.odd
+
+// CANONICAL-COUNT: 256
+// CANONICAL-LABEL: func.func @main
+// CANONICAL-SAME: cim.target_profile = "cim22-4x5-v1"
+// CANONICAL: linalg.generic
+// CANONICAL: cim.vmm
+// CANONICAL-NOT: linalg.conv_2d_nchw_fchw
+// CANONICAL-NOT: linalg.matmul
+// CANONICAL: return %{{.*}} : tensor<1x19x8x8xi32>
+
+// ODD-COUNT: 9
+// ODD-LABEL: func.func @main
+// ODD: cim.vmm
+// ODD: cim.vmm {{.*}}macro_slot = 0 : i64{{.*}}work_id = 8 : i64
+// ODD: return %{{.*}} : tensor<1x1x3x3xi32>
