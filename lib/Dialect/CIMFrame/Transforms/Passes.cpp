@@ -63,7 +63,7 @@ LogicalResult verifyExactFunctionContract(func::FuncOp function) {
   };
 
   return success(
-      succeeded(requireI64("cim.artifact_schema_version", 1)) &&
+      succeeded(requireI64("cim.execution_plan_schema_version", 1)) &&
       succeeded(requireString("cim.target_profile", "cim22-4x5-v1")) &&
       succeeded(requireI64("cim.target_profile_version", 1)) &&
       succeeded(

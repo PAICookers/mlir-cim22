@@ -22,8 +22,8 @@ def CIMFrame_StartInt8OnceOp
     : CIMFrame_Op<"start_int8_once", [HasParent<"ModuleOp">]> {
   let summary = "Request an INT8 start-once control prefix";
   let description = [{
-    An effectful execution-plan command that lowers to one INT8 control packet
-    followed by one once-work packet. It is not a complete invocation and has
+    An effectful packet-stage command that lowers to one INT8 control packet
+    followed by one once-work packet. It is not a complete CIM execution plan and has
     no hardware artifact translation.
 
     The route remains supplied manually at this M2 boundary; M4

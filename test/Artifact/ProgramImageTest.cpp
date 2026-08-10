@@ -33,7 +33,7 @@ using mlir::cim22::artifact::writeProgramImage;
 
 constexpr uint16_t kFormatMajorField = 4;
 constexpr uint16_t kTargetProfileVersionField = 10;
-constexpr uint16_t kInvocationSchemaVersionField = 12;
+constexpr uint16_t kExecutionPlanSchemaVersionField = 12;
 constexpr uint16_t kLogicalViewSchemaVersionField = 14;
 constexpr uint16_t kLogicalSlotField = 6;
 constexpr uint16_t kSectionIdField = 4;
@@ -166,7 +166,7 @@ bool testCanonicalImage() {
       !check(metadata->format_major() == 1 && metadata->format_minor() == 0 &&
                  metadata->target_profile()->str() == "cim22-4x5-v1" &&
                  metadata->target_profile_version() == 1 &&
-                 metadata->invocation_schema_version() == 1 &&
+                 metadata->execution_plan_schema_version() == 1 &&
                  metadata->logical_view_schema_version() == 1 &&
                  metadata->entry_function()->str() == "main" &&
                  metadata->section_alignment() == 8,
@@ -261,8 +261,7 @@ bool testBuildRejections() {
 
   auto pairs = validSegments();
   pairs[0].cimToHost[1].workId = 2;
-  ok &= rejectsBuild("main", pairs, sections,
-                     "mismatched logical work pairs");
+  ok &= rejectsBuild("main", pairs, sections, "mismatched logical work pairs");
 
   auto noWorks = validSegments();
   noWorks[0].hostToCIM.clear();
@@ -282,8 +281,7 @@ bool testBuildRejections() {
 
   auto badIds = sections;
   badIds[1].id = 2;
-  ok &= rejectsBuild("main", validSegments(), badIds,
-                     "non-dense section ids");
+  ok &= rejectsBuild("main", validSegments(), badIds, "non-dense section ids");
   return ok;
 }
 
@@ -322,10 +320,10 @@ bool testLoadMutations() {
                  2);
       });
   ok &= rejectsMutation(
-      *built, "incompatible invocation schema", [&](auto &mutated) {
+      *built, "incompatible execution-plan schema", [&](auto &mutated) {
         writeU64(
             mutated,
-            tableFieldOffset(bytes, metadata, kInvocationSchemaVersionField),
+            tableFieldOffset(bytes, metadata, kExecutionPlanSchemaVersionField),
             2);
       });
   ok &= rejectsMutation(

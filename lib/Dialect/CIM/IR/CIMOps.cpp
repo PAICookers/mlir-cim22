@@ -20,7 +20,7 @@ constexpr llvm::StringLiteral kTileAttrs[] = {"m_tile", "n_tile", "k_tile"};
 constexpr llvm::StringLiteral kScheduleAttrs[] = {"work_id", "group_id"};
 constexpr llvm::StringLiteral kMappingAttrs[] = {"core_slot", "macro_slot",
                                                  "cim.mapping"};
-constexpr llvm::StringLiteral kInvocationAttrs[] = {
+constexpr llvm::StringLiteral kExecutionPlanAttrs[] = {
     "m_tile",   "n_tile",    "k_tile",     "work_id",
     "group_id", "core_slot", "macro_slot", "cim.mapping"};
 
@@ -59,11 +59,11 @@ LogicalResult verifyMapping(Operation *op) {
   return success();
 }
 
-LogicalResult verifyFullInvocationProvenance(Operation *op) {
-  if (countPresent(op, kInvocationAttrs) != std::size(kInvocationAttrs))
-    return op->emitOpError("requires complete invocation provenance");
+LogicalResult verifyFullExecutionPlanProvenance(Operation *op) {
+  if (countPresent(op, kExecutionPlanAttrs) != std::size(kExecutionPlanAttrs))
+    return op->emitOpError("requires complete execution-plan provenance");
   if (failed(verifyNonNegative(
-          op, ArrayRef<llvm::StringLiteral>(kInvocationAttrs).drop_back())))
+          op, ArrayRef<llvm::StringLiteral>(kExecutionPlanAttrs).drop_back())))
     return failure();
   auto macro = op->getAttrOfType<IntegerAttr>("macro_slot");
   if (!macro || macro.getInt() < 0 || macro.getInt() > 1)
@@ -140,8 +140,8 @@ LogicalResult StaticWeightOp::verify() {
   if (!type || type.getShape() != llvm::ArrayRef<int64_t>{16, 64} ||
       !type.getElementType().isSignlessInteger(8))
     return emitOpError("expects value type tensor<16x64xi8>");
-  if (countPresent(getOperation(), kInvocationAttrs) != 0)
-    return emitOpError("must not carry work invocation provenance");
+  if (countPresent(getOperation(), kExecutionPlanAttrs) != 0)
+    return emitOpError("must not carry per-work execution-plan provenance");
   return success();
 }
 
@@ -150,11 +150,11 @@ LogicalResult ConfigureInputOp::verify() {
   if (type.getShape() != llvm::ArrayRef<int64_t>{64} ||
       !type.getElementType().isSignlessInteger(8))
     return emitOpError("expects input type tensor<64xi8>");
-  return verifyFullInvocationProvenance(getOperation());
+  return verifyFullExecutionPlanProvenance(getOperation());
 }
 
 LogicalResult ConfigureWeightOp::verify() {
-  if (failed(verifyFullInvocationProvenance(getOperation())))
+  if (failed(verifyFullExecutionPlanProvenance(getOperation())))
     return failure();
   auto weight = SymbolTable::lookupNearestSymbolFrom<StaticWeightOp>(
       getOperation(), getResourceAttr());
@@ -164,7 +164,7 @@ LogicalResult ConfigureWeightOp::verify() {
 }
 
 LogicalResult DispatchOp::verify() {
-  return verifyFullInvocationProvenance(getOperation());
+  return verifyFullExecutionPlanProvenance(getOperation());
 }
 
 LogicalResult OnceOp::verify() {
@@ -176,7 +176,7 @@ LogicalResult ReadbackOp::verify() {
   if (type.getShape() != llvm::ArrayRef<int64_t>{16} ||
       !type.getElementType().isSignlessInteger(21))
     return emitOpError("expects result type tensor<16xi21>");
-  return verifyFullInvocationProvenance(getOperation());
+  return verifyFullExecutionPlanProvenance(getOperation());
 }
 
 LogicalResult GroupBarrierOp::verify() {

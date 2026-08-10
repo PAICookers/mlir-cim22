@@ -31,9 +31,9 @@ def MaterializeCIMSchedule
   let summary = "Validate and materialize the software-only CIM schedule";
 }
 
-def MaterializeCIMInvocation
-    : Pass<"materialize-cim-invocation", "::mlir::ModuleOp"> {
-  let summary = "Materialize the software-only mapped CIM invocation plan";
+def MaterializeCIMExecutionPlan
+    : Pass<"materialize-cim-execution-plan", "::mlir::ModuleOp"> {
+  let summary = "Materialize the software-only mapped CIM execution plan";
   let dependentDialects = ["::mlir::cim::CIMDialect"];
 }
 

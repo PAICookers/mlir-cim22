@@ -1,4 +1,0 @@
-// RUN: %python %S/test_invocation_oracle.py | FileCheck %s
-
-// CHECK: Ran 5 tests
-// CHECK: OK

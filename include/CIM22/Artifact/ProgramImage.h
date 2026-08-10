@@ -26,7 +26,7 @@ inline constexpr uint16_t kProgramImageFormatMajor = 1;
 inline constexpr uint16_t kProgramImageFormatMinor = 0;
 inline constexpr char kProgramImageTargetProfile[] = "cim22-4x5-v1";
 inline constexpr uint64_t kProgramImageTargetProfileVersion = 1;
-inline constexpr uint64_t kProgramImageInvocationSchemaVersion = 1;
+inline constexpr uint64_t kProgramImageExecutionPlanSchemaVersion = 1;
 inline constexpr uint64_t kProgramImageLogicalViewSchemaVersion = 1;
 inline constexpr uint32_t kProgramImageSectionAlignment = 8;
 

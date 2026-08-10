@@ -1,7 +1,7 @@
 import sys
 import unittest
 
-import invocation_oracle as oracle
+import execution_plan_oracle as oracle
 
 ZERO_MAPPING = ((0, 0), (0, 0), (0, 0), (0, 0), (0, 0, 0, 0, 0, 0))
 NEXT_MAPPING = ((0, 1), (0, 0), (0, 0), (0, 1), (0, 1, 0, 0, 0, 0))
@@ -36,7 +36,7 @@ def work_attrs(work):
 
 def render_dump(groups=((WORK0, WORK1),)):
     function_attrs = (
-        f'cim.artifact_schema_version = {oracle.SCHEMA_VERSION} : i64, '
+        f'cim.execution_plan_schema_version = {oracle.SCHEMA_VERSION} : i64, '
         f'cim.placement_policy = "{oracle.PLACEMENT_POLICY}", '
         f'cim.route_policy = "{oracle.ROUTE_POLICY}", '
         f'{profile_attrs()}')
@@ -87,7 +87,7 @@ def mutate_line(text, token, old, new):
     return "\n".join(lines)
 
 
-class InvocationOracleTest(unittest.TestCase):
+class ExecutionPlanOracleTest(unittest.TestCase):
     def test_valid_dual_macro_and_single_work_groups(self):
         dual = oracle.validate_dump(render_dump())
         single = oracle.validate_dump(render_dump(((WORK0,),)))
@@ -103,8 +103,8 @@ class InvocationOracleTest(unittest.TestCase):
     def test_function_and_static_resource_faults(self):
         text = render_dump()
         faults = (
-            (text.replace("cim.artifact_schema_version = 1 : i64, ", "", 1),
-             "missing cim.artifact_schema_version"),
+            (text.replace("cim.execution_plan_schema_version = 1 : i64, ", "", 1),
+             "missing cim.execution_plan_schema_version"),
             (text.replace("tensor<16x64xi8>", "tensor<8x64xi8>", 1),
              "static weight must be tensor<16x64xi8>"),
             (text.replace('  func.func',

@@ -8,7 +8,7 @@ module {
 // -----
 
 module {
-  // expected-error@+1 {{must not carry work invocation provenance}}
+  // expected-error@+1 {{must not carry per-work execution-plan provenance}}
   cim.static_weight @extra_provenance = dense<0> : tensor<16x64xi8> {work_id = 0 : i64}
 }
 
@@ -16,7 +16,7 @@ module {
 
 module {
   func.func @missing_provenance(%input: tensor<64xi8>) {
-    // expected-error@+1 {{requires complete invocation provenance}}
+    // expected-error@+1 {{requires complete execution-plan provenance}}
     cim.configure_input %input {work_id = 0 : i64} : tensor<64xi8>
     return
   }

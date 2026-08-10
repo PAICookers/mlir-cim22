@@ -1,5 +1,5 @@
-// RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-invocation,materialize-cim-static-weight-section)' > %t.first
-// RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-invocation,materialize-cim-static-weight-section)' > %t.second
+// RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section)' > %t.first
+// RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section)' > %t.second
 // RUN: cmp %t.first %t.second
 // RUN: %python %S/../../Reference/M2/static_weight_section_oracle.py %t.first --expect-commands 2 | FileCheck %s --check-prefix=ORACLE
 // RUN: sed '0,/macro = 0 : i32/s//macro = 1 : i32/' %t.first > %t.bad

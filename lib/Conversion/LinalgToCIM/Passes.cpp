@@ -28,7 +28,7 @@
 
 namespace mlir::cim {
 #define GEN_PASS_DEF_FORMCIMPROGRAM
-#define GEN_PASS_DEF_MATERIALIZECIMINVOCATION
+#define GEN_PASS_DEF_MATERIALIZECIMEXECUTIONPLAN
 #define GEN_PASS_DEF_MATERIALIZECIMSCHEDULE
 #define GEN_PASS_DEF_NORMALIZECIMCONV
 #include "CIM22/Conversion/LinalgToCIM/Passes.h.inc"
@@ -1237,36 +1237,37 @@ public:
   }
 };
 
-constexpr llvm::StringLiteral kInvocationProvenanceAttrs[] = {
+constexpr llvm::StringLiteral kExecutionPlanProvenanceAttrs[] = {
     "m_tile",   "n_tile",    "k_tile",     "work_id",
     "group_id", "core_slot", "macro_slot", "cim.mapping"};
 
-void copyInvocationProvenance(Operation *from, Operation *to) {
-  for (StringRef name : kInvocationProvenanceAttrs)
+void copyExecutionPlanProvenance(Operation *from, Operation *to) {
+  for (StringRef name : kExecutionPlanProvenanceAttrs)
     to->setAttr(name, from->getAttr(name));
 }
 
-bool isInvocationOp(Operation *op) {
+bool isExecutionPlanOp(Operation *op) {
   return isa<ConfigureInputOp, ConfigureWeightOp, DispatchOp, OnceOp,
              ReadbackOp, GroupBarrierOp>(op);
 }
 
-LogicalResult verifySameInvocationWork(Operation *expected, Operation *actual) {
-  for (StringRef name : kInvocationProvenanceAttrs)
+LogicalResult verifySameExecutionPlanWork(Operation *expected,
+                                          Operation *actual) {
+  for (StringRef name : kExecutionPlanProvenanceAttrs)
     if (expected->getAttr(name) != actual->getAttr(name))
       return actual->emitOpError("expects '")
              << name << "' to match its configure_input operation";
   return success();
 }
 
-LogicalResult verifyInvocationStructure(func::FuncOp function) {
+LogicalResult verifyExecutionPlanStructure(func::FuncOp function) {
   if (!function.getBody().hasOneBlock())
     return function.emitError(
-        "materialize-cim-invocation requires one straight-line block");
+        "materialize-cim-execution-plan requires one straight-line block");
 
   SmallVector<Operation *> operations;
   for (Operation &op : function.getBody().front())
-    if (isInvocationOp(&op))
+    if (isExecutionPlanOp(&op))
       operations.push_back(&op);
 
   size_t cursor = 0;
@@ -1282,7 +1283,7 @@ LogicalResult verifyInvocationStructure(func::FuncOp function) {
         return input.emitOpError(
             "must be followed by a per-Macro configure_weight operation");
       Operation *weight = operations[cursor++];
-      if (failed(verifySameInvocationWork(input, weight)))
+      if (failed(verifySameExecutionPlanWork(input, weight)))
         return failure();
       auto work = input->getAttrOfType<IntegerAttr>("work_id");
       auto group = input->getAttrOfType<IntegerAttr>("group_id");
@@ -1303,7 +1304,7 @@ LogicalResult verifyInvocationStructure(func::FuncOp function) {
       if (cursor >= operations.size() || !isa<DispatchOp>(operations[cursor]))
         return input.emitOpError(
             "expects one dispatch for each configured Macro payload");
-      if (failed(verifySameInvocationWork(input, operations[cursor++])))
+      if (failed(verifySameExecutionPlanWork(input, operations[cursor++])))
         return failure();
     }
     if (cursor >= operations.size() || !isa<OnceOp>(operations[cursor]))
@@ -1313,20 +1314,20 @@ LogicalResult verifyInvocationStructure(func::FuncOp function) {
     if (once->getAttr("group_id") != inputs.front()->getAttr("group_id") ||
         once->getAttr("core_slot") != inputs.front()->getAttr("core_slot") ||
         once->getAttr("cim.mapping") != inputs.front()->getAttr("cim.mapping"))
-      return once->emitOpError("does not match its invocation group");
+      return once->emitOpError("does not match its execution-plan group");
 
     for (ConfigureInputOp input : inputs) {
       if (cursor >= operations.size() || !isa<ReadbackOp>(operations[cursor]))
         return input.emitOpError(
             "expects one readback for each configured Macro payload");
-      if (failed(verifySameInvocationWork(input, operations[cursor++])))
+      if (failed(verifySameExecutionPlanWork(input, operations[cursor++])))
         return failure();
     }
     if (cursor >= operations.size() || !isa<GroupBarrierOp>(operations[cursor]))
       return inputs.front().emitOpError("expects a terminating group barrier");
     Operation *barrier = operations[cursor++];
     if (barrier->getAttr("group_id") != inputs.front()->getAttr("group_id"))
-      return barrier->emitOpError("does not match its invocation group");
+      return barrier->emitOpError("does not match its execution-plan group");
     if (inputs.size() == 1 && cursor != operations.size())
       return inputs.front().emitOpError(
           "single-Macro group is only valid as the final group");
@@ -1335,8 +1336,9 @@ LogicalResult verifyInvocationStructure(func::FuncOp function) {
   return success();
 }
 
-class MaterializeCIMInvocation final
-    : public impl::MaterializeCIMInvocationBase<MaterializeCIMInvocation> {
+class MaterializeCIMExecutionPlan final
+    : public impl::MaterializeCIMExecutionPlanBase<
+          MaterializeCIMExecutionPlan> {
 public:
   using Base::Base;
 
@@ -1359,47 +1361,49 @@ public:
     for (func::FuncOp function : module.getOps<func::FuncOp>()) {
       SmallVector<VMMOp> vmms;
       function.walk([&](VMMOp op) { vmms.push_back(op); });
-      bool hasInvocation = false;
+      bool hasExecutionPlan = false;
       function.walk(
-          [&](Operation *op) { hasInvocation |= isInvocationOp(op); });
+          [&](Operation *op) { hasExecutionPlan |= isExecutionPlanOp(op); });
       if (vmms.empty()) {
-        if (hasInvocation) {
+        if (hasExecutionPlan) {
           auto schema = function->getAttrOfType<IntegerAttr>(
-              "cim.artifact_schema_version");
+              "cim.execution_plan_schema_version");
           if (!schema || !schema.getType().isSignlessInteger(64) ||
               schema.getInt() != 1) {
-            function.emitError("materialize-cim-invocation expects "
-                               "cim.artifact_schema_version = 1 : i64");
+            function.emitError("materialize-cim-execution-plan expects "
+                               "cim.execution_plan_schema_version = 1 : i64");
             return signalPassFailure();
           }
-          if (failed(verifyInvocationStructure(function)))
+          if (failed(verifyExecutionPlanStructure(function)))
             return signalPassFailure();
         }
         continue;
       }
-      if (hasInvocation) {
-        function.emitError(
-            "materialize-cim-invocation rejects mixed VMM and invocation ops");
+      if (hasExecutionPlan) {
+        function.emitError("materialize-cim-execution-plan rejects mixed VMM "
+                           "and execution-plan ops");
         return signalPassFailure();
       }
       if (!function.getBody().hasOneBlock()) {
         function.emitError(
-            "materialize-cim-invocation requires one straight-line block");
+            "materialize-cim-execution-plan requires one straight-line block");
         return signalPassFailure();
       }
-      if (function->hasAttr("cim.artifact_schema_version")) {
-        function.emitError("materialize-cim-invocation rejects stale artifact "
-                           "schema attribute");
+      if (function->hasAttr("cim.execution_plan_schema_version")) {
+        function.emitError(
+            "materialize-cim-execution-plan rejects a stale execution-plan "
+            "schema attribute");
         return signalPassFailure();
       }
 
       FunctionPlan plan{function, {}};
       plan.works.reserve(vmms.size());
       for (auto [index, vmm] : llvm::enumerate(vmms)) {
-        if (countPresent(vmm, kInvocationProvenanceAttrs) !=
-            std::size(kInvocationProvenanceAttrs)) {
-          vmm.emitOpError("materialize-cim-invocation requires complete mapped "
-                          "work provenance");
+        if (countPresent(vmm, kExecutionPlanProvenanceAttrs) !=
+            std::size(kExecutionPlanProvenanceAttrs)) {
+          vmm.emitOpError(
+              "materialize-cim-execution-plan requires complete mapped "
+              "work provenance");
           return signalPassFailure();
         }
         auto workId = readNonNegativeI64(vmm, "work_id");
@@ -1411,20 +1415,21 @@ public:
         if (*workId != static_cast<int64_t>(index) || *groupId != *workId / 2 ||
             *macroSlot < 0 || *macroSlot > 1) {
           vmm.emitOpError(
-              "materialize-cim-invocation rejects invalid work placement");
+              "materialize-cim-execution-plan rejects invalid work placement");
           return signalPassFailure();
         }
         FailureOr<DenseElementsAttr> weight =
             evaluateDenseTensor(vmm.getWeight());
         if (failed(weight) ||
             (*weight).getType() != vmm.getWeight().getType()) {
-          vmm.emitOpError("materialize-cim-invocation requires a compile-time "
-                          "constant weight tile");
+          vmm.emitOpError(
+              "materialize-cim-execution-plan requires a compile-time "
+              "constant weight tile");
           return signalPassFailure();
         }
         auto intWeight = dyn_cast<DenseIntElementsAttr>(*weight);
         if (!intWeight) {
-          vmm.emitOpError("materialize-cim-invocation requires INT8 weight "
+          vmm.emitOpError("materialize-cim-execution-plan requires INT8 weight "
                           "elements");
           return signalPassFailure();
         }
@@ -1443,7 +1448,7 @@ public:
             first.vmm->getAttr("cim.mapping") !=
                 second.vmm->getAttr("cim.mapping")) {
           second.vmm.emitOpError(
-              "materialize-cim-invocation requires a same-route Macro 0/1 "
+              "materialize-cim-execution-plan requires a same-route Macro 0/1 "
               "pair per two-work group");
           return signalPassFailure();
         }
@@ -1466,7 +1471,7 @@ public:
         resources.push_back(FlatSymbolRefAttr::get(module.getContext(), name));
       }
 
-      plan.function->setAttr("cim.artifact_schema_version",
+      plan.function->setAttr("cim.execution_plan_schema_version",
                              moduleBuilder.getI64IntegerAttr(1));
       for (size_t index = 0; index < plan.works.size(); index += 2) {
         size_t count = std::min<size_t>(2, plan.works.size() - index);
@@ -1486,15 +1491,15 @@ public:
           WorkPlan &work = plan.works[index + offset];
           auto input = ConfigureInputOp::create(builder, work.vmm.getLoc(),
                                                 work.vmm.getInput());
-          copyInvocationProvenance(work.vmm, input);
+          copyExecutionPlanProvenance(work.vmm, input);
           auto weight = ConfigureWeightOp::create(builder, work.vmm.getLoc(),
                                                   resources[index + offset]);
-          copyInvocationProvenance(work.vmm, weight);
+          copyExecutionPlanProvenance(work.vmm, weight);
         }
         for (size_t offset = 0; offset < count; ++offset) {
           WorkPlan &work = plan.works[index + offset];
           auto dispatch = DispatchOp::create(builder, work.vmm.getLoc());
-          copyInvocationProvenance(work.vmm, dispatch);
+          copyExecutionPlanProvenance(work.vmm, dispatch);
         }
         WorkPlan &first = plan.works[index];
         auto once = OnceOp::create(builder, first.vmm.getLoc());
@@ -1505,7 +1510,7 @@ public:
           WorkPlan &work = plan.works[index + offset];
           auto readback = ReadbackOp::create(builder, work.vmm.getLoc(),
                                              work.vmm.getResult().getType());
-          copyInvocationProvenance(work.vmm, readback);
+          copyExecutionPlanProvenance(work.vmm, readback);
           readbacks.push_back(readback);
         }
         auto barrier = GroupBarrierOp::create(builder, first.vmm.getLoc());
@@ -1524,7 +1529,7 @@ public:
         for (size_t offset = 0; offset < count; ++offset)
           plan.works[index + offset].vmm.erase();
       }
-      if (failed(verifyInvocationStructure(plan.function)))
+      if (failed(verifyExecutionPlanStructure(plan.function)))
         return signalPassFailure();
     }
   }

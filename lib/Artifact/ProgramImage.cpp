@@ -59,7 +59,7 @@ bool checkedAlignUp(uint64_t value, uint64_t alignment, uint64_t &result) {
 llvm::Error validateCompatibility(uint16_t formatMajor, uint16_t formatMinor,
                                   llvm::StringRef targetProfile,
                                   uint64_t targetProfileVersion,
-                                  uint64_t invocationSchemaVersion,
+                                  uint64_t executionPlanSchemaVersion,
                                   uint64_t logicalViewSchemaVersion,
                                   uint32_t sectionAlignment) {
   if (formatMajor != kProgramImageFormatMajor)
@@ -72,9 +72,9 @@ llvm::Error validateCompatibility(uint16_t formatMajor, uint16_t formatMinor,
       targetProfileVersion != kProgramImageTargetProfileVersion)
     return makeImageError(ErrorKind::IncompatibleMetadata,
                           "unsupported target profile");
-  if (invocationSchemaVersion != kProgramImageInvocationSchemaVersion)
+  if (executionPlanSchemaVersion != kProgramImageExecutionPlanSchemaVersion)
     return makeImageError(ErrorKind::IncompatibleMetadata,
-                          "unsupported invocation schema version");
+                          "unsupported execution-plan schema version");
   if (logicalViewSchemaVersion != kProgramImageLogicalViewSchemaVersion)
     return makeImageError(ErrorKind::IncompatibleMetadata,
                           "unsupported logical-view schema version");
@@ -185,7 +185,7 @@ validateImageBytes(llvm::ArrayRef<uint8_t> bytes) {
           metadata->format_major(), metadata->format_minor(),
           metadata->target_profile()->string_view(),
           metadata->target_profile_version(),
-          metadata->invocation_schema_version(),
+          metadata->execution_plan_schema_version(),
           metadata->logical_view_schema_version(),
           metadata->section_alignment()))
     return std::move(error);
@@ -333,8 +333,7 @@ llvm::Expected<ProgramImage>
 buildProgramImage(llvm::StringRef entryFunction,
                   llvm::ArrayRef<SegmentRef> segments,
                   llvm::ArrayRef<OpaqueSectionInput> sections) {
-  if (llvm::Error error =
-          validateBuildInput(entryFunction, segments, sections))
+  if (llvm::Error error = validateBuildInput(entryFunction, segments, sections))
     return std::move(error);
 
   std::vector<uint64_t> sectionOffsets;
@@ -389,8 +388,9 @@ buildProgramImage(llvm::StringRef entryFunction,
   const auto segmentVector = builder.CreateVector(segmentOffsets);
   const auto sectionVector = builder.CreateVector(opaqueSectionOffsets);
   const auto root = ::cim22::image::CreateProgramImage(
-      builder, kProgramImageFormatMajor, kProgramImageFormatMinor, targetProfile,
-      kProgramImageTargetProfileVersion, kProgramImageInvocationSchemaVersion,
+      builder, kProgramImageFormatMajor, kProgramImageFormatMinor,
+      targetProfile, kProgramImageTargetProfileVersion,
+      kProgramImageExecutionPlanSchemaVersion,
       kProgramImageLogicalViewSchemaVersion, entryFunctionOffset, segmentVector,
       kProgramImageSectionAlignment, sectionVector);
   ::cim22::image::FinishSizePrefixedProgramImageBuffer(builder, root);

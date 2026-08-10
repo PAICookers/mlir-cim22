@@ -89,7 +89,7 @@ def CIM_ReadbackOp : CIM_Op<"readback", [HasParent<"func::FuncOp">]> {
 
 def CIM_GroupBarrierOp
     : CIM_Op<"group_barrier", [HasParent<"func::FuncOp">]> {
-  let summary = "Complete one mapped invocation group";
+  let summary = "Complete one mapped execution-plan group";
   let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
 }

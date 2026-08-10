@@ -1,5 +1,5 @@
-// RUN: mlir-cim22-opt %s -materialize-cim-invocation > %t.once
-// RUN: mlir-cim22-opt %t.once -materialize-cim-invocation > %t.twice
+// RUN: mlir-cim22-opt %s -materialize-cim-execution-plan > %t.once
+// RUN: mlir-cim22-opt %t.once -materialize-cim-execution-plan > %t.twice
 // RUN: diff %t.once %t.twice
 // RUN: FileCheck %s < %t.once
 
@@ -23,7 +23,7 @@ module {
 // CHECK: cim.static_weight @__cim_weight_two_work_w0 = dense<1> : tensor<16x64xi8>
 // CHECK-NEXT: cim.static_weight @__cim_weight_two_work_w1 = dense<2> : tensor<16x64xi8>
 // CHECK: func.func @two_work
-// CHECK-SAME: cim.artifact_schema_version = 1 : i64
+// CHECK-SAME: cim.execution_plan_schema_version = 1 : i64
 // CHECK: cim.configure_input %arg0 {{.*}}macro_slot = 0 : i64
 // CHECK-NEXT: cim.configure_weight @__cim_weight_two_work_w0 {{.*}}macro_slot = 0 : i64
 // CHECK-NEXT: cim.configure_input %arg1 {{.*}}macro_slot = 1 : i64

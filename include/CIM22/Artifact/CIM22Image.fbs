@@ -23,7 +23,7 @@ table ProgramImage {
   format_minor:ushort;
   target_profile:string (required);
   target_profile_version:ulong;
-  invocation_schema_version:ulong;
+  execution_plan_schema_version:ulong;
   logical_view_schema_version:ulong;
   entry_function:string (required);
   segments:[SegmentRef] (required);

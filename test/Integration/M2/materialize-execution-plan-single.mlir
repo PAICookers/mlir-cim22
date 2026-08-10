@@ -1,5 +1,5 @@
-// RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-invocation)' > %t
-// RUN: %python %S/../../Reference/M2/invocation_oracle.py %t | FileCheck %s --check-prefix=ORACLE
+// RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan)' > %t
+// RUN: %python %S/../../Reference/M2/execution_plan_oracle.py %t | FileCheck %s --check-prefix=ORACLE
 // RUN: FileCheck %s --check-prefix=HOST < %t
 
 // ORACLE: PASS software-only profile=cim22-4x5-v1 schema=1 groups=1 works=1 configs=2

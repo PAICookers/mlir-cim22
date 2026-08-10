@@ -14,9 +14,9 @@ include "mlir/IR/OpBase.td"
 def CIMFrame_Dialect : Dialect {
   let name = "cimframe";
   let cppNamespace = "::mlir::cimframe";
-  let summary = "Typed CIM execution-plan commands and packets";
+  let summary = "Typed CIM packet-stage commands and packets";
   let description = [{
-    The CIMFrame dialect separates typed execution-plan commands from typed
+    The CIMFrame dialect separates typed packet-stage commands from typed
     NoC packet semantics. M2.1 models only an INT8 start-once control prefix;
     it has no flit, byte, artifact, or runtime translation.
   }];

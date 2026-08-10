@@ -1,4 +1,4 @@
-"""Independent software-only oracle for the M2.5 invocation operation family."""
+"""Independent software-only oracle for the M2.5 execution-plan operation family."""
 
 import argparse
 import re
@@ -77,10 +77,10 @@ def parse_ops(text: str) -> tuple[Op, ...]:
 def _function_attrs(text: str) -> str:
     start = text.find("func.func")
     if start < 0:
-        raise OracleError("missing func.func invocation")
+        raise OracleError("missing func.func execution plan")
     attrs = text.find("attributes", start)
     if attrs < 0:
-        raise OracleError("func.func missing invocation attributes")
+        raise OracleError("func.func missing execution-plan attributes")
     return _balanced_body(text, attrs, text[:attrs].count("\n") + 1)
 
 
@@ -177,7 +177,7 @@ def _validate_function_attrs(text: str) -> None:
     expected = (
         ("cim.target_profile", PROFILE_ID),
         ("cim.target_profile_version", PROFILE_VERSION),
-        ("cim.artifact_schema_version", SCHEMA_VERSION),
+        ("cim.execution_plan_schema_version", SCHEMA_VERSION),
         ("cim.placement_policy", PLACEMENT_POLICY),
         ("cim.route_policy", ROUTE_POLICY),
     )
@@ -193,12 +193,14 @@ def validate_dump(text: str) -> tuple[Op, ...]:
     program_text = "\n".join(
         line for line in text.splitlines() if not line.lstrip().startswith("//"))
     if re.search(r"\bcim\.vmm\b|\bcimframe\.", program_text):
-        raise OracleError("invocation dump contains a pre-invocation or frame operation")
+        raise OracleError(
+            "execution-plan dump contains a pre-execution-plan or frame operation"
+        )
     ops = parse_ops(text)
     symbols = _static_symbols(ops)
     effectful = tuple(op for op in ops if op.kind != "static_weight")
     if not effectful:
-        raise OracleError("missing function invocation operations")
+        raise OracleError("missing function execution-plan operations")
 
     groups: dict[int, list[Op]] = {}
     group_runs = []
@@ -290,7 +292,9 @@ def validate_dump(text: str) -> tuple[Op, ...]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Validate canonical M2.5 invocation order and provenance")
+    parser = argparse.ArgumentParser(
+        description="Validate canonical M2.5 execution-plan order and provenance"
+    )
     parser.add_argument("mlir", type=Path)
     args = parser.parse_args()
     ops = validate_dump(args.mlir.read_text())
