@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "CIM22/Conversion/LinalgToCIM/Passes.h"
+#include "CIM22/Host/HostProgram.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -21,12 +22,14 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <limits>
 #include <optional>
 
 namespace mlir::cim {
+#define GEN_PASS_DEF_DUMPCIMHOSTPROGRAM
 #define GEN_PASS_DEF_FORMCIMPROGRAM
 #define GEN_PASS_DEF_MATERIALIZECIMEXECUTIONPLAN
 #define GEN_PASS_DEF_MATERIALIZECIMSCHEDULE
@@ -1068,6 +1071,54 @@ public:
         signalPassFailure();
         return;
       }
+    }
+  }
+};
+
+class DumpCIMHostProgram final
+    : public impl::DumpCIMHostProgramBase<DumpCIMHostProgram> {
+public:
+  using Base::Base;
+
+  void runOnOperation() override {
+    FailureOr<cim22::host::HostProgram> program =
+        cim22::host::buildHostProgram(getOperation());
+    if (failed(program)) {
+      signalPassFailure();
+      return;
+    }
+
+    llvm::raw_ostream &os = llvm::errs();
+    os << "host_program @" << program->function.getValue() << " : "
+       << program->type << '\n';
+    for (auto [ordinal, step] : llvm::enumerate(program->steps)) {
+      if (auto *host = std::get_if<cim22::host::HostStep>(&step)) {
+        os << "host_step " << ordinal << " ops=" << host->operations.size()
+           << '\n';
+        for (Operation *op : host->operations)
+          os << "  host_op " << op->getName() << '\n';
+        continue;
+      }
+
+      const auto &segment = std::get<cim22::host::CIMSegment>(step);
+      os << "cim_segment " << ordinal << " group=" << segment.groupId
+         << " ops=" << segment.operations.size()
+         << " inputs=" << segment.inputs.size()
+         << " results=" << segment.results.size() << '\n';
+      auto printViews = [&](ArrayRef<cim22::host::LogicalView> views) {
+        for (const cim22::host::LogicalView &view : views) {
+          StringRef direction =
+              view.direction == cim22::host::ViewDirection::HostToCIM
+                  ? "host_to_cim"
+                  : "cim_to_host";
+          os << "  view order=" << view.order << " direction=" << direction
+             << " slot=" << view.logicalSlot << " work=" << view.workId
+             << " type=" << view.type << '\n';
+        }
+      };
+      printViews(segment.inputs);
+      printViews(segment.results);
+      os << "  barrier " << segment.barrier->getName() << '\n';
     }
   }
 };

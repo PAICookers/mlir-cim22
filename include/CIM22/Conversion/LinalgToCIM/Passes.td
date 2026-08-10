@@ -18,6 +18,11 @@ def NormalizeCIMConv : Pass<"normalize-cim-conv", "::mlir::ModuleOp"> {
                            "::mlir::tensor::TensorDialect"];
 }
 
+def DumpCIMHostProgram
+    : Pass<"dump-cim-host-program", "::mlir::func::FuncOp"> {
+  let summary = "Dump the validated read-only Host/CIM program projection";
+}
+
 def FormCIMProgram : Pass<"form-cim-program", "::mlir::ModuleOp"> {
   let summary = "Form CIM VMM operations from supported Linalg operations";
   let dependentDialects = ["::mlir::arith::ArithDialect",

@@ -9,6 +9,7 @@ add_mlir_library(MLIRCIM22LinalgToCIM
 
   LINK_LIBS PUBLIC
   MLIRCIM22Dialect
+  MLIRCIM22Host
   MLIRArithDialect
   MLIRFuncDialect
   MLIRIR
