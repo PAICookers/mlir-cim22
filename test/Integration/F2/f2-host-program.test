@@ -1,0 +1,27 @@
+// RUN: %python %S/../../Reference/F2/generate_conv_integer_onnx.py --emit-dir %t.models
+// RUN: mlir-cim22-onnx-import %t.models/canonical.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.canonical.first
+// RUN: mlir-cim22-onnx-import %t.models/canonical.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.canonical.second
+// RUN: diff %t.canonical.first %t.canonical.second
+// RUN: grep -c '^cim_segment ' %t.canonical.first | FileCheck %s --check-prefix=CANONICAL-SEGMENTS
+// RUN: grep -c 'direction=host_to_cim' %t.canonical.first | FileCheck %s --check-prefix=CANONICAL-INPUTS
+// RUN: grep -c 'direction=cim_to_host' %t.canonical.first | FileCheck %s --check-prefix=CANONICAL-RESULTS
+// RUN: FileCheck %s --check-prefix=CANONICAL < %t.canonical.first
+// RUN: mlir-cim22-onnx-import %t.models/odd.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.odd
+// RUN: grep -c '^cim_segment ' %t.odd | FileCheck %s --check-prefix=ODD-SEGMENTS
+// RUN: FileCheck %s --check-prefix=ODD < %t.odd
+
+// CANONICAL-SEGMENTS: 128
+// CANONICAL-INPUTS: 256
+// CANONICAL-RESULTS: 256
+// CANONICAL-LABEL: host_program @main : (tensor<1x8x8x8xi8>) -> tensor<1x19x8x8xi32>
+// CANONICAL: host_op linalg.generic
+// CANONICAL: cim_segment {{[0-9]+}} group=0 ops=10 inputs=2 results=2
+// CANONICAL: host_op arith.addi
+// CANONICAL: host_op tensor.expand_shape
+
+// ODD-SEGMENTS: 5
+// ODD-LABEL: host_program @main : (tensor<1x1x3x3xi8>) -> tensor<1x1x3x3xi32>
+// ODD: cim_segment {{[0-9]+}} group=4 ops=6 inputs=1 results=1
+// ODD-NEXT: view order=16 direction=host_to_cim slot=0 work=8 type=tensor<64xi8>
+// ODD-NEXT: view order=17 direction=cim_to_host slot=0 work=8 type=tensor<16xi21>
+// ODD-NEXT: barrier cim.group_barrier
