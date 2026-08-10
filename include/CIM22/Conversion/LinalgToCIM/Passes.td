@@ -11,6 +11,13 @@
 
 include "mlir/Pass/PassBase.td"
 
+def NormalizeCIMConv : Pass<"normalize-cim-conv", "::mlir::ModuleOp"> {
+  let summary = "Normalize marked batch-one ConvInteger for CIM lowering";
+  let dependentDialects = ["::mlir::arith::ArithDialect",
+                           "::mlir::linalg::LinalgDialect",
+                           "::mlir::tensor::TensorDialect"];
+}
+
 def FormCIMProgram : Pass<"form-cim-program", "::mlir::ModuleOp"> {
   let summary = "Form CIM VMM operations from supported Linalg operations";
   let dependentDialects = ["::mlir::arith::ArithDialect",

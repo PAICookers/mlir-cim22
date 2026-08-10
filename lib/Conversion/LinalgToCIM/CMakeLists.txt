@@ -13,6 +13,7 @@ add_mlir_library(MLIRCIM22LinalgToCIM
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
+  MLIRLinalgTransforms
   MLIRPass
   MLIRTensorDialect
   MLIRTransforms

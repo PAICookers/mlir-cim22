@@ -11,8 +11,10 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Transforms/DialectConversion.h"
 
@@ -28,10 +30,12 @@ namespace mlir::cim {
 #define GEN_PASS_DEF_FORMCIMPROGRAM
 #define GEN_PASS_DEF_MATERIALIZECIMINVOCATION
 #define GEN_PASS_DEF_MATERIALIZECIMSCHEDULE
+#define GEN_PASS_DEF_NORMALIZECIMCONV
 #include "CIM22/Conversion/LinalgToCIM/Passes.h.inc"
 
 namespace {
 constexpr llvm::StringLiteral kMatMulIntegerMarker = "cim.onnx.matmul_integer";
+constexpr llvm::StringLiteral kConvIntegerMarker = "cim.onnx.conv_integer";
 constexpr llvm::StringLiteral kMatTileMarker = "__cim_m_tile";
 constexpr llvm::StringLiteral kTileAttrs[] = {"m_tile", "n_tile", "k_tile"};
 constexpr llvm::StringLiteral kScheduleAttrs[] = {"work_id", "group_id"};
@@ -46,6 +50,16 @@ FailureOr<DenseElementsAttr> evaluateDenseTensor(Value value) {
   if (auto constant = value.getDefiningOp<arith::ConstantOp>())
     if (auto elements = dyn_cast<DenseElementsAttr>(constant.getValue()))
       return elements;
+
+  if (auto collapse = value.getDefiningOp<tensor::CollapseShapeOp>()) {
+    FailureOr<DenseElementsAttr> source =
+        evaluateDenseTensor(collapse.getSrc());
+    auto resultType = dyn_cast<RankedTensorType>(collapse.getType());
+    if (failed(source) || !resultType ||
+        (*source).getNumElements() != resultType.getNumElements())
+      return failure();
+    return (*source).reshape(resultType);
+  }
 
   if (auto slice = value.getDefiningOp<tensor::ExtractSliceOp>()) {
     FailureOr<DenseElementsAttr> source =
@@ -202,6 +216,12 @@ bool isZeroSplat(Value value) {
                            : DenseElementsAttr{};
   return elements && elements.isSplat() &&
          elements.getSplatValue<APInt>().isZero();
+}
+
+bool isEvaluatedZeroSplat(Value value) {
+  FailureOr<DenseElementsAttr> elements = evaluateDenseTensor(value);
+  return succeeded(elements) && (*elements).isSplat() &&
+         (*elements).getSplatValue<APInt>().isZero();
 }
 
 bool hasCanonicalInt8ContractionBody(Region &region) {
@@ -372,20 +392,18 @@ bool hasCanonicalI32Int8ContractionBody(Region &region) {
 }
 
 MatMulIntegerStatus proveMatMulIntegerRanges(Value weight) {
-  auto constant = weight.getDefiningOp<arith::ConstantOp>();
-  auto elements = constant ? dyn_cast<DenseElementsAttr>(constant.getValue())
-                           : DenseElementsAttr{};
+  FailureOr<DenseElementsAttr> elements = evaluateDenseTensor(weight);
   auto type = dyn_cast<RankedTensorType>(weight.getType());
-  if (!elements || !type || type.getRank() != 2 ||
-      elements.getNumElements() != type.getNumElements())
+  if (failed(elements) || !type || type.getRank() != 2 ||
+      (*elements).getNumElements() != type.getNumElements())
     return MatMulIntegerStatus::invalid;
 
   int64_t outputSize = type.getDimSize(0);
   int64_t reductionSize = type.getDimSize(1);
 
   SmallVector<int64_t> values;
-  values.reserve(elements.getNumElements());
-  for (APInt value : elements.getValues<APInt>())
+  values.reserve((*elements).getNumElements());
+  for (APInt value : (*elements).getValues<APInt>())
     values.push_back(value.getSExtValue());
 
   for (int64_t output = 0; output < outputSize; ++output) {
@@ -433,7 +451,8 @@ MatMulIntegerStatus getMatMulIntegerStatus(linalg::MatvecOp op) {
   if (!hasType(inputs[0], {outputSize, reductionSize}, 8) ||
       !hasType(inputs[1], {reductionSize}, 8) ||
       !hasType(inits[0], {outputSize}, 32) ||
-      !hasType(op->getResult(0), {outputSize}, 32) || !isZeroSplat(inits[0]) ||
+      !hasType(op->getResult(0), {outputSize}, 32) ||
+      !isEvaluatedZeroSplat(inits[0]) ||
       !hasCanonicalI32Int8ContractionBody(op.getRegion()) ||
       !hasCanonicalMatvecIndexingMaps(op))
     return MatMulIntegerStatus::invalid;
@@ -463,7 +482,8 @@ MatMulIntegerStatus getMatMulIntegerStatus(linalg::MatmulOp op) {
       !hasType(inputs[1], {reductionSize, columnCount}, 8) ||
       !hasType(inits[0], {outputSize, columnCount}, 32) ||
       !hasType(op->getResult(0), {outputSize, columnCount}, 32) ||
-      !isZeroSplat(inits[0]) || op.getCast() != linalg::TypeFn::cast_signed ||
+      !isEvaluatedZeroSplat(inits[0]) ||
+      op.getCast() != linalg::TypeFn::cast_signed ||
       !hasCanonicalI32Int8ContractionBody(op.getRegion()) ||
       !hasCanonicalMatmulIndexingMaps(op))
     return MatMulIntegerStatus::invalid;
@@ -938,6 +958,117 @@ public:
     }
     rewriter.replaceOpWithNewOp<tensor::ConcatOp>(op, 1, expandedColumns);
     return success();
+  }
+};
+
+LogicalResult normalizeCIMConv(linalg::Conv2DNchwFchwOp op,
+                               PatternRewriter &rewriter) {
+  Location location = op.getLoc();
+  auto reject = [&](StringRef message) {
+    emitError(location) << "invalid marked ConvInteger: " << message;
+    return failure();
+  };
+  if (!isa<UnitAttr>(op->getAttr(kConvIntegerMarker)))
+    return reject("expects a unit cim.onnx.conv_integer marker");
+
+  auto inputs = op.getDpsInputs();
+  auto inits = op.getDpsInits();
+  if (inputs.size() != 2 || inits.size() != 1 || op->getNumResults() != 1)
+    return reject("has an invalid marked ConvInteger operand contract");
+  auto inputType = dyn_cast<RankedTensorType>(inputs[0].getType());
+  auto weightType = dyn_cast<RankedTensorType>(inputs[1].getType());
+  auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+  if (!inputType || !weightType || !resultType || inputType.getRank() != 4 ||
+      weightType.getRank() != 4 || resultType.getRank() != 4)
+    return reject("requires ranked NCHW/FCHW tensors");
+
+  int64_t channels = weightType.getDimSize(1);
+  int64_t filters = weightType.getDimSize(0);
+  int64_t height = resultType.getDimSize(2);
+  int64_t width = resultType.getDimSize(3);
+  if (channels <= 0 || filters <= 0 || height <= 0 || width <= 0 ||
+      channels > std::numeric_limits<int64_t>::max() / 9 ||
+      height > std::numeric_limits<int64_t>::max() - 2 ||
+      width > std::numeric_limits<int64_t>::max() - 2 ||
+      height > std::numeric_limits<int64_t>::max() / width ||
+      !hasType(inputs[0], {1, channels, height + 2, width + 2}, 8) ||
+      !hasType(inputs[1], {filters, channels, 3, 3}, 8) ||
+      !hasType(inits[0], {1, filters, height, width}, 32) ||
+      !hasType(op->getResult(0), {1, filters, height, width}, 32) ||
+      !isZeroSplat(inits[0]) || failed(evaluateDenseTensor(inputs[1])) ||
+      !llvm::all_of(op.getStrides().getValues<int64_t>(),
+                    [](int64_t value) { return value == 1; }) ||
+      !llvm::all_of(op.getDilations().getValues<int64_t>(),
+                    [](int64_t value) { return value == 1; }))
+    return reject("does not match the frozen integer Conv profile");
+
+  FailureOr<std::pair<Operation *, Operation *>> rewritten =
+      linalg::rewriteInIm2Col(rewriter, op);
+  if (failed(rewritten))
+    return reject("upstream im2col rewrite failed");
+  auto im2col = dyn_cast<linalg::GenericOp>(rewritten->first);
+  auto restore = dyn_cast<tensor::ExpandShapeOp>(rewritten->second);
+  auto contraction = restore
+                         ? restore.getSrc().getDefiningOp<linalg::GenericOp>()
+                         : linalg::GenericOp{};
+  if (!im2col || !restore || !contraction)
+    return reject("upstream im2col rewrite returned an unexpected IR shape");
+
+  auto contractionInputs = contraction.getDpsInputs();
+  auto contractionInits = contraction.getDpsInits();
+  if (contractionInputs.size() != 2 || contractionInits.size() != 1)
+    return reject("upstream im2col contraction has unexpected operands");
+  auto colType = dyn_cast<RankedTensorType>(contractionInputs[1].getType());
+  auto batchedResultType =
+      dyn_cast<RankedTensorType>(contraction->getResult(0).getType());
+  if (!colType || !batchedResultType ||
+      colType.getShape() !=
+          ArrayRef<int64_t>{1, channels * 9, height * width} ||
+      batchedResultType.getShape() !=
+          ArrayRef<int64_t>{1, filters, height * width})
+    return reject("upstream im2col contraction has unexpected batch shape");
+
+  rewriter.setInsertionPoint(contraction);
+  SmallVector<ReassociationIndices> collapseBatch{{0, 1}, {2}};
+  auto col2DType = RankedTensorType::get({channels * 9, height * width},
+                                         colType.getElementType());
+  auto result2DType = RankedTensorType::get({filters, height * width},
+                                            batchedResultType.getElementType());
+  auto col2D = tensor::CollapseShapeOp::create(
+      rewriter, location, col2DType, contractionInputs[1], collapseBatch);
+  auto init2D = tensor::CollapseShapeOp::create(
+      rewriter, location, result2DType, contractionInits[0], collapseBatch);
+  auto matmul = linalg::MatmulOp::create(
+      rewriter, location, TypeRange{result2DType},
+      ValueRange{contractionInputs[0], col2D.getResult()},
+      ValueRange{init2D.getResult()});
+  matmul->setAttr(kMatMulIntegerMarker, rewriter.getUnitAttr());
+  auto expanded =
+      tensor::ExpandShapeOp::create(rewriter, location, batchedResultType,
+                                    matmul.getResult(0), collapseBatch);
+  rewriter.replaceOp(contraction, expanded.getResult());
+  return success();
+}
+
+class NormalizeCIMConv final
+    : public impl::NormalizeCIMConvBase<NormalizeCIMConv> {
+public:
+  using Base::Base;
+
+  void runOnOperation() override {
+    SmallVector<linalg::Conv2DNchwFchwOp> candidates;
+    getOperation()->walk([&](linalg::Conv2DNchwFchwOp op) {
+      if (op->hasAttr(kConvIntegerMarker))
+        candidates.push_back(op);
+    });
+    PatternRewriter rewriter(&getContext());
+    for (linalg::Conv2DNchwFchwOp op : candidates) {
+      rewriter.setInsertionPoint(op);
+      if (failed(normalizeCIMConv(op, rewriter))) {
+        signalPassFailure();
+        return;
+      }
+    }
   }
 };
 
