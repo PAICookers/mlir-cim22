@@ -16,6 +16,8 @@ namespace {
 constexpr llvm::StringLiteral kWorkAttrs[] = {
     "m_tile",   "n_tile",    "k_tile",     "work_id",
     "group_id", "core_slot", "macro_slot", "cim.mapping"};
+constexpr llvm::StringLiteral kGroupAttrs[] = {"group_id", "core_slot",
+                                               "cim.mapping"};
 
 bool isExecutionPlanOp(Operation *op) {
   return isa<cim::ConfigureInputOp, cim::ConfigureWeightOp, cim::DispatchOp,
@@ -36,6 +38,14 @@ LogicalResult requireSameWork(Operation *expected, Operation *actual) {
     if (expected->getAttr(name) != actual->getAttr(name))
       return actual->emitError("HostProgram expects '")
              << name << "' to match work provenance";
+  return success();
+}
+
+LogicalResult requireSameGroup(Operation *expected, Operation *actual) {
+  for (StringRef name : kGroupAttrs)
+    if (expected->getAttr(name) != actual->getAttr(name))
+      return actual->emitError("HostProgram expects '")
+             << name << "' to match group provenance";
   return success();
 }
 
@@ -159,6 +169,8 @@ FailureOr<HostProgram> buildHostProgram(func::FuncOp function) {
         input.emitError("HostProgram requires dense group/work/Macro ordering");
         return failure();
       }
+      if (!inputs.empty() && failed(requireSameGroup(inputs.front(), input)))
+        return failure();
       inputs.push_back(input);
       ++expectedWork;
     }
@@ -178,6 +190,8 @@ FailureOr<HostProgram> buildHostProgram(func::FuncOp function) {
       once.emitError("HostProgram once does not match its segment group");
       return failure();
     }
+    if (failed(requireSameGroup(inputs.front(), once)))
+      return failure();
 
     SmallVector<cim::ReadbackOp> readbacks;
     for (cim::ConfigureInputOp input : inputs) {
