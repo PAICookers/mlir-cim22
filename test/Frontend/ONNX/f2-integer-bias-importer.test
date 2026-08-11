@@ -1,0 +1,23 @@
+// RUN: %python %S/../../Reference/F2/generate_integer_bias_onnx.py --emit-dir %t.first | FileCheck %s --check-prefix=GENERATE
+// RUN: %python %S/../../Reference/F2/generate_integer_bias_onnx.py --emit-dir %t.second
+// RUN: cmp %t.first/linear-bias.onnx %t.second/linear-bias.onnx
+// RUN: cmp %t.first/conv-bias.onnx %t.second/conv-bias.onnx
+// RUN: mlir-cim22-onnx-import %t.first/linear-bias.onnx | FileCheck %s --check-prefix=LINEAR
+// RUN: mlir-cim22-onnx-import %t.first/conv-bias.onnx | FileCheck %s --check-prefix=CONV
+
+// GENERATE: PASS integer bias ONNX generation: linear and conv
+
+// LINEAR-LABEL: func.func @main(%{{.*}}: tensor<2x65xi8>) -> tensor<2x17xi32>
+// LINEAR: linalg.matmul {cim.onnx.matmul_integer}
+// LINEAR: arith.constant dense<{{.*}}> : tensor<17xi32>
+// LINEAR: linalg.broadcast {{.*}}dimensions = [0]
+// LINEAR: linalg.add
+// LINEAR: return %{{.*}} : tensor<2x17xi32>
+
+// CONV-LABEL: func.func @main(%{{.*}}: tensor<1x2x5x6xi8>) -> tensor<1x17x3x3xi32>
+// CONV: tensor.pad %{{.*}} low[0, 0, 1, 0] high[0, 0, 0, 1]
+// CONV: linalg.conv_2d_nchw_fchw {{.*}}cim.onnx.conv_integer
+// CONV: arith.constant dense<{{.*}}> : tensor<17xi32>
+// CONV: linalg.broadcast {{.*}}dimensions = [0, 2, 3]
+// CONV: linalg.add
+// CONV: return %{{.*}} : tensor<1x17x3x3xi32>

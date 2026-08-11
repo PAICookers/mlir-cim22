@@ -1,0 +1,27 @@
+// RUN: %python %S/../../Reference/F2/generate_integer_bias_onnx.py --emit-dir %t.models
+// RUN: mlir-cim22-onnx-import %t.models/linear-bias.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.linear.first
+// RUN: mlir-cim22-onnx-import %t.models/linear-bias.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.linear.second
+// RUN: diff %t.linear.first %t.linear.second
+// RUN: grep -c '^cim_segment ' %t.linear.first | FileCheck %s --check-prefix=LINEAR-SEGMENTS
+// RUN: grep -c 'direction=host_to_cim' %t.linear.first | FileCheck %s --check-prefix=LINEAR-WORKS
+// RUN: FileCheck %s --check-prefix=LINEAR < %t.linear.first
+// RUN: mlir-cim22-onnx-import %t.models/conv-bias.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.conv.first
+// RUN: mlir-cim22-onnx-import %t.models/conv-bias.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.conv.second
+// RUN: diff %t.conv.first %t.conv.second
+// RUN: grep -c '^cim_segment ' %t.conv.first | FileCheck %s --check-prefix=CONV-SEGMENTS
+// RUN: grep -c 'direction=host_to_cim' %t.conv.first | FileCheck %s --check-prefix=CONV-WORKS
+// RUN: FileCheck %s --check-prefix=CONV < %t.conv.first
+
+// LINEAR-SEGMENTS: 4
+// LINEAR-WORKS: 8
+// LINEAR-LABEL: host_program @main : (tensor<2x65xi8>) -> tensor<2x17xi32>
+// LINEAR: barrier cim.group_barrier
+// LINEAR: host_op linalg.broadcast
+// LINEAR: host_op linalg.add
+
+// CONV-SEGMENTS: 9
+// CONV-WORKS: 18
+// CONV-LABEL: host_program @main : (tensor<1x2x5x6xi8>) -> tensor<1x17x3x3xi32>
+// CONV: barrier cim.group_barrier
+// CONV: host_op linalg.broadcast
+// CONV: host_op linalg.add
