@@ -17,7 +17,25 @@ def wrap_i32(values: np.ndarray) -> np.ndarray:
     return ((values + 2**31) % 2**32 - 2**31).astype(np.int32)
 
 
-def verify_linear(model_path: Path) -> int:
+def extend_bias_operands(
+    weight: np.ndarray, input_value: np.ndarray, bias: np.ndarray, exact_k: bool
+) -> tuple[np.ndarray, np.ndarray]:
+    bias_column = bias.astype(np.int8).reshape(-1, 1)
+    one_row = np.ones((1, input_value.shape[1]), dtype=np.int8)
+    if exact_k:
+        return (
+            np.concatenate((weight[:, :-1], bias_column, weight[:, -1:]), axis=1),
+            np.concatenate((input_value[:-1], one_row, input_value[-1:]), axis=0),
+        )
+    return (
+        np.concatenate((weight, bias_column), axis=1),
+        np.concatenate((input_value, one_row), axis=0),
+    )
+
+
+def verify_linear(
+    model_path: Path, *, foldable: bool = False, exact_k: bool = False
+) -> tuple[int, int]:
     model = onnx.load_model(model_path)
     checker.check_model(model, full_check=True)
     shape_inference.infer_shapes(model, strict_mode=True)
@@ -26,7 +44,18 @@ def verify_linear(model_path: Path) -> int:
     }
     weight = initializers["weight"]
     bias = initializers["bias"]
-    input_value = np.stack([np.ones(65, dtype=np.int8), -np.ones(65, dtype=np.int8)])
+    batch, reduction = (
+        model.graph.input[0].type.tensor_type.shape.dim[index].dim_value
+        for index in range(2)
+    )
+    if foldable:
+        input_value = (
+            np.arange(batch * reduction, dtype=np.int32) % 23 - 11
+        ).astype(np.int8).reshape(batch, reduction)
+    else:
+        input_value = np.stack(
+            [np.ones(reduction, dtype=np.int8), -np.ones(reduction, dtype=np.int8)]
+        )
     unwrapped = input_value.astype(np.int64) @ weight.astype(np.int64) + bias
     expected = wrap_i32(unwrapped)
     evaluator = ReferenceEvaluator(model)
@@ -34,12 +63,24 @@ def verify_linear(model_path: Path) -> int:
     repeated = evaluator.run(None, {"input": input_value})[0]
     np.testing.assert_array_equal(actual, expected)
     np.testing.assert_array_equal(repeated, expected)
-    assert unwrapped[0, 0] == 2**31 + 64
-    assert expected[0, 0] == -(2**31) + 64
-    return 2 * ceil(17 / 16) * ceil(65 / 64)
+    if foldable:
+        folded_weight, folded_input = extend_bias_operands(
+            weight.T, input_value.T, bias, exact_k
+        )
+        folded = wrap_i32(
+            folded_weight.astype(np.int64) @ folded_input.astype(np.int64)
+        ).T
+        np.testing.assert_array_equal(folded, expected)
+    else:
+        assert unwrapped[0, 0] == 2**31 + 64
+        assert expected[0, 0] == -(2**31) + 64
+    reduction_tiles = ceil((reduction + int(foldable)) / 64)
+    return batch * ceil(weight.shape[1] / 16) * reduction_tiles, batch * reduction_tiles
 
 
-def verify_conv(model_path: Path) -> int:
+def verify_conv(
+    model_path: Path, *, foldable: bool = False, exact_k: bool = False
+) -> tuple[int, int]:
     model = onnx.load_model(model_path)
     checker.check_model(model, full_check=True)
     shape_inference.infer_shapes(model, strict_mode=True)
@@ -52,41 +93,78 @@ def verify_conv(model_path: Path) -> int:
     }
     weight = initializers["weight"]
     bias = initializers["bias"]
-    input_value = (np.arange(60, dtype=np.int32) % 17 - 8).astype(np.int8)
-    input_value = input_value.reshape(1, 2, 5, 6)
+    input_shape = tuple(
+        dimension.dim_value
+        for dimension in model.graph.input[0].type.tensor_type.shape.dim
+    )
+    input_value = (np.arange(np.prod(input_shape), dtype=np.int32) % 17 - 8).astype(
+        np.int8
+    ).reshape(input_shape)
     pad_top, pad_left, pad_bottom, pad_right = attributes["pads"]
     stride_height, stride_width = attributes["strides"]
     padded = np.pad(
         input_value,
         ((0, 0), (0, 0), (pad_top, pad_bottom), (pad_left, pad_right)),
     )
-    patches = np.empty((12, 9), dtype=np.int64)
-    for row in range(3):
-        for column in range(3):
+    filters, channels, kernel_height, kernel_width = weight.shape
+    output_height = (padded.shape[2] - kernel_height) // stride_height + 1
+    output_width = (padded.shape[3] - kernel_width) // stride_width + 1
+    reduction = channels * kernel_height * kernel_width
+    spatial = output_height * output_width
+    patches = np.empty((reduction, spatial), dtype=np.int8)
+    for row in range(output_height):
+        for column in range(output_width):
             input_row = row * stride_height
             input_column = column * stride_width
-            patches[:, row * 3 + column] = padded[
-                0, :, input_row : input_row + 2, input_column : input_column + 3
+            patches[:, row * output_width + column] = padded[
+                0,
+                :,
+                input_row : input_row + kernel_height,
+                input_column : input_column + kernel_width,
             ].reshape(-1)
-    core = (weight.reshape(17, 12).astype(np.int64) @ patches).reshape(1, 17, 3, 3)
+    core = (
+        weight.reshape(filters, reduction).astype(np.int64)
+        @ patches.astype(np.int64)
+    ).reshape(1, filters, output_height, output_width)
     expected = wrap_i32(core + bias.astype(np.int64))
     evaluator = ReferenceEvaluator(model)
     actual = evaluator.run(None, {"input": input_value})[0]
     repeated = evaluator.run(None, {"input": input_value})[0]
     np.testing.assert_array_equal(actual, expected)
     np.testing.assert_array_equal(repeated, expected)
-    return 3 * 3 * ceil(17 / 16) * ceil(12 / 64)
+    if foldable:
+        folded_weight, folded_input = extend_bias_operands(
+            weight.reshape(filters, reduction), patches, bias.reshape(-1), exact_k
+        )
+        folded = wrap_i32(
+            folded_weight.astype(np.int64) @ folded_input.astype(np.int64)
+        ).reshape(1, filters, output_height, output_width)
+        np.testing.assert_array_equal(folded, expected)
+    reduction_tiles = ceil((reduction + int(foldable)) / 64)
+    return spatial * ceil(filters / 16) * reduction_tiles, spatial * reduction_tiles
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("model_dir", type=Path)
     args = parser.parse_args()
-    linear_works = verify_linear(args.model_dir / "linear-bias.onnx")
-    conv_works = verify_conv(args.model_dir / "conv-bias.onnx")
-    assert linear_works == 8
-    assert conv_works == 18
-    print("PASS integer bias oracle: linear_vmm=8 conv_vmm=18 wrap=int32")
+    assert verify_linear(args.model_dir / "linear-bias.onnx") == (8, 4)
+    assert verify_conv(args.model_dir / "conv-bias.onnx") == (18, 9)
+    assert verify_linear(
+        args.model_dir / "linear-bias-fold.onnx", foldable=True
+    ) == (8, 4)
+    assert verify_conv(
+        args.model_dir / "conv-bias-fold.onnx", foldable=True
+    ) == (18, 9)
+    assert verify_linear(
+        args.model_dir / "linear-bias-exact.onnx", foldable=True, exact_k=True
+    ) == (4, 2)
+    assert verify_conv(
+        args.model_dir / "conv-bias-exact.onnx", foldable=True, exact_k=True
+    ) == (4, 2)
+    print(
+        "PASS integer bias oracle: tail=8/4,18/9 exact=4/2,4/2 wrap=int32"
+    )
 
 
 if __name__ == "__main__":

@@ -1,27 +1,92 @@
 // RUN: %python %S/../../Reference/F2/generate_integer_bias_onnx.py --emit-dir %t.models
-// RUN: mlir-cim22-onnx-import %t.models/linear-bias.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.linear.first
-// RUN: mlir-cim22-onnx-import %t.models/linear-bias.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.linear.second
-// RUN: diff %t.linear.first %t.linear.second
-// RUN: grep -c '^cim_segment ' %t.linear.first | FileCheck %s --check-prefix=LINEAR-SEGMENTS
-// RUN: grep -c 'direction=host_to_cim' %t.linear.first | FileCheck %s --check-prefix=LINEAR-WORKS
-// RUN: FileCheck %s --check-prefix=LINEAR < %t.linear.first
-// RUN: mlir-cim22-onnx-import %t.models/conv-bias.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.conv.first
-// RUN: mlir-cim22-onnx-import %t.models/conv-bias.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.conv.second
-// RUN: diff %t.conv.first %t.conv.second
-// RUN: grep -c '^cim_segment ' %t.conv.first | FileCheck %s --check-prefix=CONV-SEGMENTS
-// RUN: grep -c 'direction=host_to_cim' %t.conv.first | FileCheck %s --check-prefix=CONV-WORKS
-// RUN: FileCheck %s --check-prefix=CONV < %t.conv.first
+// RUN: mlir-cim22-onnx-import %t.models/linear-bias.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(fold-cim-int8-bias,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.linear-wide.host
+// RUN: grep -c '^cim_segment ' %t.linear-wide.host | FileCheck %s --check-prefix=LINEAR-TAIL-SEGMENTS
+// RUN: grep -c 'direction=host_to_cim' %t.linear-wide.host | FileCheck %s --check-prefix=LINEAR-TAIL-WORKS
+// RUN: FileCheck %s --check-prefix=WIDE-LINEAR-HOST < %t.linear-wide.host
+// RUN: mlir-cim22-onnx-import %t.models/conv-bias.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,fold-cim-int8-bias,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.conv-wide.host
+// RUN: grep -c '^cim_segment ' %t.conv-wide.host | FileCheck %s --check-prefix=CONV-TAIL-SEGMENTS
+// RUN: grep -c 'direction=host_to_cim' %t.conv-wide.host | FileCheck %s --check-prefix=CONV-TAIL-WORKS
+// RUN: FileCheck %s --check-prefix=WIDE-CONV-HOST < %t.conv-wide.host
 
-// LINEAR-SEGMENTS: 4
-// LINEAR-WORKS: 8
-// LINEAR-LABEL: host_program @main : (tensor<2x65xi8>) -> tensor<2x17xi32>
-// LINEAR: barrier cim.group_barrier
-// LINEAR: host_op linalg.broadcast
-// LINEAR: host_op linalg.add
+// RUN: mlir-cim22-onnx-import %t.models/linear-bias-fold.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(fold-cim-int8-bias,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section,func.func(dump-cim-host-program))' > %t.linear-fold.first 2> %t.linear-fold.first.host
+// RUN: mlir-cim22-onnx-import %t.models/linear-bias-fold.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(fold-cim-int8-bias,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section,func.func(dump-cim-host-program))' > %t.linear-fold.second 2> %t.linear-fold.second.host
+// RUN: diff %t.linear-fold.first %t.linear-fold.second
+// RUN: diff %t.linear-fold.first.host %t.linear-fold.second.host
+// RUN: grep -c '^cim_segment ' %t.linear-fold.first.host | FileCheck %s --check-prefix=LINEAR-TAIL-SEGMENTS
+// RUN: grep -c 'direction=host_to_cim' %t.linear-fold.first.host | FileCheck %s --check-prefix=LINEAR-TAIL-WORKS
+// RUN: grep -c 'cim.static_weight @' %t.linear-fold.first | FileCheck %s --check-prefix=LINEAR-TAIL-RESOURCES
+// RUN: FileCheck %s --check-prefix=FOLDED-LINEAR-HOST < %t.linear-fold.first.host
 
-// CONV-SEGMENTS: 9
-// CONV-WORKS: 18
-// CONV-LABEL: host_program @main : (tensor<1x2x5x6xi8>) -> tensor<1x17x3x3xi32>
-// CONV: barrier cim.group_barrier
-// CONV: host_op linalg.broadcast
-// CONV: host_op linalg.add
+// RUN: mlir-cim22-onnx-import %t.models/conv-bias-fold.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,fold-cim-int8-bias,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section,func.func(dump-cim-host-program))' > %t.conv-fold 2> %t.conv-fold.host
+// RUN: grep -c '^cim_segment ' %t.conv-fold.host | FileCheck %s --check-prefix=CONV-TAIL-SEGMENTS
+// RUN: grep -c 'direction=host_to_cim' %t.conv-fold.host | FileCheck %s --check-prefix=CONV-TAIL-WORKS
+// RUN: grep -c 'cim.static_weight @' %t.conv-fold | FileCheck %s --check-prefix=CONV-TAIL-RESOURCES
+// RUN: FileCheck %s --check-prefix=FOLDED-CONV-HOST < %t.conv-fold.host
+
+// RUN: mlir-cim22-onnx-import %t.models/linear-bias-exact.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(fold-cim-int8-bias,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section,func.func(dump-cim-host-program))' > %t.linear-exact.first 2> %t.linear-exact.first.host
+// RUN: mlir-cim22-onnx-import %t.models/linear-bias-exact.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(fold-cim-int8-bias,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section,func.func(dump-cim-host-program))' > %t.linear-exact.second 2> %t.linear-exact.second.host
+// RUN: diff %t.linear-exact.first %t.linear-exact.second
+// RUN: diff %t.linear-exact.first.host %t.linear-exact.second.host
+// RUN: grep -c '^cim_segment ' %t.linear-exact.first.host | FileCheck %s --check-prefix=EXACT-SEGMENTS
+// RUN: grep -c 'direction=host_to_cim' %t.linear-exact.first.host | FileCheck %s --check-prefix=EXACT-WORKS
+// RUN: grep -c 'cim.static_weight @' %t.linear-exact.first | FileCheck %s --check-prefix=EXACT-RESOURCES
+// RUN: FileCheck %s --check-prefix=FOLDED-EXACT-LINEAR-HOST < %t.linear-exact.first.host
+// RUN: mlir-cim22-onnx-import %t.models/linear-bias-exact.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(fold-cim-int8-bias{allow-extra-k-tile=false},form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section,func.func(dump-cim-host-program))' > %t.linear-exact-noextra 2> %t.linear-exact-noextra.host
+// RUN: grep -c '^cim_segment ' %t.linear-exact-noextra.host | FileCheck %s --check-prefix=NOEXTRA-SEGMENTS
+// RUN: grep -c 'direction=host_to_cim' %t.linear-exact-noextra.host | FileCheck %s --check-prefix=NOEXTRA-WORKS
+// RUN: grep -c 'cim.static_weight @' %t.linear-exact-noextra | FileCheck %s --check-prefix=NOEXTRA-RESOURCES
+// RUN: FileCheck %s --check-prefix=HOST-BIAS < %t.linear-exact-noextra.host
+
+// RUN: mlir-cim22-onnx-import %t.models/conv-bias-exact.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,fold-cim-int8-bias,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section,func.func(dump-cim-host-program))' > %t.conv-exact 2> %t.conv-exact.host
+// RUN: grep -c '^cim_segment ' %t.conv-exact.host | FileCheck %s --check-prefix=EXACT-SEGMENTS
+// RUN: grep -c 'direction=host_to_cim' %t.conv-exact.host | FileCheck %s --check-prefix=EXACT-WORKS
+// RUN: grep -c 'cim.static_weight @' %t.conv-exact | FileCheck %s --check-prefix=EXACT-RESOURCES
+// RUN: FileCheck %s --check-prefix=FOLDED-EXACT-CONV-HOST < %t.conv-exact.host
+
+// RUN: mlir-cim22-onnx-import %t.models/linear-bias-fold.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(fold-cim-int8-bias{allow-extra-k-tile=false},form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.linear-tail-noextra.host
+// RUN: FileCheck %s --check-prefix=FOLDED-LINEAR-HOST < %t.linear-tail-noextra.host
+// RUN: mlir-cim22-onnx-import %t.models/linear-bias-fold.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(fold-cim-int8-bias{enable=false},form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.linear-disabled.host
+// RUN: FileCheck %s --check-prefix=HOST-BIAS < %t.linear-disabled.host
+
+// LINEAR-TAIL-SEGMENTS: 4
+// LINEAR-TAIL-WORKS: 8
+// LINEAR-TAIL-RESOURCES: 8
+// CONV-TAIL-SEGMENTS: 9
+// CONV-TAIL-WORKS: 18
+// CONV-TAIL-RESOURCES: 18
+// EXACT-SEGMENTS: 2
+// EXACT-WORKS: 4
+// EXACT-RESOURCES: 4
+// NOEXTRA-SEGMENTS: 1
+// NOEXTRA-WORKS: 2
+// NOEXTRA-RESOURCES: 2
+
+// WIDE-LINEAR-HOST-LABEL: host_program @main : (tensor<2x65xi8>) -> tensor<2x17xi32>
+// WIDE-LINEAR-HOST: host_op linalg.broadcast
+// WIDE-LINEAR-HOST: host_op linalg.add
+// WIDE-CONV-HOST-LABEL: host_program @main : (tensor<1x2x5x6xi8>) -> tensor<1x17x3x3xi32>
+// WIDE-CONV-HOST: host_op linalg.broadcast
+// WIDE-CONV-HOST: host_op linalg.add
+
+// FOLDED-LINEAR-HOST-LABEL: host_program @main : (tensor<2x65xi8>) -> tensor<2x17xi32>
+// FOLDED-LINEAR-HOST: host_op tensor.concat
+// FOLDED-LINEAR-HOST-NOT: host_op linalg.broadcast
+// FOLDED-LINEAR-HOST-NOT: host_op linalg.add
+// FOLDED-CONV-HOST-LABEL: host_program @main : (tensor<1x2x5x6xi8>) -> tensor<1x17x3x3xi32>
+// FOLDED-CONV-HOST: host_op linalg.generic
+// FOLDED-CONV-HOST: host_op tensor.concat
+// FOLDED-CONV-HOST-NOT: host_op linalg.broadcast
+// FOLDED-CONV-HOST-NOT: host_op linalg.add
+// FOLDED-EXACT-LINEAR-HOST-LABEL: host_program @main : (tensor<1x64xi8>) -> tensor<1x17xi32>
+// FOLDED-EXACT-LINEAR-HOST: host_op tensor.extract_slice
+// FOLDED-EXACT-LINEAR-HOST: host_op tensor.concat
+// FOLDED-EXACT-LINEAR-HOST-NOT: host_op linalg.broadcast
+// FOLDED-EXACT-LINEAR-HOST-NOT: host_op linalg.add
+// FOLDED-EXACT-CONV-HOST-LABEL: host_program @main : (tensor<1x1x8x8xi8>) -> tensor<1x17x1x1xi32>
+// FOLDED-EXACT-CONV-HOST: host_op linalg.generic
+// FOLDED-EXACT-CONV-HOST: host_op tensor.extract_slice
+// FOLDED-EXACT-CONV-HOST: host_op tensor.concat
+// FOLDED-EXACT-CONV-HOST-NOT: host_op linalg.broadcast
+// FOLDED-EXACT-CONV-HOST-NOT: host_op linalg.add
+// HOST-BIAS: host_op linalg.broadcast
+// HOST-BIAS: host_op linalg.add

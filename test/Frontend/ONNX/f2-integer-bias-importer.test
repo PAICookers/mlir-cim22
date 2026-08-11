@@ -2,6 +2,10 @@
 // RUN: %python %S/../../Reference/F2/generate_integer_bias_onnx.py --emit-dir %t.second
 // RUN: cmp %t.first/linear-bias.onnx %t.second/linear-bias.onnx
 // RUN: cmp %t.first/conv-bias.onnx %t.second/conv-bias.onnx
+// RUN: cmp %t.first/linear-bias-fold.onnx %t.second/linear-bias-fold.onnx
+// RUN: cmp %t.first/conv-bias-fold.onnx %t.second/conv-bias-fold.onnx
+// RUN: cmp %t.first/linear-bias-exact.onnx %t.second/linear-bias-exact.onnx
+// RUN: cmp %t.first/conv-bias-exact.onnx %t.second/conv-bias-exact.onnx
 // RUN: mlir-cim22-onnx-import %t.first/linear-bias.onnx | FileCheck %s --check-prefix=LINEAR
 // RUN: mlir-cim22-onnx-import %t.first/conv-bias.onnx | FileCheck %s --check-prefix=CONV
 

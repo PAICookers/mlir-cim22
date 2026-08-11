@@ -1,4 +1,4 @@
 // RUN: %python %S/generate_integer_bias_onnx.py --emit-dir %t.models
 // RUN: %python %S/verify_integer_bias_oracle.py %t.models | FileCheck %s
 
-// CHECK: PASS integer bias oracle: linear_vmm=8 conv_vmm=18 wrap=int32
+// CHECK: PASS integer bias oracle: tail=8/4,18/9 exact=4/2,4/2 wrap=int32
