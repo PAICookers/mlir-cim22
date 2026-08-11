@@ -263,10 +263,10 @@ bool hasCanonicalMatmulIndexingMaps(linalg::MatmulOp op) {
   return maps == expectedMaps;
 }
 
-// TODO(CTQ-013): Linalg i21 arithmetic wraps on overflow, while CIM22 overflow
-// behavior is not frozen. These software-only conversions assume every 64-term
-// partial and final mathematical accumulation is exactly representable as
-// signed i21.
+// Linalg i21 arithmetic wraps on overflow, while CIM22 overflow behavior is
+// not part of the current execution evidence. These software-only conversions
+// assume every 64-term partial and final mathematical accumulation is exactly
+// representable as signed i21.
 bool isConvertible(linalg::MatvecOp op) {
   auto inputs = op.getDpsInputs();
   auto inits = op.getDpsInits();
@@ -492,8 +492,9 @@ MatMulIntegerStatus getMatMulIntegerStatus(linalg::MatmulOp op) {
 
 LogicalResult rejectMatMulInteger(Operation *op, MatMulIntegerStatus status) {
   if (status == MatMulIntegerStatus::partialRangeOverflow)
-    op->emitError("ONNX MatMulInteger violates CTQ-013: a constant K<=64 "
-                  "partial is outside signed i21");
+    op->emitError(
+        "ONNX MatMulInteger violates the signed i21 partial contract: "
+        "partial is outside signed i21");
   else
     op->emitError("invalid ONNX MatMulInteger normalized i32 contract");
   return failure();

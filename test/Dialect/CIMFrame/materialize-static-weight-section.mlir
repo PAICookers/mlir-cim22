@@ -4,7 +4,8 @@
 // RUN: FileCheck %s --check-prefix=COMMAND < %t.first
 // RUN: mlir-cim22-opt %s --materialize-cim-static-weight-section --lower-cimframe-commands-to-packets --verify-cimframe | FileCheck %s --check-prefix=PACKET
 
-// Software-only M2.4b evidence. The layout remains provisional under CTQ-016.
+// Software-only M2.4b evidence. HWSRC-046 accepts the layout; CTQ-020 still
+// owns execution validation.
 
 #mapping0 = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}
 #mapping19 = {core_coord = array<i64: 3, 4>, destination = array<i64: 3, 4>, ingress = array<i64: 0, 0>, route = array<i64: 3, 1, 0, 0, 0, 0>, source = array<i64: 0, 0>}

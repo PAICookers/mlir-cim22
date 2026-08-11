@@ -43,7 +43,7 @@ LogicalResult verifyMacro(Operation *op, uint32_t macro) {
 }
 
 LogicalResult verifyWords(Operation *op, ArrayRef<int32_t> words) {
-  // FIXME(CTQ-007): The 256-word address range is provisional.
+  // The canonical typed profile represents one complete 16x64 weight tile.
   if (words.size() != 256)
     return op->emitOpError("expects words to contain 256 i32 values");
   return success();

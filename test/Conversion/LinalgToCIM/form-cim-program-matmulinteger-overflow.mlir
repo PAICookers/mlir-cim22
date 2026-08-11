@@ -1,6 +1,6 @@
 // RUN: not mlir-cim22-opt %s -form-cim-program 2>&1 | FileCheck %s
 
-// CHECK: ONNX MatMulInteger violates CTQ-013: a constant K<=64 partial is outside signed i21
+// CHECK: ONNX MatMulInteger violates the signed i21 partial contract: partial is outside signed i21
 
 func.func @partial_overflow(%input: tensor<64x1xi8>) -> tensor<1x1xi32> {
   %weight = arith.constant dense<-128> : tensor<1x64xi8>

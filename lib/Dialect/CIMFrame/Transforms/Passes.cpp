@@ -110,8 +110,8 @@ planStaticWeightCommand(cim::ConfigureWeightOp op, func::FuncOp function,
        llvm::enumerate(weight.getValue().getValues<APInt>()))
     bytes[index] = static_cast<uint8_t>(value.getZExtValue());
 
-  // FIXME(CTQ-016): This software-only M2.4b pass uses the provisional
-  // logical tile mapping exercised by materialize-static-weight-section.mlir.
+  // HWSRC-046 accepts the logical tile mapping exercised by
+  // materialize-static-weight-section.mlir.
   // FIXME(CTQ-020): That test remains software-only and is not board
   // verification.
   std::array<uint32_t, 256> rawWords =

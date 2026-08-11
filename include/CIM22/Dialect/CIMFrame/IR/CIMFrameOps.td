@@ -29,7 +29,7 @@ def CIMFrame_StartInt8OnceOp
     The route remains supplied manually at this M2 boundary; M4
     `map-cim-schedule` owns production route calculation and verification.
     Project policy emits complete control for every command and never relies on
-    reset or retained state. TODO(CTQ-010): Add idle only if required.
+    reset or retained state. Runtime owns once issuance after semantic setup.
   }];
   let arguments = (ins DenseI32ArrayAttr:$route, I32Attr:$macro);
   let assemblyFormat = "attr-dict";
@@ -46,8 +46,8 @@ def CIMFrame_WriteInt8WeightsOp
     The route remains supplied manually at this M2 boundary; M4
     `map-cim-schedule` owns production route calculation and verification.
     Project policy emits complete control for every command and never relies on
-    reset or retained state. TODO(CTQ-010): Add idle only if required.
-    FIXME(CTQ-016): The logical weight-to-word mapping remains provisional.
+    reset or retained state. Runtime owns once issuance after semantic setup.
+    The accepted logical weight-to-word mapping is owned by the layout helper.
     FIXME(CTQ-020): Supplier fixture agreement is not board verification.
   }];
   let arguments = (ins DenseI32ArrayAttr:$route, I32Attr:$macro,
@@ -83,11 +83,12 @@ def CIMFrame_CIMInt8WeightPacketOp
     A complete semantic CIM configuration packet carrying 256 opaque i32 words
     in address order. It has no raw type, length, address, body, or mode fields.
 
-    FIXME(CTQ-007): The 256-word address range is provisional.
-    FIXME(CTQ-013): Preserve words as opaque two's-complement-derived bit
-    patterns; keep future bit-for-bit CIM_data_in encoding replaceable until
-    NoC confirms pass-through.
-    FIXME(CTQ-016): The logical weight-to-word mapping remains provisional.
+    The first canonical profile represents exactly one 16x64 weight tile as
+    256 words in semantic address order. Raw emission must validate the
+    corresponding semantic configuration-scope address coverage before serialization.
+    HWSRC-044 preserves words as opaque two's-complement-derived bit patterns;
+    raw emission copies each word bit-for-bit into CIM_data_in.
+    The accepted logical weight-to-word mapping is owned by the layout helper.
     FIXME(CTQ-020): Supplier fixture agreement is not board verification.
   }];
   let arguments = (ins DenseI32ArrayAttr:$route, DenseI32ArrayAttr:$words);

@@ -16,10 +16,8 @@ std::array<uint32_t, 256>
 mapInt8WeightTileToCIMWords(const std::array<uint8_t, 16 * 64> &WeightBytes) {
   std::array<uint32_t, 256> Words{};
 
-  // TODO(CTQ-016): Confirm this inferred lane/K-to-address mapping and its
-  // applicable chip revision.
-  // FIXME(CTQ-016): Do not expose these words as a production weight-write
-  // ABI until the mapping is confirmed.
+  // HWSRC-046 verifies this lane/K-to-address mapping against the final-chip
+  // testbench fixtures; CTQ-020 still owns execution validation.
   // FIXME(CTQ-020): Supplier fixture agreement is not board verification.
   for (size_t Q = 0; Q < 32; ++Q) {
     for (size_t R = 0; R < 8; ++R) {

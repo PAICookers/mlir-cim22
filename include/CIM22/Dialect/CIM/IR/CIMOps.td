@@ -28,8 +28,9 @@ def CIM_VMMOp : CIM_Op<"vmm", [Pure]> {
     verified `cim.mapping` semantic route result. These attributes do not model
     physical addresses, weight layout, frames, or runtime behavior.
 
-    TODO(CTQ-013): Confirm the signed INT8 input domain.
-    FIXME(CTQ-013): Overflow behavior is not a deployable contract.
+    The first INT8 profile uses signed INT8 operands and the current signed-i21
+    partial legality proof. Overflow behavior remains outside the deployable
+    execution evidence owned by CTQ-020.
   }];
 
   let arguments = (ins RankedTensorOf<[I8]>:$input,
