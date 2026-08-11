@@ -18,4 +18,8 @@
 #define GET_OP_CLASSES
 #include "CIM22/Dialect/CIMFrame/IR/CIMFrameOps.h.inc"
 
+namespace mlir::cimframe {
+LogicalResult verifyCIMFrameModule(ModuleOp module);
+} // namespace mlir::cimframe
+
 #endif // CIM22_DIALECT_CIMFRAME_IR_CIMFRAMEOPS_H

@@ -1,4 +1,5 @@
 add_mlir_library(MLIRCIM22Target
+  CIMFrameCodec.cpp
   Passes.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -9,6 +10,7 @@ add_mlir_library(MLIRCIM22Target
 
   LINK_LIBS PUBLIC
   MLIRCIM22Dialect
+  MLIRCIM22CIMFrameDialect
   MLIRFuncDialect
   MLIRIR
   MLIRPass
