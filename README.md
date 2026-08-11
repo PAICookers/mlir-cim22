@@ -16,8 +16,9 @@ implementation is software-only and is not a hardware deployment tool.
 - CMake 3.28 or newer
 - C++17 compiler
 - Ninja
+- uv
 - Python 3 interpreter, used by the upstream ONNX protobuf generator
-- Python test packages declared in `requirements-test.txt`
+- Python test packages locked by `pyproject.toml` and `uv.lock`
 
 The default configuration downloads the pinned ONNX v1.21.0 source archive,
 verifies its SHA-256, and lets ONNX build its matching Protobuf toolchain and
@@ -42,12 +43,15 @@ cmake -S . -B build -UONNX_DIR \
 ## Build and test
 
 ```sh
-python3 -m pip install -r requirements-test.txt
-cmake -G Ninja -S . -B build -DMLIR_DIR=/path/to/llvm-project/build/lib/cmake/mlir
+uv sync --locked
+uv run --locked cmake -G Ninja -S . -B build \
+  -DMLIR_DIR=/path/to/llvm-project/build/lib/cmake/mlir \
+  -DPython3_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build --target mlir-cim22-opt
 cmake --build build --target mlir-cim22-onnx-import
 cmake --build build --target check-mlir-cim22
 build/bin/mlir-cim22-opt --help
+uv lock --check
 ```
 
 ## Not implemented

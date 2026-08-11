@@ -1,3 +1,5 @@
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
   ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
@@ -5,16 +7,15 @@ configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py
 )
 
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
 execute_process(
   COMMAND ${Python3_EXECUTABLE} -c
-    "import numpy, onnx; assert onnx.__version__ == '1.21.0'"
+    "import numpy, onnx; from onnx import checker, helper, numpy_helper, shape_inference; from onnx.reference import ReferenceEvaluator; assert onnx.__version__ == '1.21.0'"
   RESULT_VARIABLE MLIRCIM22_PYTHON_TEST_DEPS_RESULT
   ERROR_VARIABLE MLIRCIM22_PYTHON_TEST_DEPS_ERROR
 )
 if(NOT MLIRCIM22_PYTHON_TEST_DEPS_RESULT EQUAL 0)
   message(FATAL_ERROR
-    "mlir-cim22 tests require the packages in requirements-test.txt for "
+    "mlir-cim22 tests require the locked uv test environment for "
     "${Python3_EXECUTABLE}: ${MLIRCIM22_PYTHON_TEST_DEPS_ERROR}"
   )
 endif()

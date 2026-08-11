@@ -68,6 +68,7 @@ vcpkg_installed/
 Testing/
 .cache/
 __pycache__/
+/.venv/
 
 # Local editor configuration
 /.vscode/

@@ -12,6 +12,12 @@ config.test_exec_root = os.path.join(config.mlir_cim22_obj_root, "test")
 config.excludes = ["CMakeLists.txt", "Inputs", "README.txt"]
 
 llvm_config.use_default_substitutions()
+config.substitutions = [
+    substitution
+    for substitution in config.substitutions
+    if substitution[0] != "%python"
+]
+config.substitutions.append(("%python", f'"{config.python_executable}"'))
 
 tool_dirs = [
     os.path.join(config.mlir_cim22_obj_root, "bin"),
