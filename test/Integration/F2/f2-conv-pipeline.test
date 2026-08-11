@@ -7,6 +7,12 @@
 // RUN: mlir-cim22-onnx-import %t.models/odd.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t.odd
 // RUN: grep -c 'cim.vmm' %t.odd | FileCheck %s --check-prefix=ODD-COUNT
 // RUN: FileCheck %s --check-prefix=ODD < %t.odd
+// RUN: mlir-cim22-onnx-import %t.models/pointwise.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t.pointwise
+// RUN: grep -c 'cim.vmm' %t.pointwise | FileCheck %s --check-prefix=POINTWISE-COUNT
+// RUN: FileCheck %s --check-prefix=POINTWISE < %t.pointwise
+// RUN: mlir-cim22-onnx-import %t.models/rectangular.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t.rectangular
+// RUN: grep -c 'cim.vmm' %t.rectangular | FileCheck %s --check-prefix=RECTANGULAR-COUNT
+// RUN: FileCheck %s --check-prefix=RECTANGULAR < %t.rectangular
 
 // CANONICAL-COUNT: 256
 // CANONICAL-LABEL: func.func @main
@@ -22,3 +28,15 @@
 // ODD: cim.vmm
 // ODD: cim.vmm {{.*}}macro_slot = 0 : i64{{.*}}work_id = 8 : i64
 // ODD: return %{{.*}} : tensor<1x1x3x3xi32>
+
+// POINTWISE-COUNT: 12
+// POINTWISE-LABEL: func.func @main
+// POINTWISE: cim.vmm
+// POINTWISE-NOT: linalg.conv_2d_nchw_fchw
+// POINTWISE: return %{{.*}} : tensor<1x5x3x4xi32>
+
+// RECTANGULAR-COUNT: 18
+// RECTANGULAR-LABEL: func.func @main
+// RECTANGULAR: cim.vmm
+// RECTANGULAR-NOT: linalg.conv_2d_nchw_fchw
+// RECTANGULAR: return %{{.*}} : tensor<1x17x3x3xi32>

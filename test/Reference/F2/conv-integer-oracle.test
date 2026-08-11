@@ -1,4 +1,4 @@
 // RUN: %python %S/generate_conv_integer_onnx.py --emit-dir %t.models
 // RUN: %python %S/verify_conv_integer_oracle.py %t.models | FileCheck %s
 
-// CHECK: PASS ConvInteger oracle: canonical_vmm=256 odd_vmm=9 dtype=int32
+// CHECK: PASS ConvInteger oracle: canonical_vmm=256 odd_vmm=9 pointwise_vmm=12 rectangular_vmm=18 dtype=int32

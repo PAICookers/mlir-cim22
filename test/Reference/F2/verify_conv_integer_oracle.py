@@ -9,18 +9,37 @@ from pathlib import Path
 
 import numpy as np
 import onnx
-from onnx import checker, numpy_helper, shape_inference
+from onnx import checker, helper, numpy_helper, shape_inference
 from onnx.reference import ReferenceEvaluator
 
 
-def patch_matrix(input_value: np.ndarray) -> np.ndarray:
+def patch_matrix(
+    input_value: np.ndarray,
+    kernel: tuple[int, int],
+    strides: tuple[int, int],
+    pads: tuple[int, int, int, int],
+    output_shape: tuple[int, int],
+) -> np.ndarray:
     _, channels, height, width = input_value.shape
-    padded = np.pad(input_value, ((0, 0), (0, 0), (1, 1), (1, 1)))
-    patches = np.empty((channels * 9, height * width), dtype=np.int32)
-    for row in range(height):
-        for column in range(width):
-            patches[:, row * width + column] = padded[
-                0, :, row : row + 3, column : column + 3
+    del height, width
+    pad_top, pad_left, pad_bottom, pad_right = pads
+    padded = np.pad(
+        input_value, ((0, 0), (0, 0), (pad_top, pad_bottom), (pad_left, pad_right))
+    )
+    output_height, output_width = output_shape
+    patches = np.empty(
+        (channels * kernel[0] * kernel[1], output_height * output_width),
+        dtype=np.int32,
+    )
+    for row in range(output_height):
+        for column in range(output_width):
+            input_row = row * strides[0]
+            input_column = column * strides[1]
+            patches[:, row * output_width + column] = padded[
+                0,
+                :,
+                input_row : input_row + kernel[0],
+                input_column : input_column + kernel[1],
             ].reshape(-1)
     return patches
 
@@ -29,28 +48,48 @@ def verify(model_path: Path) -> int:
     model = onnx.load_model(model_path)
     checker.check_model(model, full_check=True)
     shape_inference.infer_shapes(model, strict_mode=True)
-    weight = numpy_helper.to_array(model.graph.initializer[0])
-    filters, channels, _, _ = weight.shape
+    initializers = {
+        value.name: numpy_helper.to_array(value) for value in model.graph.initializer
+    }
+    node = model.graph.node[0]
+    attributes = {
+        value.name: helper.get_attribute_value(value) for value in node.attribute
+    }
+    weight = initializers[node.input[1]]
+    filters, channels, kernel_height, kernel_width = weight.shape
+    kernel = (kernel_height, kernel_width)
+    strides = tuple(attributes.get("strides", [1, 1]))
+    pads = tuple(attributes.get("pads", [0, 0, 0, 0]))
     output_shape = [
         dimension.dim_value
         for dimension in model.graph.output[0].type.tensor_type.shape.dim
     ]
-    _, _, height, width = output_shape
+    _, _, output_height, output_width = output_shape
+    input_shape = [
+        dimension.dim_value
+        for dimension in model.graph.input[0].type.tensor_type.shape.dim
+    ]
+    _, _, input_height, input_width = input_shape
     input_value = (
-        np.arange(channels * height * width, dtype=np.int32) % 17 - 8
-    ).astype(np.int8).reshape(1, channels, height, width)
+        (np.arange(channels * input_height * input_width, dtype=np.int32) % 17 - 8)
+        .astype(np.int8)
+        .reshape(1, channels, input_height, input_width)
+    )
 
-    patches = patch_matrix(input_value)
-    expected = (
-        weight.reshape(filters, channels * 9).astype(np.int32) @ patches
-    ).reshape(1, filters, height, width)
+    patches = patch_matrix(
+        input_value, kernel, strides, pads, (output_height, output_width)
+    )
+    patch_size = channels * kernel_height * kernel_width
+    expected = (weight.reshape(filters, patch_size).astype(np.int32) @ patches).reshape(
+        1, filters, output_height, output_width
+    )
     evaluator = ReferenceEvaluator(model)
     actual = evaluator.run(None, {"input": input_value})[0]
     repeated = evaluator.run(None, {"input": input_value})[0]
     np.testing.assert_array_equal(actual, expected)
     np.testing.assert_array_equal(repeated, expected)
     assert actual.dtype == np.int32
-    return height * width * ceil(filters / 16) * ceil((channels * 9) / 64)
+    return output_height * output_width * ceil(filters / 16) * ceil(patch_size / 64)
 
 
 def main() -> None:
@@ -59,9 +98,16 @@ def main() -> None:
     args = parser.parse_args()
     canonical_works = verify(args.model_dir / "canonical.onnx")
     odd_works = verify(args.model_dir / "odd.onnx")
+    pointwise_works = verify(args.model_dir / "pointwise.onnx")
+    rectangular_works = verify(args.model_dir / "rectangular.onnx")
     assert canonical_works == 256
     assert odd_works == 9
-    print("PASS ConvInteger oracle: canonical_vmm=256 odd_vmm=9 dtype=int32")
+    assert pointwise_works == 12
+    assert rectangular_works == 18
+    print(
+        "PASS ConvInteger oracle: canonical_vmm=256 odd_vmm=9 "
+        "pointwise_vmm=12 rectangular_vmm=18 dtype=int32"
+    )
 
 
 if __name__ == "__main__":

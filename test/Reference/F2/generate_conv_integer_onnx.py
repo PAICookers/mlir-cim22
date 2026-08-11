@@ -18,35 +18,38 @@ def make_model(
     filters: int,
     seed: int,
     *,
+    kernel: tuple[int, int] = (3, 3),
+    strides: tuple[int, int] = (1, 1),
+    pads: tuple[int, int, int, int] | None = (1, 1, 1, 1),
+    include_kernel_shape: bool = True,
     explicit_zero_points: bool,
 ) -> onnx.ModelProto:
     rng = np.random.default_rng(seed)
-    weight = rng.integers(
-        -7, 8, size=(filters, channels, 3, 3), dtype=np.int8
-    )
+    weight = rng.integers(-7, 8, size=(filters, channels, *kernel), dtype=np.int8)
     initializers = [numpy_helper.from_array(weight, name="weight")]
     node_inputs = ["input", "weight"]
     if explicit_zero_points:
         initializers.extend(
             [
                 numpy_helper.from_array(np.array(0, dtype=np.int8), name="x_zp"),
-                numpy_helper.from_array(
-                    np.zeros(filters, dtype=np.int8), name="w_zp"
-                ),
+                numpy_helper.from_array(np.zeros(filters, dtype=np.int8), name="w_zp"),
             ]
         )
         node_inputs.extend(["x_zp", "w_zp"])
 
-    node = helper.make_node(
-        "ConvInteger",
-        node_inputs,
-        ["output"],
-        pads=[1, 1, 1, 1],
-        strides=[1, 1],
-        dilations=[1, 1],
-        group=1,
-        kernel_shape=[3, 3],
-    )
+    attributes: dict[str, object] = {
+        "strides": strides,
+        "dilations": [1, 1],
+        "group": 1,
+    }
+    if pads is not None:
+        attributes["pads"] = pads
+    if include_kernel_shape:
+        attributes["kernel_shape"] = kernel
+    node = helper.make_node("ConvInteger", node_inputs, ["output"], **attributes)
+    pad_top, pad_left, pad_bottom, pad_right = pads or (0, 0, 0, 0)
+    output_height = (height + pad_top + pad_bottom - kernel[0]) // strides[0] + 1
+    output_width = (width + pad_left + pad_right - kernel[1]) // strides[1] + 1
     graph = helper.make_graph(
         [node],
         "conv_integer",
@@ -57,7 +60,9 @@ def make_model(
         ],
         [
             helper.make_tensor_value_info(
-                "output", TensorProto.INT32, [1, filters, height, width]
+                "output",
+                TensorProto.INT32,
+                [1, filters, output_height, output_width],
             )
         ],
         initializers,
@@ -91,7 +96,39 @@ def main() -> None:
         args.emit_dir / "odd.onnx",
         make_model(1, 3, 3, 1, 2202, explicit_zero_points=True),
     )
-    print("PASS ConvInteger ONNX generation: canonical and odd-work")
+    write_model(
+        args.emit_dir / "pointwise.onnx",
+        make_model(
+            3,
+            5,
+            7,
+            5,
+            2203,
+            kernel=(1, 1),
+            strides=(2, 2),
+            pads=None,
+            include_kernel_shape=False,
+            explicit_zero_points=False,
+        ),
+    )
+    write_model(
+        args.emit_dir / "rectangular.onnx",
+        make_model(
+            2,
+            5,
+            6,
+            17,
+            2204,
+            kernel=(2, 3),
+            strides=(2, 2),
+            pads=(1, 0, 0, 1),
+            explicit_zero_points=False,
+        ),
+    )
+    print(
+        "PASS ConvInteger ONNX generation: canonical, odd-work, pointwise, "
+        "and rectangular"
+    )
 
 
 if __name__ == "__main__":
