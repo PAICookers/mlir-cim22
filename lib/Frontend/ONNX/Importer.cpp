@@ -21,7 +21,10 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
 
+#include <algorithm>
+#include <array>
 #include <fstream>
+#include <optional>
 
 namespace mlir::cim {
 namespace {
@@ -37,10 +40,26 @@ struct MatMulIntegerModel {
 
 struct ConvIntegerModel {
   int64_t channels;
-  int64_t height;
-  int64_t width;
+  int64_t inputHeight;
+  int64_t inputWidth;
   int64_t filters;
+  int64_t kernelHeight;
+  int64_t kernelWidth;
+  int64_t strideHeight;
+  int64_t strideWidth;
+  int64_t padTop;
+  int64_t padLeft;
+  int64_t padBottom;
+  int64_t padRight;
+  int64_t outputHeight;
+  int64_t outputWidth;
   SmallVector<APInt> weightValues;
+};
+
+struct ConvAttributes {
+  std::array<int64_t, 4> pads{0, 0, 0, 0};
+  std::array<int64_t, 2> strides{1, 1};
+  std::optional<std::array<int64_t, 2>> kernelShape;
 };
 
 template <typename T>
@@ -111,36 +130,59 @@ extractInt8Initializer(MLIRContext &context, const onnx::TensorProto &tensor,
   return values;
 }
 
-bool hasIntValues(const onnx::AttributeProto &attribute,
-                  ArrayRef<int64_t> expected) {
-  return attribute.type() == onnx::AttributeProto::INTS &&
-         llvm::equal(attribute.ints(), expected);
-}
-
-LogicalResult validateConvAttributes(MLIRContext &context,
-                                     const onnx::NodeProto &node) {
-  bool hasPads = false;
+FailureOr<ConvAttributes> validateConvAttributes(MLIRContext &context,
+                                                 const onnx::NodeProto &node) {
+  ConvAttributes result;
   for (const onnx::AttributeProto &attribute : node.attribute()) {
     StringRef name = attribute.name();
     if (name == "pads") {
-      hasPads = hasIntValues(attribute, {1, 1, 1, 1});
-      if (!hasPads)
-        return reject(context, "ConvInteger requires pads=[1,1,1,1]");
+      if (attribute.type() != onnx::AttributeProto::INTS ||
+          attribute.ints_size() != 4)
+        return reject<ConvAttributes>(context,
+                                      "ConvInteger pads must have four values");
+      std::copy(attribute.ints().begin(), attribute.ints().end(),
+                result.pads.begin());
+      if (!llvm::all_of(result.pads, [](int64_t value) { return value >= 0; }))
+        return reject<ConvAttributes>(context,
+                                      "ConvInteger pads must be non-negative");
       continue;
     }
-    if (name == "strides" && hasIntValues(attribute, {1, 1}))
+    if (name == "strides") {
+      if (attribute.type() != onnx::AttributeProto::INTS ||
+          attribute.ints_size() != 2)
+        return reject<ConvAttributes>(
+            context, "ConvInteger strides must have two values");
+      std::copy(attribute.ints().begin(), attribute.ints().end(),
+                result.strides.begin());
+      if (!llvm::all_of(result.strides,
+                        [](int64_t value) { return value > 0; }))
+        return reject<ConvAttributes>(context,
+                                      "ConvInteger strides must be positive");
       continue;
-    if (name == "dilations" && hasIntValues(attribute, {1, 1}))
+    }
+    if (name == "dilations" && attribute.type() == onnx::AttributeProto::INTS &&
+        attribute.ints_size() == 2 &&
+        llvm::all_of(attribute.ints(),
+                     [](int64_t value) { return value == 1; }))
       continue;
-    if (name == "kernel_shape" && hasIntValues(attribute, {3, 3}))
+    if (name == "kernel_shape") {
+      if (attribute.type() != onnx::AttributeProto::INTS ||
+          attribute.ints_size() != 2 ||
+          !llvm::all_of(attribute.ints(),
+                        [](int64_t value) { return value > 0; }))
+        return reject<ConvAttributes>(
+            context, "ConvInteger kernel_shape must have two positive values");
+      result.kernelShape =
+          std::array<int64_t, 2>{attribute.ints(0), attribute.ints(1)};
       continue;
+    }
     if (name == "group" && attribute.type() == onnx::AttributeProto::INT &&
         attribute.i() == 1)
       continue;
-    return reject(context, "ConvInteger has an unsupported attribute");
+    return reject<ConvAttributes>(context,
+                                  "ConvInteger has an unsupported attribute");
   }
-  return hasPads ? success()
-                 : reject(context, "ConvInteger requires explicit pad1");
+  return result;
 }
 
 LogicalResult validateZeroPoint(MLIRContext &context,
@@ -311,7 +353,8 @@ validateConvIntegerModel(MLIRContext &context, const onnx::ModelProto &model) {
       node.input_size() < 2 || node.input_size() > 4 || node.output_size() != 1)
     return reject<ConvIntegerModel>(
         context, "supports only the frozen ConvInteger profile");
-  if (failed(validateConvAttributes(context, node)))
+  FailureOr<ConvAttributes> attributes = validateConvAttributes(context, node);
+  if (failed(attributes))
     return failure();
   if (node.input(0) != runtimeInputs.front()->name())
     return reject<ConvIntegerModel>(
@@ -337,26 +380,46 @@ validateConvIntegerModel(MLIRContext &context, const onnx::ModelProto &model) {
 
   const onnx::TensorProto &weight = *weightIt->second;
   if (weight.dims_size() != 4 || weight.dims(0) <= 0 || weight.dims(1) <= 0 ||
-      weight.dims(2) != 3 || weight.dims(3) != 3)
+      weight.dims(2) <= 0 || weight.dims(3) <= 0)
     return reject<ConvIntegerModel>(
-        context, "ConvInteger weight must have shape [F,C,3,3]");
+        context, "ConvInteger weight must have four positive dimensions");
   int64_t channels = (*inputShape)[1];
-  int64_t height = (*inputShape)[2];
-  int64_t width = (*inputShape)[3];
+  int64_t inputHeight = (*inputShape)[2];
+  int64_t inputWidth = (*inputShape)[3];
   int64_t filters = weight.dims(0);
-  if (weight.dims(1) != channels || (*outputShape)[1] != filters ||
-      (*outputShape)[2] != height || (*outputShape)[3] != width)
+  int64_t kernelHeight = weight.dims(2);
+  int64_t kernelWidth = weight.dims(3);
+  if (attributes->kernelShape &&
+      *attributes->kernelShape !=
+          std::array<int64_t, 2>{kernelHeight, kernelWidth})
     return reject<ConvIntegerModel>(
-        context, "ConvInteger shapes do not match 3x3 stride1 pad1");
+        context, "ConvInteger kernel_shape must match the weight shape");
   int64_t paddedHeight = 0;
   int64_t paddedWidth = 0;
+  int64_t partialHeight = 0;
+  int64_t partialWidth = 0;
+  int64_t outputHeight = 0;
+  int64_t outputWidth = 0;
   int64_t kernelElements = 0;
   int64_t weightElementCount = 0;
-  if (llvm::AddOverflow(height, int64_t{2}, paddedHeight) ||
-      llvm::AddOverflow(width, int64_t{2}, paddedWidth) ||
-      llvm::MulOverflow(channels, int64_t{9}, kernelElements) ||
+  if (llvm::AddOverflow(inputHeight, attributes->pads[0], partialHeight) ||
+      llvm::AddOverflow(partialHeight, attributes->pads[2], paddedHeight) ||
+      llvm::AddOverflow(inputWidth, attributes->pads[1], partialWidth) ||
+      llvm::AddOverflow(partialWidth, attributes->pads[3], paddedWidth) ||
+      paddedHeight < kernelHeight || paddedWidth < kernelWidth ||
+      llvm::AddOverflow((paddedHeight - kernelHeight) / attributes->strides[0],
+                        int64_t{1}, outputHeight) ||
+      llvm::AddOverflow((paddedWidth - kernelWidth) / attributes->strides[1],
+                        int64_t{1}, outputWidth) ||
+      llvm::MulOverflow(channels, kernelHeight, kernelElements) ||
+      llvm::MulOverflow(kernelElements, kernelWidth, kernelElements) ||
       llvm::MulOverflow(filters, kernelElements, weightElementCount))
     return reject<ConvIntegerModel>(context, "ConvInteger shape is too large");
+  if (weight.dims(1) != channels || (*outputShape)[1] != filters ||
+      (*outputShape)[2] != outputHeight || (*outputShape)[3] != outputWidth)
+    return reject<ConvIntegerModel>(
+        context,
+        "ConvInteger input, weight, and output shapes are inconsistent");
 
   if (node.input_size() >= 3 && !node.input(2).empty()) {
     auto zeroPoint = initializers.find(node.input(2));
@@ -382,7 +445,20 @@ validateConvIntegerModel(MLIRContext &context, const onnx::ModelProto &model) {
       extractInt8Initializer(context, weight, weightElementCount, "weight");
   if (failed(weightValues))
     return failure();
-  return ConvIntegerModel{channels, height, width, filters,
+  return ConvIntegerModel{channels,
+                          inputHeight,
+                          inputWidth,
+                          filters,
+                          kernelHeight,
+                          kernelWidth,
+                          attributes->strides[0],
+                          attributes->strides[1],
+                          attributes->pads[0],
+                          attributes->pads[1],
+                          attributes->pads[2],
+                          attributes->pads[3],
+                          outputHeight,
+                          outputWidth,
                           std::move(*weightValues)};
 }
 
@@ -494,13 +570,14 @@ importConvInteger(MLIRContext &context, const onnx::ModelProto &model) {
   auto i8 = builder.getIntegerType(8);
   auto i32 = builder.getIntegerType(32);
   auto inputType = RankedTensorType::get(
-      {1, imported->channels, imported->height, imported->width}, i8);
-  auto paddedInputType = RankedTensorType::get(
-      {1, imported->channels, imported->height + 2, imported->width + 2}, i8);
+      {1, imported->channels, imported->inputHeight, imported->inputWidth}, i8);
   auto weightType =
-      RankedTensorType::get({imported->filters, imported->channels, 3, 3}, i8);
+      RankedTensorType::get({imported->filters, imported->channels,
+                             imported->kernelHeight, imported->kernelWidth},
+                            i8);
   auto resultType = RankedTensorType::get(
-      {1, imported->filters, imported->height, imported->width}, i32);
+      {1, imported->filters, imported->outputHeight, imported->outputWidth},
+      i32);
 
   OwningOpRef<ModuleOp> module = ModuleOp::create(location);
   auto function = func::FuncOp::create(
@@ -509,15 +586,28 @@ importConvInteger(MLIRContext &context, const onnx::ModelProto &model) {
   module->push_back(function);
   builder.setInsertionPointToStart(entry);
 
-  auto zeroI8 = arith::ConstantOp::create(builder, location,
-                                          builder.getIntegerAttr(i8, 0));
-  SmallVector<OpFoldResult> low{
-      builder.getIndexAttr(0), builder.getIndexAttr(0), builder.getIndexAttr(1),
-      builder.getIndexAttr(1)};
-  SmallVector<OpFoldResult> high = low;
-  auto paddedInput = tensor::PadOp::create(
-      builder, location, paddedInputType, entry->getArgument(0), low, high,
-      zeroI8.getResult(), /*nofold=*/false);
+  Value paddedInput = entry->getArgument(0);
+  if (imported->padTop != 0 || imported->padLeft != 0 ||
+      imported->padBottom != 0 || imported->padRight != 0) {
+    auto paddedInputType = RankedTensorType::get(
+        {1, imported->channels,
+         imported->inputHeight + imported->padTop + imported->padBottom,
+         imported->inputWidth + imported->padLeft + imported->padRight},
+        i8);
+    auto zeroI8 = arith::ConstantOp::create(builder, location,
+                                            builder.getIntegerAttr(i8, 0));
+    SmallVector<OpFoldResult> low{builder.getIndexAttr(0),
+                                  builder.getIndexAttr(0),
+                                  builder.getIndexAttr(imported->padTop),
+                                  builder.getIndexAttr(imported->padLeft)};
+    SmallVector<OpFoldResult> high{builder.getIndexAttr(0),
+                                   builder.getIndexAttr(0),
+                                   builder.getIndexAttr(imported->padBottom),
+                                   builder.getIndexAttr(imported->padRight)};
+    paddedInput = tensor::PadOp::create(builder, location, paddedInputType,
+                                        entry->getArgument(0), low, high,
+                                        zeroI8.getResult(), /*nofold=*/false);
+  }
   auto weight = arith::ConstantOp::create(
       builder, location, weightType,
       DenseElementsAttr::get(weightType, imported->weightValues));
@@ -525,11 +615,15 @@ importConvInteger(MLIRContext &context, const onnx::ModelProto &model) {
       builder, location, resultType,
       DenseElementsAttr::get(resultType, builder.getIntegerAttr(i32, 0)));
   auto vectorType = RankedTensorType::get({2}, builder.getI64Type());
-  auto units = DenseIntElementsAttr::get(vectorType, ArrayRef<int64_t>{1, 1});
+  auto strides = DenseIntElementsAttr::get(
+      vectorType,
+      ArrayRef<int64_t>{imported->strideHeight, imported->strideWidth});
+  auto dilations =
+      DenseIntElementsAttr::get(vectorType, ArrayRef<int64_t>{1, 1});
   auto conv = linalg::Conv2DNchwFchwOp::create(
       builder, location, TypeRange{resultType},
-      ValueRange{paddedInput.getResult(), weight.getResult()},
-      ValueRange{zeroResult.getResult()}, units, units);
+      ValueRange{paddedInput, weight.getResult()},
+      ValueRange{zeroResult.getResult()}, strides, dilations);
   conv->setAttr(kConvIntegerMarker, builder.getUnitAttr());
   func::ReturnOp::create(builder, location, conv.getResult(0));
   if (failed(verify(*module)))

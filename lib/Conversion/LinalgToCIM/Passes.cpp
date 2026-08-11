@@ -784,24 +784,26 @@ LogicalResult normalizeCIMConv(linalg::Conv2DNchwFchwOp op,
 
   int64_t channels = weightType.getDimSize(1);
   int64_t filters = weightType.getDimSize(0);
+  int64_t kernelHeight = weightType.getDimSize(2);
+  int64_t kernelWidth = weightType.getDimSize(3);
+  int64_t inputHeight = inputType.getDimSize(2);
+  int64_t inputWidth = inputType.getDimSize(3);
   int64_t height = resultType.getDimSize(2);
   int64_t width = resultType.getDimSize(3);
   int64_t patchSize = 0;
   int64_t spatialSize = 0;
-  int64_t paddedHeight = 0;
-  int64_t paddedWidth = 0;
-  if (channels <= 0 || filters <= 0 || height <= 0 || width <= 0 ||
-      llvm::MulOverflow(channels, int64_t{9}, patchSize) ||
+  if (channels <= 0 || filters <= 0 || kernelHeight <= 0 || kernelWidth <= 0 ||
+      inputHeight <= 0 || inputWidth <= 0 || height <= 0 || width <= 0 ||
+      llvm::MulOverflow(channels, kernelHeight, patchSize) ||
+      llvm::MulOverflow(patchSize, kernelWidth, patchSize) ||
       llvm::MulOverflow(height, width, spatialSize) ||
-      llvm::AddOverflow(height, int64_t{2}, paddedHeight) ||
-      llvm::AddOverflow(width, int64_t{2}, paddedWidth) ||
-      !hasType(inputs[0], {1, channels, paddedHeight, paddedWidth}, 8) ||
-      !hasType(inputs[1], {filters, channels, 3, 3}, 8) ||
+      !hasType(inputs[0], {1, channels, inputHeight, inputWidth}, 8) ||
+      !hasType(inputs[1], {filters, channels, kernelHeight, kernelWidth}, 8) ||
       !hasType(inits[0], {1, filters, height, width}, 32) ||
       !hasType(op->getResult(0), {1, filters, height, width}, 32) ||
       !isZeroSplat(inits[0]) || failed(evaluateDenseTensor(inputs[1])) ||
       !llvm::all_of(op.getStrides().getValues<int64_t>(),
-                    [](int64_t value) { return value == 1; }) ||
+                    [](int64_t value) { return value > 0; }) ||
       !llvm::all_of(op.getDilations().getValues<int64_t>(),
                     [](int64_t value) { return value == 1; }))
     return reject("does not match the frozen integer Conv profile");
