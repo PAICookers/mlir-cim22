@@ -41,8 +41,19 @@ set_target_properties(mlir-cim22-f0-importer-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR}
 )
 
+add_executable(mlir-cim22-cimframe-codec-test EXCLUDE_FROM_ALL
+  Target/CIMFrameCodecTest.cpp
+)
+target_link_libraries(mlir-cim22-cimframe-codec-test PRIVATE
+  MLIRCIM22Target
+)
+set_target_properties(mlir-cim22-cimframe-codec-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR}
+)
+
 set(MLIRCIM22_TEST_DEPENDS
   FileCheck
+  mlir-cim22-cimframe-codec-test
   mlir-cim22-f0-importer-test
   mlir-cim22-int8-weight-layout-test
   mlir-cim22-onnx-import
