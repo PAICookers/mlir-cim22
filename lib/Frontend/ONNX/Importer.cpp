@@ -19,6 +19,7 @@
 #include "mlir/IR/Verifier.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Endian.h"
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
@@ -36,6 +37,7 @@ struct MatMulIntegerModel {
   int64_t reduction;
   int64_t output;
   SmallVector<APInt> weightValues;
+  SmallVector<APInt> biasValues;
 };
 
 struct ConvIntegerModel {
@@ -54,12 +56,20 @@ struct ConvIntegerModel {
   int64_t outputHeight;
   int64_t outputWidth;
   SmallVector<APInt> weightValues;
+  SmallVector<APInt> biasValues;
 };
 
 struct ConvAttributes {
   std::array<int64_t, 4> pads{0, 0, 0, 0};
   std::array<int64_t, 2> strides{1, 1};
   std::optional<std::array<int64_t, 2>> kernelShape;
+};
+
+using InitializerMap = llvm::DenseMap<StringRef, const onnx::TensorProto *>;
+
+struct OutputRoot {
+  const onnx::NodeProto *core;
+  const onnx::TensorProto *bias;
 };
 
 template <typename T>
@@ -128,6 +138,74 @@ extractInt8Initializer(MLIRContext &context, const onnx::TensorProto &tensor,
     values.emplace_back(8, static_cast<uint64_t>(value), true);
   }
   return values;
+}
+
+FailureOr<SmallVector<APInt>>
+extractInt32Initializer(MLIRContext &context, const onnx::TensorProto &tensor,
+                        int64_t elementCount, StringRef role) {
+  if (tensor.data_type() != onnx::TensorProto::INT32 ||
+      tensor.data_location() != onnx::TensorProto::DEFAULT ||
+      tensor.external_data_size() != 0)
+    return reject<SmallVector<APInt>>(
+        context, (role + " must be an embedded INT32 initializer").str());
+
+  SmallVector<APInt> values;
+  values.reserve(elementCount);
+  if (!tensor.raw_data().empty()) {
+    int64_t byteCount = 0;
+    if (llvm::MulOverflow(elementCount, int64_t{4}, byteCount) ||
+        tensor.raw_data().size() != static_cast<size_t>(byteCount))
+      return reject<SmallVector<APInt>>(
+          context, (role + " raw_data size does not match its shape").str());
+    for (int64_t index = 0; index < elementCount; ++index)
+      values.emplace_back(32, llvm::support::endian::read32le(
+                                  tensor.raw_data().data() + index * 4));
+    return values;
+  }
+
+  if (tensor.int32_data_size() != elementCount)
+    return reject<SmallVector<APInt>>(
+        context,
+        (role + " must use raw_data or one int32_data value per element")
+            .str());
+  for (int32_t value : tensor.int32_data())
+    values.emplace_back(32, static_cast<uint32_t>(value));
+  return values;
+}
+
+FailureOr<OutputRoot> matchOutputRoot(MLIRContext &context,
+                                      const onnx::GraphProto &graph,
+                                      StringRef coreOpType,
+                                      const InitializerMap &initializers) {
+  if (graph.output_size() != 1 ||
+      (graph.node_size() != 1 && graph.node_size() != 2))
+    return reject<OutputRoot>(
+        context, "supports one integer core with an optional bias Add");
+
+  const onnx::NodeProto &core = graph.node(0);
+  if (!core.domain().empty() || core.op_type() != coreOpType ||
+      core.output_size() != 1)
+    return reject<OutputRoot>(context,
+                              "unsupported output-rooted operator profile");
+  if (graph.node_size() == 1) {
+    if (core.output(0) != graph.output(0).name())
+      return reject<OutputRoot>(context,
+                                "integer core output must be the graph output");
+    return OutputRoot{&core, nullptr};
+  }
+
+  const onnx::NodeProto &add = graph.node(1);
+  if (!add.domain().empty() || add.op_type() != "Add" ||
+      add.attribute_size() != 0 || add.input_size() != 2 ||
+      add.output_size() != 1 || add.input(0) != core.output(0) ||
+      add.output(0) != graph.output(0).name())
+    return reject<OutputRoot>(
+        context, "bias profile requires integer core followed by Add");
+  auto bias = initializers.find(add.input(1));
+  if (bias == initializers.end())
+    return reject<OutputRoot>(context,
+                              "bias Add input must be an embedded initializer");
+  return OutputRoot{&core, bias->second};
 }
 
 FailureOr<ConvAttributes> validateConvAttributes(MLIRContext &context,
@@ -228,17 +306,17 @@ validateMatMulIntegerModel(MLIRContext &context,
                                       "does not support model-local functions");
 
   const onnx::GraphProto &graph = model.graph();
-  if (graph.node_size() != 1 || graph.output_size() != 1)
-    return reject<MatMulIntegerModel>(
-        context, "currently supports one MatMulInteger node and one output");
-
-  llvm::DenseMap<StringRef, const onnx::TensorProto *> initializers;
+  InitializerMap initializers;
   for (const onnx::TensorProto &initializer : graph.initializer()) {
     if (initializer.name().empty() ||
         !initializers.try_emplace(initializer.name(), &initializer).second)
       return reject<MatMulIntegerModel>(
           context, "initializer names must be non-empty and unique");
   }
+  FailureOr<OutputRoot> root =
+      matchOutputRoot(context, graph, "MatMulInteger", initializers);
+  if (failed(root))
+    return failure();
 
   SmallVector<const onnx::ValueInfoProto *> runtimeInputs;
   llvm::DenseMap<StringRef, const onnx::ValueInfoProto *> graphInputs;
@@ -254,7 +332,7 @@ validateMatMulIntegerModel(MLIRContext &context,
     return reject<MatMulIntegerModel>(
         context, "currently supports one runtime activation input");
 
-  const onnx::NodeProto &node = graph.node(0);
+  const onnx::NodeProto &node = *root->core;
   if (node.domain() != "" || node.op_type() != "MatMulInteger" ||
       node.attribute_size() != 0 || node.input_size() != 2 ||
       node.output_size() != 1)
@@ -267,10 +345,6 @@ validateMatMulIntegerModel(MLIRContext &context,
   if (weightIt == initializers.end())
     return reject<MatMulIntegerModel>(
         context, "MatMulInteger B must be an embedded initializer");
-  if (node.output(0) != graph.output(0).name())
-    return reject<MatMulIntegerModel>(
-        context, "MatMulInteger output must be the graph output");
-
   FailureOr<SmallVector<int64_t>> inputShape = getStaticTensorShape(
       context, *runtimeInputs.front(), onnx::TensorProto::INT8, "activation");
   FailureOr<SmallVector<int64_t>> outputShape = getStaticTensorShape(
@@ -301,7 +375,19 @@ validateMatMulIntegerModel(MLIRContext &context,
       extractInt8Initializer(context, weight, weightElementCount);
   if (failed(weightValues))
     return failure();
-  return MatMulIntegerModel{batch, reduction, output, std::move(*weightValues)};
+  SmallVector<APInt> biasValues;
+  if (root->bias) {
+    if (root->bias->dims_size() != 1 || root->bias->dims(0) != output)
+      return reject<MatMulIntegerModel>(
+          context, "MatMulInteger bias must have shape [N]");
+    FailureOr<SmallVector<APInt>> values =
+        extractInt32Initializer(context, *root->bias, output, "bias");
+    if (failed(values))
+      return failure();
+    biasValues = std::move(*values);
+  }
+  return MatMulIntegerModel{batch, reduction, output, std::move(*weightValues),
+                            std::move(biasValues)};
 }
 
 FailureOr<ConvIntegerModel>
@@ -322,17 +408,17 @@ validateConvIntegerModel(MLIRContext &context, const onnx::ModelProto &model) {
                                     "does not support model-local functions");
 
   const onnx::GraphProto &graph = model.graph();
-  if (graph.node_size() != 1 || graph.output_size() != 1)
-    return reject<ConvIntegerModel>(
-        context, "currently supports one ConvInteger node and one output");
-
-  llvm::DenseMap<StringRef, const onnx::TensorProto *> initializers;
+  InitializerMap initializers;
   for (const onnx::TensorProto &initializer : graph.initializer()) {
     if (initializer.name().empty() ||
         !initializers.try_emplace(initializer.name(), &initializer).second)
       return reject<ConvIntegerModel>(
           context, "initializer names must be non-empty and unique");
   }
+  FailureOr<OutputRoot> root =
+      matchOutputRoot(context, graph, "ConvInteger", initializers);
+  if (failed(root))
+    return failure();
 
   SmallVector<const onnx::ValueInfoProto *> runtimeInputs;
   llvm::DenseMap<StringRef, const onnx::ValueInfoProto *> graphInputs;
@@ -348,7 +434,7 @@ validateConvIntegerModel(MLIRContext &context, const onnx::ModelProto &model) {
     return reject<ConvIntegerModel>(
         context, "currently supports one runtime activation input");
 
-  const onnx::NodeProto &node = graph.node(0);
+  const onnx::NodeProto &node = *root->core;
   if (!node.domain().empty() || node.op_type() != "ConvInteger" ||
       node.input_size() < 2 || node.input_size() > 4 || node.output_size() != 1)
     return reject<ConvIntegerModel>(
@@ -363,10 +449,6 @@ validateConvIntegerModel(MLIRContext &context, const onnx::ModelProto &model) {
   if (weightIt == initializers.end())
     return reject<ConvIntegerModel>(
         context, "ConvInteger weight must be an embedded initializer");
-  if (node.output(0) != graph.output(0).name())
-    return reject<ConvIntegerModel>(
-        context, "ConvInteger output must be the graph output");
-
   FailureOr<SmallVector<int64_t>> inputShape = getStaticTensorShape(
       context, *runtimeInputs.front(), onnx::TensorProto::INT8, "activation");
   FailureOr<SmallVector<int64_t>> outputShape = getStaticTensorShape(
@@ -445,6 +527,19 @@ validateConvIntegerModel(MLIRContext &context, const onnx::ModelProto &model) {
       extractInt8Initializer(context, weight, weightElementCount, "weight");
   if (failed(weightValues))
     return failure();
+  SmallVector<APInt> biasValues;
+  if (root->bias) {
+    if (root->bias->dims_size() != 4 || root->bias->dims(0) != 1 ||
+        root->bias->dims(1) != filters || root->bias->dims(2) != 1 ||
+        root->bias->dims(3) != 1)
+      return reject<ConvIntegerModel>(
+          context, "ConvInteger bias must have shape [1,F,1,1]");
+    FailureOr<SmallVector<APInt>> values =
+        extractInt32Initializer(context, *root->bias, filters, "bias");
+    if (failed(values))
+      return failure();
+    biasValues = std::move(*values);
+  }
   return ConvIntegerModel{channels,
                           inputHeight,
                           inputWidth,
@@ -459,7 +554,8 @@ validateConvIntegerModel(MLIRContext &context, const onnx::ModelProto &model) {
                           attributes->pads[3],
                           outputHeight,
                           outputWidth,
-                          std::move(*weightValues)};
+                          std::move(*weightValues),
+                          std::move(biasValues)};
 }
 
 DenseElementsAttr transposeWeightConstant(Builder &builder,
@@ -474,6 +570,30 @@ DenseElementsAttr transposeWeightConstant(Builder &builder,
       transposed.push_back(
           model.weightValues[reduction * model.output + output]);
   return DenseElementsAttr::get(type, transposed);
+}
+
+Value appendIntegerBias(OpBuilder &builder, Location location, Value output,
+                        RankedTensorType resultType,
+                        ArrayRef<int64_t> biasShape, ArrayRef<APInt> biasValues,
+                        ArrayRef<int64_t> broadcastDimensions) {
+  if (biasValues.empty())
+    return output;
+
+  auto biasType = RankedTensorType::get(biasShape, resultType.getElementType());
+  auto bias =
+      arith::ConstantOp::create(builder, location, biasType,
+                                DenseElementsAttr::get(biasType, biasValues));
+  auto empty = tensor::EmptyOp::create(builder, location, resultType.getShape(),
+                                       resultType.getElementType());
+  auto broadcast =
+      linalg::BroadcastOp::create(builder, location, bias.getResult(),
+                                  empty.getResult(), broadcastDimensions);
+  return linalg::AddOp::create(
+             builder, location, TypeRange{resultType},
+             ValueRange{output, broadcast.getResult().front()},
+             ValueRange{empty.getResult()})
+      .getResultTensors()
+      .front();
 }
 } // namespace
 
@@ -546,7 +666,11 @@ importMatMulInteger(MLIRContext &context, const onnx::ModelProto &model) {
   auto output = linalg::TransposeOp::create(
       builder, location, matmul.getResult(0), outputEmpty.getResult(),
       ArrayRef<int64_t>{1, 0});
-  func::ReturnOp::create(builder, location, output.getResult().front());
+  Value result =
+      appendIntegerBias(builder, location, output.getResult().front(),
+                        onnxResultType, ArrayRef<int64_t>{imported->output},
+                        imported->biasValues, ArrayRef<int64_t>{0});
+  func::ReturnOp::create(builder, location, result);
   if (failed(verify(*module)))
     return reject<OwningOpRef<ModuleOp>>(
         context, "constructed MLIR module failed verification");
@@ -625,7 +749,11 @@ importConvInteger(MLIRContext &context, const onnx::ModelProto &model) {
       ValueRange{paddedInput, weight.getResult()},
       ValueRange{zeroResult.getResult()}, strides, dilations);
   conv->setAttr(kConvIntegerMarker, builder.getUnitAttr());
-  func::ReturnOp::create(builder, location, conv.getResult(0));
+  Value result =
+      appendIntegerBias(builder, location, conv.getResult(0), resultType,
+                        ArrayRef<int64_t>{imported->filters},
+                        imported->biasValues, ArrayRef<int64_t>{0, 2, 3});
+  func::ReturnOp::create(builder, location, result);
   if (failed(verify(*module)))
     return reject<OwningOpRef<ModuleOp>>(
         context, "constructed MLIR module failed verification");
@@ -635,14 +763,15 @@ importConvInteger(MLIRContext &context, const onnx::ModelProto &model) {
 FailureOr<OwningOpRef<ModuleOp>>
 importQuantizedONNX(MLIRContext &context, const onnx::ModelProto &model) {
   const onnx::GraphProto &graph = model.graph();
-  if (graph.node_size() != 1 || graph.output_size() != 1)
+  if ((graph.node_size() != 1 && graph.node_size() != 2) ||
+      graph.output_size() != 1)
     return reject<OwningOpRef<ModuleOp>>(
         context, "unsupported output-rooted operator profile");
 
-  const onnx::NodeProto &root = graph.node(0);
-  if (root.domain().empty() && root.op_type() == "MatMulInteger")
+  const onnx::NodeProto &core = graph.node(0);
+  if (core.domain().empty() && core.op_type() == "MatMulInteger")
     return importMatMulInteger(context, model);
-  if (root.domain().empty() && root.op_type() == "ConvInteger")
+  if (core.domain().empty() && core.op_type() == "ConvInteger")
     return importConvInteger(context, model);
   return reject<OwningOpRef<ModuleOp>>(
       context, "unsupported output-rooted operator profile");
