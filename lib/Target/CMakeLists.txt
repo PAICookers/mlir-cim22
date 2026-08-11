@@ -1,5 +1,4 @@
 add_mlir_library(MLIRCIM22Target
-  CIM22Target.cpp
   Passes.cpp
 
   ADDITIONAL_HEADER_DIRS

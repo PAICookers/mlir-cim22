@@ -1,5 +1,4 @@
 add_subdirectory(Support)
-add_subdirectory(Artifact)
 add_subdirectory(Dialect/CIM/IR)
 add_subdirectory(Dialect/CIMFrame/IR)
 add_subdirectory(Dialect/CIMFrame/Transforms)

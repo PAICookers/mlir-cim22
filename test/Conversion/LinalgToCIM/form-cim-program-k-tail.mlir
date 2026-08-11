@@ -19,14 +19,12 @@
 // POS-NOT: arith.addi
 // POS-NOT: arith.trunci
 // POS-NOT: tensor.concat
-// POS: %[[IS1:.*]] = tensor.extract_slice %[[I1]][0] [1] [1] : tensor<1xi8> to tensor<1xi8>
-// POS-NEXT: %[[WS1:.*]] = tensor.extract_slice %[[W1]][0, 0] [16, 1] [1, 1] : tensor<16x1xi8> to tensor<16x1xi8>
-// POS-NEXT: %[[Z1:.*]] = arith.constant 0 : i8
-// POS-NEXT: %[[IP1:.*]] = tensor.pad %[[IS1]] low[0] high[63] {
+// POS: %[[Z1:.*]] = arith.constant 0 : i8
+// POS-NEXT: %[[IP1:.*]] = tensor.pad %[[I1]] low[0] high[63] {
 // POS-NEXT: ^bb0(%{{.*}}: index):
 // POS-NEXT: tensor.yield %[[Z1]] : i8
 // POS-NEXT: } : tensor<1xi8> to tensor<64xi8>
-// POS-NEXT: %[[WP1:.*]] = tensor.pad %[[WS1]] low[0, 0] high[0, 63] {
+// POS-NEXT: %[[WP1:.*]] = tensor.pad %[[W1]] low[0, 0] high[0, 63] {
 // POS-NEXT: ^bb0(%{{.*}}: index, %{{.*}}: index):
 // POS-NEXT: tensor.yield %[[Z1]] : i8
 // POS-NEXT: } : tensor<16x1xi8> to tensor<16x64xi8>
@@ -52,14 +50,12 @@ func.func @n16_k1(%weight: tensor<16x1xi8>, %input: tensor<1xi8>)
 // POS-NOT: arith.addi
 // POS-NOT: arith.trunci
 // POS-NOT: tensor.concat
-// POS: %[[IS63:.*]] = tensor.extract_slice %[[I63]][0] [63] [1] : tensor<63xi8> to tensor<63xi8>
-// POS-NEXT: %[[WS63:.*]] = tensor.extract_slice %[[W63]][0, 0] [1, 63] [1, 1] : tensor<1x63xi8> to tensor<1x63xi8>
-// POS-NEXT: %[[Z63:.*]] = arith.constant 0 : i8
-// POS-NEXT: %[[IP63:.*]] = tensor.pad %[[IS63]] low[0] high[1] {
+// POS: %[[Z63:.*]] = arith.constant 0 : i8
+// POS-NEXT: %[[IP63:.*]] = tensor.pad %[[I63]] low[0] high[1] {
 // POS-NEXT: ^bb0(%{{.*}}: index):
 // POS-NEXT: tensor.yield %[[Z63]] : i8
 // POS-NEXT: } : tensor<63xi8> to tensor<64xi8>
-// POS-NEXT: %[[WP63:.*]] = tensor.pad %[[WS63]] low[0, 0] high[15, 1] {
+// POS-NEXT: %[[WP63:.*]] = tensor.pad %[[W63]] low[0, 0] high[15, 1] {
 // POS-NEXT: ^bb0(%{{.*}}: index, %{{.*}}: index):
 // POS-NEXT: tensor.yield %[[Z63]] : i8
 // POS-NEXT: } : tensor<1x63xi8> to tensor<16x64xi8>
@@ -84,10 +80,9 @@ func.func @n1_k63(%weight: tensor<1x63xi8>, %input: tensor<63xi8>)
 // POS-NOT: arith.extsi
 // POS-NOT: arith.addi
 // POS-NOT: arith.trunci
-// POS: %[[I17K10S:.*]] = tensor.extract_slice %[[I17K1]][0] [1] [1] : tensor<1xi8> to tensor<1xi8>
-// POS-NEXT: %[[W17K10S:.*]] = tensor.extract_slice %[[W17K1]][0, 0] [16, 1] [1, 1] : tensor<17x1xi8> to tensor<16x1xi8>
+// POS: %[[W17K10S:.*]] = tensor.extract_slice %[[W17K1]][0, 0] [16, 1] [1, 1] : tensor<17x1xi8> to tensor<16x1xi8>
 // POS-NEXT: %[[Z17K10:.*]] = arith.constant 0 : i8
-// POS-NEXT: %[[I17K10:.*]] = tensor.pad %[[I17K10S]] low[0] high[63] {
+// POS-NEXT: %[[I17K10:.*]] = tensor.pad %[[I17K1]] low[0] high[63] {
 // POS-NEXT: ^bb0(%{{.*}}: index):
 // POS-NEXT: tensor.yield %[[Z17K10]] : i8
 // POS-NEXT: } : tensor<1xi8> to tensor<64xi8>
@@ -96,10 +91,9 @@ func.func @n1_k63(%weight: tensor<1x63xi8>, %input: tensor<63xi8>)
 // POS-NEXT: tensor.yield %[[Z17K10]] : i8
 // POS-NEXT: } : tensor<16x1xi8> to tensor<16x64xi8>
 // POS-NEXT: %[[V17K10:.*]] = cim.vmm %[[I17K10]], %[[W17K10]] : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
-// POS-NEXT: %[[I17K11S:.*]] = tensor.extract_slice %[[I17K1]][0] [1] [1] : tensor<1xi8> to tensor<1xi8>
 // POS-NEXT: %[[W17K11S:.*]] = tensor.extract_slice %[[W17K1]][16, 0] [1, 1] [1, 1] : tensor<17x1xi8> to tensor<1x1xi8>
 // POS-NEXT: %[[Z17K11:.*]] = arith.constant 0 : i8
-// POS-NEXT: %[[I17K11:.*]] = tensor.pad %[[I17K11S]] low[0] high[63] {
+// POS-NEXT: %[[I17K11:.*]] = tensor.pad %[[I17K1]] low[0] high[63] {
 // POS-NEXT: ^bb0(%{{.*}}: index):
 // POS-NEXT: tensor.yield %[[Z17K11]] : i8
 // POS-NEXT: } : tensor<1xi8> to tensor<64xi8>

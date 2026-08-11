@@ -19,9 +19,9 @@
 #include "mlir/IR/Verifier.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <fstream>
-#include <limits>
 
 namespace mlir::cim {
 namespace {
@@ -103,7 +103,7 @@ extractInt8Initializer(MLIRContext &context, const onnx::TensorProto &tensor,
         (role + " must use raw_data or one int32_data value per element")
             .str());
   for (int32_t value : tensor.int32_data()) {
-    if (value < -128 || value > 127)
+    if (!llvm::isInt<8>(value))
       return reject<SmallVector<APInt>>(
           context, (role + " INT8 int32_data value is out of range").str());
     values.emplace_back(8, static_cast<uint64_t>(value), true);
@@ -250,12 +250,13 @@ validateMatMulIntegerModel(MLIRContext &context,
       (*outputShape)[1] != output)
     return reject<MatMulIntegerModel>(
         context, "MatMulInteger shapes must satisfy [M,K] * [K,N] -> [M,N]");
-  if (reduction > std::numeric_limits<int64_t>::max() / output)
+  int64_t weightElementCount = 0;
+  if (llvm::MulOverflow(reduction, output, weightElementCount))
     return reject<MatMulIntegerModel>(context,
                                       "weight element count is too large");
 
   FailureOr<SmallVector<APInt>> weightValues =
-      extractInt8Initializer(context, weight, reduction * output);
+      extractInt8Initializer(context, weight, weightElementCount);
   if (failed(weightValues))
     return failure();
   return MatMulIntegerModel{batch, reduction, output, std::move(*weightValues)};
@@ -347,10 +348,14 @@ validateConvIntegerModel(MLIRContext &context, const onnx::ModelProto &model) {
       (*outputShape)[2] != height || (*outputShape)[3] != width)
     return reject<ConvIntegerModel>(
         context, "ConvInteger shapes do not match 3x3 stride1 pad1");
-  if (height > std::numeric_limits<int64_t>::max() - 2 ||
-      width > std::numeric_limits<int64_t>::max() - 2 ||
-      channels > std::numeric_limits<int64_t>::max() / 9 ||
-      filters > std::numeric_limits<int64_t>::max() / (channels * 9))
+  int64_t paddedHeight = 0;
+  int64_t paddedWidth = 0;
+  int64_t kernelElements = 0;
+  int64_t weightElementCount = 0;
+  if (llvm::AddOverflow(height, int64_t{2}, paddedHeight) ||
+      llvm::AddOverflow(width, int64_t{2}, paddedWidth) ||
+      llvm::MulOverflow(channels, int64_t{9}, kernelElements) ||
+      llvm::MulOverflow(filters, kernelElements, weightElementCount))
     return reject<ConvIntegerModel>(context, "ConvInteger shape is too large");
 
   if (node.input_size() >= 3 && !node.input(2).empty()) {
@@ -374,7 +379,7 @@ validateConvIntegerModel(MLIRContext &context, const onnx::ModelProto &model) {
   }
 
   FailureOr<SmallVector<APInt>> weightValues =
-      extractInt8Initializer(context, weight, filters * channels * 9, "weight");
+      extractInt8Initializer(context, weight, weightElementCount, "weight");
   if (failed(weightValues))
     return failure();
   return ConvIntegerModel{channels, height, width, filters,

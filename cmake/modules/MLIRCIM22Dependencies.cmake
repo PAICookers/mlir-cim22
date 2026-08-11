@@ -10,18 +10,6 @@ include_guard(GLOBAL)
 
 include(FetchContent)
 
-find_package(flatbuffers 25.12.19 EXACT CONFIG REQUIRED)
-if(NOT TARGET flatbuffers::flatc)
-  message(FATAL_ERROR "FlatBuffers must provide flatbuffers::flatc")
-endif()
-if(TARGET flatbuffers::flatbuffers)
-  set(MLIRCIM22_FLATBUFFERS_TARGET flatbuffers::flatbuffers)
-elseif(TARGET flatbuffers::flatbuffers_shared)
-  set(MLIRCIM22_FLATBUFFERS_TARGET flatbuffers::flatbuffers_shared)
-else()
-  message(FATAL_ERROR "FlatBuffers must provide a C++ library target")
-endif()
-
 option(MLIRCIM22_USE_SYSTEM_ONNX
   "Use an installed ONNX package instead of the pinned source dependency"
   OFF
@@ -57,15 +45,6 @@ if(NOT TARGET ${MLIRCIM22_ONNX_PROTO_TARGET})
   )
 endif()
 
-add_library(MLIRCIM22ONNXProto INTERFACE)
-add_library(MLIRCIM22::ONNXProto ALIAS MLIRCIM22ONNXProto)
-target_link_libraries(MLIRCIM22ONNXProto
-  INTERFACE ${MLIRCIM22_ONNX_PROTO_TARGET}
-)
-
 message(STATUS
   "mlir-cim22 ONNX dependency: ${MLIRCIM22_ONNX_PROTO_TARGET}"
-)
-message(STATUS
-  "mlir-cim22 FlatBuffers dependency: ${MLIRCIM22_FLATBUFFERS_TARGET} 25.12.19"
 )

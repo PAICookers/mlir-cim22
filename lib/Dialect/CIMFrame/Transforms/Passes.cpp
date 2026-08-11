@@ -13,10 +13,10 @@
 #include "CIM22/Support/Int8WeightLayout.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Transforms/DialectConversion.h"
 
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/bit.h"
 
 #include <array>
@@ -71,25 +71,8 @@ LogicalResult verifyExactFunctionContract(func::FuncOp function) {
       succeeded(requireString("cim.route_policy", "lower-left-maximal-xy-v1")));
 }
 
-FailureOr<IntegerAttr> readProvenanceI64(cim::ConfigureWeightOp op,
-                                         StringRef name) {
-  auto value = dyn_cast_or_null<IntegerAttr>(op->getAttr(name));
-  if (!value || !value.getType().isSignlessInteger(64)) {
-    op.emitOpError("materialize-cim-static-weight-section expects '")
-        << name << "' to be an i64 attribute";
-    return failure();
-  }
-  if (value.getInt() < 0) {
-    op.emitOpError("materialize-cim-static-weight-section expects '")
-        << name << "' to be non-negative";
-    return failure();
-  }
-  return value;
-}
-
 FailureOr<StaticWeightCommandPlan>
 planStaticWeightCommand(cim::ConfigureWeightOp op, func::FuncOp function,
-                        const llvm::StringMap<cim::StaticWeightOp> &weights,
                         OpBuilder &builder) {
   for (NamedAttribute attr : op->getAttrs()) {
     StringRef name = attr.getName().strref();
@@ -107,63 +90,20 @@ planStaticWeightCommand(cim::ConfigureWeightOp op, func::FuncOp function,
                    "same-module static weight reference");
     return failure();
   }
-  auto weightIt = weights.find(resource.getValue());
-  if (weightIt == weights.end()) {
-    op.emitOpError("materialize-cim-static-weight-section cannot resolve "
-                   "same-module cim.static_weight ")
-        << resource;
-    return failure();
-  }
-  cim::StaticWeightOp weight = weightIt->second;
-  auto type = dyn_cast<RankedTensorType>(weight.getValue().getType());
-  if (!type || type.getShape() != ArrayRef<int64_t>({16, 64}) ||
-      !type.getElementType().isSignlessInteger(8)) {
-    weight.emitOpError("materialize-cim-static-weight-section requires "
-                       "tensor<16x64xi8>");
-    return failure();
-  }
+  cim::StaticWeightOp weight =
+      SymbolTable::lookupNearestSymbolFrom<cim::StaticWeightOp>(op, resource);
 
   SmallVector<IntegerAttr> integers;
   integers.reserve(7);
-  for (StringRef name : ArrayRef(kProvenanceAttrs).drop_back()) {
-    FailureOr<IntegerAttr> value = readProvenanceI64(op, name);
-    if (failed(value))
-      return failure();
-    integers.push_back(*value);
-  }
+  for (StringRef name : ArrayRef(kProvenanceAttrs).drop_back())
+    integers.push_back(op->getAttrOfType<IntegerAttr>(name));
   IntegerAttr macroSlot = integers.back();
-  if (macroSlot.getInt() > 1) {
-    op.emitOpError("materialize-cim-static-weight-section expects macro_slot "
-                   "to be 0 or 1");
-    return failure();
-  }
 
-  auto mapping = dyn_cast_or_null<DictionaryAttr>(op->getAttr("cim.mapping"));
-  if (!mapping) {
-    op.emitOpError("materialize-cim-static-weight-section expects "
-                   "'cim.mapping' to be a dictionary attribute");
-    return failure();
-  }
-  auto sourceRoute = dyn_cast_or_null<DenseI64ArrayAttr>(mapping.get("route"));
-  if (!sourceRoute || sourceRoute.size() != 6) {
-    op.emitOpError("materialize-cim-static-weight-section expects "
-                   "cim.mapping.route to contain six i64 values");
-    return failure();
-  }
+  auto mapping = cast<DictionaryAttr>(op->getAttr("cim.mapping"));
+  auto sourceRoute = cast<DenseI64ArrayAttr>(mapping.get("route"));
   SmallVector<int32_t, 6> route;
-  for (auto [index, value] : llvm::enumerate(sourceRoute.asArrayRef())) {
-    if (value < 0 || value > 31) {
-      op.emitOpError("materialize-cim-static-weight-section expects each "
-                     "cim.mapping.route value in [0, 31]");
-      return failure();
-    }
-    if (index >= 3 && value != 0) {
-      op.emitOpError("materialize-cim-static-weight-section expects onecast "
-                     "route with zero Copy fields");
-      return failure();
-    }
-    route.push_back(static_cast<int32_t>(value));
-  }
+  llvm::transform(sourceRoute.asArrayRef(), std::back_inserter(route),
+                  [](int64_t value) { return static_cast<int32_t>(value); });
 
   std::array<uint8_t, 16 * 64> bytes{};
   for (auto [index, value] :
@@ -214,15 +154,6 @@ public:
       }
     }
 
-    llvm::StringMap<cim::StaticWeightOp> weights;
-    for (cim::StaticWeightOp weight : module.getOps<cim::StaticWeightOp>()) {
-      if (!weights.try_emplace(weight.getSymName(), weight).second) {
-        weight.emitOpError("materialize-cim-static-weight-section rejects "
-                           "duplicate same-module static weight symbol");
-        return signalPassFailure();
-      }
-    }
-
     OpBuilder builder(&getContext());
     SmallVector<StaticWeightCommandPlan> plans;
     for (func::FuncOp function : module.getOps<func::FuncOp>()) {
@@ -237,7 +168,7 @@ public:
       }
       for (cim::ConfigureWeightOp op : configureWeights) {
         FailureOr<StaticWeightCommandPlan> plan =
-            planStaticWeightCommand(op, function, weights, builder);
+            planStaticWeightCommand(op, function, builder);
         if (failed(plan)) {
           signalPassFailure();
           return;

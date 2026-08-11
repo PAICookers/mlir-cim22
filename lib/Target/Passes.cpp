@@ -9,12 +9,12 @@
 #include "CIM22/Target/Passes.h"
 
 #include "CIM22/Dialect/CIM/IR/CIMOps.h"
-#include "CIM22/Target/CIM22Target.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 
 #include "llvm/ADT/STLExtras.h"
 
+#include <algorithm>
 #include <array>
 #include <optional>
 
@@ -23,6 +23,14 @@ namespace mlir::cim22::target {
 #include "CIM22/Target/Passes.h.inc"
 
 namespace {
+constexpr llvm::StringLiteral kProfileId = "cim22-4x5-v1";
+constexpr int64_t kProfileVersion = 1;
+constexpr int64_t kRows = 4;
+constexpr int64_t kColumns = 5;
+constexpr int64_t kCoreCount = kRows * kColumns;
+constexpr int64_t kMacrosPerCore = 2;
+constexpr llvm::StringLiteral kPlacementPolicy = "core-major-dual-macro-v1";
+constexpr llvm::StringLiteral kRoutePolicy = "lower-left-maximal-xy-v1";
 constexpr llvm::StringLiteral kTileAttrs[] = {"m_tile", "n_tile", "k_tile"};
 constexpr llvm::StringLiteral kScheduleAttrs[] = {"work_id", "group_id"};
 constexpr llvm::StringLiteral kMappingAttrs[] = {"core_slot", "macro_slot",
@@ -34,8 +42,8 @@ constexpr llvm::StringLiteral kFunctionAttrs[] = {
 struct MappingResult {
   int64_t coreSlot;
   int64_t macroSlot;
-  CoreCoordinate coordinate;
-  Route route;
+  std::array<int64_t, 2> coordinate;
+  std::array<int64_t, 6> route;
 };
 
 unsigned countPresent(Operation *operation,
@@ -110,39 +118,23 @@ FailureOr<MappingResult> getExpectedMapping(cim::VMMOp op) {
 
   const int64_t coreSlot = (*workId / kMacrosPerCore) % kCoreCount;
   const int64_t macroSlot = *workId % kMacrosPerCore;
-  FailureOr<CoreCoordinate> coordinate = resolveCoreSlot(coreSlot);
-  if (failed(coordinate)) {
-    op.emitOpError("map-cim-schedule cannot resolve core_slot ") << coreSlot;
-    return failure();
-  }
-  FailureOr<Route> route = routeFromLowerLeft(*coordinate);
-  if (failed(route)) {
-    op.emitOpError("map-cim-schedule cannot route to core_slot ") << coreSlot;
-    return failure();
-  }
-  FailureOr<CoreCoordinate> replayed = replayRoute({0, 0}, *route);
-  if (failed(replayed) || replayed->row != coordinate->row ||
-      replayed->column != coordinate->column) {
-    op.emitOpError("map-cim-schedule route does not reach core_slot ")
-        << coreSlot;
-    return failure();
-  }
-  return MappingResult{coreSlot, macroSlot, *coordinate, *route};
+  std::array<int64_t, 2> coordinate{coreSlot / kColumns, coreSlot % kColumns};
+  const int64_t diagonal = std::min(coordinate[0], coordinate[1]);
+  std::array<int64_t, 6> route{
+      diagonal, coordinate[1] - diagonal, coordinate[0] - diagonal, 0, 0, 0};
+  return MappingResult{coreSlot, macroSlot, coordinate, route};
 }
 
 DictionaryAttr buildMapping(Builder &builder, const MappingResult &result) {
-  const std::array<int64_t, 2> coordinate{result.coordinate.row,
-                                          result.coordinate.column};
   const std::array<int64_t, 2> lowerLeft{0, 0};
   return builder.getDictionaryAttr({
       builder.getNamedAttr("core_coord",
-                           builder.getDenseI64ArrayAttr(coordinate)),
+                           builder.getDenseI64ArrayAttr(result.coordinate)),
       builder.getNamedAttr("ingress", builder.getDenseI64ArrayAttr(lowerLeft)),
       builder.getNamedAttr("source", builder.getDenseI64ArrayAttr(lowerLeft)),
       builder.getNamedAttr("destination",
-                           builder.getDenseI64ArrayAttr(coordinate)),
-      builder.getNamedAttr(
-          "route", builder.getDenseI64ArrayAttr(result.route.distances)),
+                           builder.getDenseI64ArrayAttr(result.coordinate)),
+      builder.getNamedAttr("route", builder.getDenseI64ArrayAttr(result.route)),
   });
 }
 
@@ -170,11 +162,6 @@ public:
 
   void runOnOperation() override {
     func::FuncOp function = getOperation();
-    if (failed(validateProfile())) {
-      function.emitError("map-cim-schedule built-in target profile is invalid");
-      return signalPassFailure();
-    }
-
     SmallVector<cim::VMMOp> vmms;
     function.walk([&](cim::VMMOp op) { vmms.push_back(op); });
     const unsigned functionAttrCount = countPresent(function, kFunctionAttrs);

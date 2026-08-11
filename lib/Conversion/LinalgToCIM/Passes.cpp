@@ -9,6 +9,7 @@
 #include "CIM22/Conversion/LinalgToCIM/Passes.h"
 #include "CIM22/Host/HostProgram.h"
 
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -20,12 +21,11 @@
 #include "mlir/Transforms/DialectConversion.h"
 
 #include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
-#include <limits>
 #include <optional>
 
 namespace mlir::cim {
@@ -179,30 +179,10 @@ std::optional<TileIdentity> readTileIdentity(VMMOp op) {
   return TileIdentity{*m, *n, *k};
 }
 
-int64_t getGroupId(int64_t workId) {
-  // TODO(CTQ-031): Keep software-only groups two-wide; M4 maps each group to
-  // one core until cross-core waves are known.
-  return workId / 2;
-}
-
 bool dependsOn(Operation *operation, Operation *possibleDependency) {
-  SmallVector<Operation *> worklist;
-  for (Value operand : operation->getOperands())
-    if (Operation *definition = operand.getDefiningOp())
-      worklist.push_back(definition);
-
-  llvm::SmallPtrSet<Operation *, 16> visited;
-  while (!worklist.empty()) {
-    Operation *current = worklist.pop_back_val();
-    if (current == possibleDependency)
-      return true;
-    if (!visited.insert(current).second)
-      continue;
-    for (Value operand : current->getOperands())
-      if (Operation *definition = operand.getDefiningOp())
-        worklist.push_back(definition);
-  }
-  return false;
+  llvm::SetVector<Operation *> dependencies;
+  return succeeded(getBackwardSlice(operation, &dependencies)) &&
+         dependencies.contains(possibleDependency);
 }
 
 bool hasType(Value value, ArrayRef<int64_t> shape, unsigned bitWidth) {
@@ -227,7 +207,8 @@ bool isEvaluatedZeroSplat(Value value) {
          (*elements).getSplatValue<APInt>().isZero();
 }
 
-bool hasCanonicalInt8ContractionBody(Region &region) {
+bool hasCanonicalInt8ContractionBody(Region &region,
+                                     unsigned accumulatorWidth) {
   if (!region.hasOneBlock())
     return false;
 
@@ -235,7 +216,7 @@ bool hasCanonicalInt8ContractionBody(Region &region) {
   if (block.getNumArguments() != 3 ||
       !block.getArgument(0).getType().isInteger(8) ||
       !block.getArgument(1).getType().isInteger(8) ||
-      !block.getArgument(2).getType().isInteger(21) ||
+      !block.getArgument(2).getType().isInteger(accumulatorWidth) ||
       block.getOperations().size() != 5)
     return false;
 
@@ -249,16 +230,16 @@ bool hasCanonicalInt8ContractionBody(Region &region) {
     return false;
 
   return lhsExt.getIn() == block.getArgument(0) &&
-         lhsExt.getOut().getType().isInteger(21) &&
+         lhsExt.getOut().getType().isInteger(accumulatorWidth) &&
          rhsExt.getIn() == block.getArgument(1) &&
-         rhsExt.getOut().getType().isInteger(21) &&
+         rhsExt.getOut().getType().isInteger(accumulatorWidth) &&
          multiply.getLhs() == lhsExt.getOut() &&
          multiply.getRhs() == rhsExt.getOut() &&
-         multiply.getResult().getType().isInteger(21) &&
+         multiply.getResult().getType().isInteger(accumulatorWidth) &&
          multiply.getOverflowFlags() == arith::IntegerOverflowFlags::none &&
          add.getLhs() == block.getArgument(2) &&
          add.getRhs() == multiply.getResult() &&
-         add.getResult().getType().isInteger(21) &&
+         add.getResult().getType().isInteger(accumulatorWidth) &&
          add.getOverflowFlags() == arith::IntegerOverflowFlags::none &&
          yield.getValues().size() == 1 &&
          yield.getValues().front() == add.getResult();
@@ -307,7 +288,7 @@ bool isConvertible(linalg::MatvecOp op) {
          hasType(inputs[1], {reductionSize}, 8) &&
          hasType(inits[0], {outputSize}, 21) &&
          hasType(op->getResult(0), {outputSize}, 21) && isZeroSplat(inits[0]) &&
-         hasCanonicalInt8ContractionBody(op.getRegion()) &&
+         hasCanonicalInt8ContractionBody(op.getRegion(), 21) &&
          hasCanonicalMatvecIndexingMaps(op);
 }
 
@@ -335,7 +316,7 @@ bool isConvertible(linalg::MatmulOp op) {
          hasType(inits[0], {outputSize, columnCount}, 21) &&
          hasType(op->getResult(0), {outputSize, columnCount}, 21) &&
          isZeroSplat(inits[0]) && op.getCast() == linalg::TypeFn::cast_signed &&
-         hasCanonicalInt8ContractionBody(op.getRegion()) &&
+         hasCanonicalInt8ContractionBody(op.getRegion(), 21) &&
          hasCanonicalMatmulIndexingMaps(op);
 }
 
@@ -346,43 +327,6 @@ enum class MatMulIntegerStatus { valid, invalid, partialRangeOverflow };
 
 bool hasMatMulIntegerMarker(Operation *op) {
   return op->hasAttr(kMatMulIntegerMarker);
-}
-
-bool hasCanonicalI32Int8ContractionBody(Region &region) {
-  if (!region.hasOneBlock())
-    return false;
-
-  Block &block = region.front();
-  if (block.getNumArguments() != 3 ||
-      !block.getArgument(0).getType().isInteger(8) ||
-      !block.getArgument(1).getType().isInteger(8) ||
-      !block.getArgument(2).getType().isInteger(32) ||
-      block.getOperations().size() != 5)
-    return false;
-
-  auto operation = block.begin();
-  auto lhsExt = dyn_cast<arith::ExtSIOp>(&*operation++);
-  auto rhsExt = dyn_cast<arith::ExtSIOp>(&*operation++);
-  auto multiply = dyn_cast<arith::MulIOp>(&*operation++);
-  auto add = dyn_cast<arith::AddIOp>(&*operation++);
-  auto yield = dyn_cast<linalg::YieldOp>(&*operation);
-  if (!lhsExt || !rhsExt || !multiply || !add || !yield)
-    return false;
-
-  return lhsExt.getIn() == block.getArgument(0) &&
-         lhsExt.getOut().getType().isInteger(32) &&
-         rhsExt.getIn() == block.getArgument(1) &&
-         rhsExt.getOut().getType().isInteger(32) &&
-         multiply.getLhs() == lhsExt.getOut() &&
-         multiply.getRhs() == rhsExt.getOut() &&
-         multiply.getResult().getType().isInteger(32) &&
-         multiply.getOverflowFlags() == arith::IntegerOverflowFlags::none &&
-         add.getLhs() == block.getArgument(2) &&
-         add.getRhs() == multiply.getResult() &&
-         add.getResult().getType().isInteger(32) &&
-         add.getOverflowFlags() == arith::IntegerOverflowFlags::none &&
-         yield.getValues().size() == 1 &&
-         yield.getValues().front() == add.getResult();
 }
 
 MatMulIntegerStatus proveMatMulIntegerRanges(Value weight) {
@@ -441,7 +385,7 @@ MatMulIntegerStatus getMatMulIntegerStatus(linalg::MatvecOp op) {
       !hasType(inits[0], {outputSize}, 32) ||
       !hasType(op->getResult(0), {outputSize}, 32) ||
       !isEvaluatedZeroSplat(inits[0]) ||
-      !hasCanonicalI32Int8ContractionBody(op.getRegion()) ||
+      !hasCanonicalInt8ContractionBody(op.getRegion(), 32) ||
       !hasCanonicalMatvecIndexingMaps(op))
     return MatMulIntegerStatus::invalid;
   return proveMatMulIntegerRanges(inputs[0]);
@@ -472,7 +416,7 @@ MatMulIntegerStatus getMatMulIntegerStatus(linalg::MatmulOp op) {
       !hasType(op->getResult(0), {outputSize, columnCount}, 32) ||
       !isEvaluatedZeroSplat(inits[0]) ||
       op.getCast() != linalg::TypeFn::cast_signed ||
-      !hasCanonicalI32Int8ContractionBody(op.getRegion()) ||
+      !hasCanonicalInt8ContractionBody(op.getRegion(), 32) ||
       !hasCanonicalMatmulIndexingMaps(op))
     return MatMulIntegerStatus::invalid;
   return proveMatMulIntegerRanges(inputs[0]);
@@ -501,177 +445,106 @@ public:
     auto weightType = cast<RankedTensorType>(inputs[0].getType());
     int64_t outputSize = weightType.getDimSize(0);
     int64_t reductionSize = weightType.getDimSize(1);
-    if (reductionSize != 64) {
-      Location location = op.getLoc();
-      uint64_t tileCount =
-          llvm::divideCeil(static_cast<uint64_t>(reductionSize), uint64_t{64});
-      unsigned accumulationWidth = 21 + llvm::Log2_64_Ceil(tileCount);
-      auto inputTileType =
-          RankedTensorType::get({64}, weightType.getElementType());
-      auto weightTileType =
-          RankedTensorType::get({16, 64}, weightType.getElementType());
-      auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
-      auto partialType =
-          RankedTensorType::get({16}, resultType.getElementType());
-      auto accumulationType = RankedTensorType::get(
-          {16}, IntegerType::get(op.getContext(), accumulationWidth));
-      SmallVector<Value> tileResults;
-      tileResults.reserve(outputSize / 16 + (outputSize % 16 != 0));
+    Location location = op.getLoc();
+    uint64_t tileCount =
+        llvm::divideCeil(static_cast<uint64_t>(reductionSize), uint64_t{64});
+    unsigned accumulationWidth = 21 + llvm::Log2_64_Ceil(tileCount);
+    auto inputTileType =
+        RankedTensorType::get({64}, weightType.getElementType());
+    auto weightTileType =
+        RankedTensorType::get({16, 64}, weightType.getElementType());
+    auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
+    auto partialType = RankedTensorType::get({16}, resultType.getElementType());
+    auto accumulationType = RankedTensorType::get(
+        {16}, IntegerType::get(op.getContext(), accumulationWidth));
+    SmallVector<Value> tileResults;
+    tileResults.reserve(outputSize / 16 + (outputSize % 16 != 0));
 
-      for (int64_t outputOffset = 0; outputOffset < outputSize;
-           outputOffset += 16) {
-        int64_t tileOutputSize =
-            outputSize - outputOffset < 16 ? outputSize - outputOffset : 16;
-        Value zero;
-        Value sum;
-        for (uint64_t reductionTile = 0; reductionTile < tileCount;
-             ++reductionTile) {
-          int64_t reductionOffset = static_cast<int64_t>(reductionTile * 64);
-          int64_t tileReductionSize = reductionSize - reductionOffset < 64
-                                          ? reductionSize - reductionOffset
-                                          : 64;
-          auto inputSliceType = RankedTensorType::get(
-              {tileReductionSize}, weightType.getElementType());
-          SmallVector<OpFoldResult> inputOffsets{
-              rewriter.getIndexAttr(reductionOffset)};
-          SmallVector<OpFoldResult> inputSizes{
-              rewriter.getIndexAttr(tileReductionSize)};
-          SmallVector<OpFoldResult> inputStrides{rewriter.getIndexAttr(1)};
-          auto inputSlice = tensor::ExtractSliceOp::create(
+    for (int64_t outputOffset = 0; outputOffset < outputSize;
+         outputOffset += 16) {
+      int64_t tileOutputSize =
+          outputSize - outputOffset < 16 ? outputSize - outputOffset : 16;
+      Value zero;
+      Value sum;
+      for (uint64_t reductionTile = 0; reductionTile < tileCount;
+           ++reductionTile) {
+        int64_t reductionOffset = static_cast<int64_t>(reductionTile * 64);
+        int64_t tileReductionSize = reductionSize - reductionOffset < 64
+                                        ? reductionSize - reductionOffset
+                                        : 64;
+        auto inputSliceType = RankedTensorType::get(
+            {tileReductionSize}, weightType.getElementType());
+        SmallVector<OpFoldResult> inputOffsets{
+            rewriter.getIndexAttr(reductionOffset)};
+        SmallVector<OpFoldResult> inputSizes{
+            rewriter.getIndexAttr(tileReductionSize)};
+        SmallVector<OpFoldResult> inputStrides{rewriter.getIndexAttr(1)};
+        Value inputTile = inputs[1];
+        if (reductionOffset != 0 || tileReductionSize != reductionSize)
+          inputTile = tensor::ExtractSliceOp::create(
               rewriter, location, inputSliceType, inputs[1], inputOffsets,
               inputSizes, inputStrides);
 
-          auto weightSliceType = RankedTensorType::get(
-              {tileOutputSize, tileReductionSize}, weightType.getElementType());
-          SmallVector<OpFoldResult> weightOffsets{
-              rewriter.getIndexAttr(outputOffset),
-              rewriter.getIndexAttr(reductionOffset)};
-          SmallVector<OpFoldResult> weightSizes{
-              rewriter.getIndexAttr(tileOutputSize),
-              rewriter.getIndexAttr(tileReductionSize)};
-          SmallVector<OpFoldResult> weightStrides{rewriter.getIndexAttr(1),
-                                                  rewriter.getIndexAttr(1)};
-          auto weightSlice = tensor::ExtractSliceOp::create(
+        auto weightSliceType = RankedTensorType::get(
+            {tileOutputSize, tileReductionSize}, weightType.getElementType());
+        SmallVector<OpFoldResult> weightOffsets{
+            rewriter.getIndexAttr(outputOffset),
+            rewriter.getIndexAttr(reductionOffset)};
+        SmallVector<OpFoldResult> weightSizes{
+            rewriter.getIndexAttr(tileOutputSize),
+            rewriter.getIndexAttr(tileReductionSize)};
+        SmallVector<OpFoldResult> weightStrides{rewriter.getIndexAttr(1),
+                                                rewriter.getIndexAttr(1)};
+        Value weightTile = inputs[0];
+        if (outputOffset != 0 || tileOutputSize != outputSize ||
+            reductionOffset != 0 || tileReductionSize != reductionSize)
+          weightTile = tensor::ExtractSliceOp::create(
               rewriter, location, weightSliceType, inputs[0], weightOffsets,
               weightSizes, weightStrides);
-          Value inputTile = inputSlice.getResult();
-          Value weightTile = weightSlice.getResult();
-          if (tileReductionSize < 64) {
-            if (!zero)
-              zero = arith::ConstantOp::create(
-                  rewriter, location,
-                  rewriter.getIntegerAttr(weightType.getElementType(), 0));
-            SmallVector<OpFoldResult> low{rewriter.getIndexAttr(0)};
-            SmallVector<OpFoldResult> high{
-                rewriter.getIndexAttr(64 - tileReductionSize)};
-            inputTile = tensor::PadOp::create(rewriter, location, inputTileType,
-                                              inputTile, low, high, zero,
-                                              /*nofold=*/false);
-          }
-          if (tileOutputSize < 16 || tileReductionSize < 64) {
-            if (!zero)
-              zero = arith::ConstantOp::create(
-                  rewriter, location,
-                  rewriter.getIntegerAttr(weightType.getElementType(), 0));
-            SmallVector<OpFoldResult> low{rewriter.getIndexAttr(0),
-                                          rewriter.getIndexAttr(0)};
-            SmallVector<OpFoldResult> high{
-                rewriter.getIndexAttr(16 - tileOutputSize),
-                rewriter.getIndexAttr(64 - tileReductionSize)};
-            weightTile = tensor::PadOp::create(
-                rewriter, location, weightTileType, weightTile, low, high, zero,
-                /*nofold=*/false);
-          }
-
-          Value partial = VMMOp::create(rewriter, location, partialType,
-                                        inputTile, weightTile);
-          if (tileCount == 1) {
-            sum = partial;
-            continue;
-          }
-          Value extended = arith::ExtSIOp::create(rewriter, location,
-                                                  accumulationType, partial);
-          sum = sum ? arith::AddIOp::create(rewriter, location, sum, extended)
-                    : extended;
+        if (tileReductionSize < 64) {
+          if (!zero)
+            zero = arith::ConstantOp::create(
+                rewriter, location,
+                rewriter.getIntegerAttr(weightType.getElementType(), 0));
+          SmallVector<OpFoldResult> low{rewriter.getIndexAttr(0)};
+          SmallVector<OpFoldResult> high{
+              rewriter.getIndexAttr(64 - tileReductionSize)};
+          inputTile = tensor::PadOp::create(rewriter, location, inputTileType,
+                                            inputTile, low, high, zero,
+                                            /*nofold=*/false);
+        }
+        if (tileOutputSize < 16 || tileReductionSize < 64) {
+          if (!zero)
+            zero = arith::ConstantOp::create(
+                rewriter, location,
+                rewriter.getIntegerAttr(weightType.getElementType(), 0));
+          SmallVector<OpFoldResult> low{rewriter.getIndexAttr(0),
+                                        rewriter.getIndexAttr(0)};
+          SmallVector<OpFoldResult> high{
+              rewriter.getIndexAttr(16 - tileOutputSize),
+              rewriter.getIndexAttr(64 - tileReductionSize)};
+          weightTile = tensor::PadOp::create(rewriter, location, weightTileType,
+                                             weightTile, low, high, zero,
+                                             /*nofold=*/false);
         }
 
-        if (tileCount == 1)
-          tileResults.push_back(sum);
-        else
-          tileResults.push_back(
-              arith::TruncIOp::create(rewriter, location, partialType, sum));
+        Value partial = VMMOp::create(rewriter, location, partialType,
+                                      inputTile, weightTile);
+        if (tileCount == 1) {
+          sum = partial;
+          continue;
+        }
+        Value extended = arith::ExtSIOp::create(rewriter, location,
+                                                accumulationType, partial);
+        sum = sum ? arith::AddIOp::create(rewriter, location, sum, extended)
+                  : extended;
       }
 
-      Value tiledResult = tileResults.front();
-      if (tileResults.size() > 1)
-        tiledResult =
-            tensor::ConcatOp::create(rewriter, location, 0, tileResults);
-
-      if (outputSize % 16 == 0) {
-        rewriter.replaceOp(op, tiledResult);
-        return success();
-      }
-
-      SmallVector<OpFoldResult> offsets{rewriter.getIndexAttr(0)};
-      SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(outputSize)};
-      SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1)};
-      rewriter.replaceOpWithNewOp<tensor::ExtractSliceOp>(
-          op, resultType, tiledResult, offsets, sizes, strides);
-      return success();
-    }
-
-    if (outputSize == 16) {
-      rewriter.replaceOpWithNewOp<VMMOp>(op, op->getResult(0).getType(),
-                                         inputs[1], inputs[0]);
-      return success();
-    }
-
-    Location location = op.getLoc();
-    auto weightTileType =
-        RankedTensorType::get({16, 64}, weightType.getElementType());
-    auto resultTileType = RankedTensorType::get(
-        {16}, cast<ShapedType>(op->getResult(0).getType()).getElementType());
-    SmallVector<Value> tileResults;
-    int64_t tailSize = outputSize % 16;
-    int64_t fullSize = outputSize - tailSize;
-    tileResults.reserve(fullSize / 16 + (tailSize != 0));
-    for (int64_t offset = 0; offset < fullSize; offset += 16) {
-      SmallVector<OpFoldResult> offsets{rewriter.getIndexAttr(offset),
-                                        rewriter.getIndexAttr(0)};
-      SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(16),
-                                      rewriter.getIndexAttr(64)};
-      SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1),
-                                        rewriter.getIndexAttr(1)};
-      auto weightTile =
-          tensor::ExtractSliceOp::create(rewriter, location, weightTileType,
-                                         inputs[0], offsets, sizes, strides);
-      tileResults.push_back(VMMOp::create(rewriter, location, resultTileType,
-                                          inputs[1], weightTile.getResult()));
-    }
-
-    if (tailSize != 0) {
-      auto tailType =
-          RankedTensorType::get({tailSize, 64}, weightType.getElementType());
-      SmallVector<OpFoldResult> offsets{rewriter.getIndexAttr(fullSize),
-                                        rewriter.getIndexAttr(0)};
-      SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(tailSize),
-                                      rewriter.getIndexAttr(64)};
-      SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1),
-                                        rewriter.getIndexAttr(1)};
-      auto tail = tensor::ExtractSliceOp::create(
-          rewriter, location, tailType, inputs[0], offsets, sizes, strides);
-      Value zero = arith::ConstantOp::create(
-          rewriter, location,
-          rewriter.getIntegerAttr(weightType.getElementType(), 0));
-      SmallVector<OpFoldResult> low{rewriter.getIndexAttr(0),
-                                    rewriter.getIndexAttr(0)};
-      SmallVector<OpFoldResult> high{rewriter.getIndexAttr(16 - tailSize),
-                                     rewriter.getIndexAttr(0)};
-      auto padded = tensor::PadOp::create(rewriter, location, weightTileType,
-                                          tail.getResult(), low, high, zero,
-                                          /*nofold=*/false);
-      tileResults.push_back(VMMOp::create(rewriter, location, resultTileType,
-                                          inputs[1], padded.getResult()));
+      if (tileCount == 1)
+        tileResults.push_back(sum);
+      else
+        tileResults.push_back(
+            arith::TruncIOp::create(rewriter, location, partialType, sum));
     }
 
     Value tiledResult = tileResults.front();
@@ -679,7 +552,7 @@ public:
       tiledResult =
           tensor::ConcatOp::create(rewriter, location, 0, tileResults);
 
-    if (tailSize == 0) {
+    if (outputSize % 16 == 0) {
       rewriter.replaceOp(op, tiledResult);
       return success();
     }
@@ -688,8 +561,7 @@ public:
     SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(outputSize)};
     SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1)};
     rewriter.replaceOpWithNewOp<tensor::ExtractSliceOp>(
-        op, cast<RankedTensorType>(op->getResult(0).getType()), tiledResult,
-        offsets, sizes, strides);
+        op, resultType, tiledResult, offsets, sizes, strides);
     return success();
   }
 };
@@ -701,9 +573,15 @@ public:
   LogicalResult
   matchAndRewrite(linalg::MatmulOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (!isConvertible(op))
+    bool integerProfile = hasMatMulIntegerMarker(op);
+    if (integerProfile) {
+      MatMulIntegerStatus status = getMatMulIntegerStatus(op);
+      if (status != MatMulIntegerStatus::valid)
+        return rejectMatMulInteger(op, status);
+    } else if (!isConvertible(op)) {
       return rewriter.notifyMatchFailure(op,
                                          "not an exact CIM MatMul candidate");
+    }
 
     Location location = op.getLoc();
     auto inputs = adaptor.getInputs();
@@ -740,6 +618,10 @@ public:
       auto matvec = linalg::MatvecOp::create(
           rewriter, location, TypeRange{columnResultType},
           ValueRange{inputs[0], inputColumn.getResult()}, ValueRange{zero});
+      if (integerProfile) {
+        matvec->setAttr(kMatMulIntegerMarker, rewriter.getUnitAttr());
+        matvec->setAttr(kMatTileMarker, rewriter.getI64IntegerAttr(column));
+      }
       expandedColumns.push_back(
           tensor::ExpandShapeOp::create(rewriter, location, expandedResultType,
                                         matvec.getResult(0), reassociation));
@@ -879,73 +761,6 @@ public:
   }
 };
 
-class FormMatMulIntegerMatmul final
-    : public OpConversionPattern<linalg::MatmulOp> {
-public:
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(linalg::MatmulOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    if (!hasMatMulIntegerMarker(op))
-      return rewriter.notifyMatchFailure(op,
-                                         "not an ONNX MatMulInteger matmul");
-
-    MatMulIntegerStatus status = getMatMulIntegerStatus(op);
-    if (status != MatMulIntegerStatus::valid)
-      return rejectMatMulInteger(op, status);
-
-    Location location = op.getLoc();
-    auto inputs = adaptor.getInputs();
-    auto weightType = cast<RankedTensorType>(inputs[0].getType());
-    auto inputType = cast<RankedTensorType>(inputs[1].getType());
-    auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
-    int64_t outputSize = weightType.getDimSize(0);
-    int64_t reductionSize = weightType.getDimSize(1);
-    int64_t columnCount = inputType.getDimSize(1);
-    auto columnType =
-        RankedTensorType::get({reductionSize}, inputType.getElementType());
-    auto columnResultType =
-        RankedTensorType::get({outputSize}, resultType.getElementType());
-    auto expandedResultType =
-        RankedTensorType::get({outputSize, 1}, resultType.getElementType());
-    auto zeroAttr = DenseElementsAttr::get(
-        columnResultType,
-        rewriter.getIntegerAttr(resultType.getElementType(), 0));
-    Value zero = arith::ConstantOp::create(rewriter, location, columnResultType,
-                                           zeroAttr);
-    SmallVector<ReassociationIndices> reassociation{{0, 1}};
-    SmallVector<Value> expandedColumns;
-    expandedColumns.reserve(columnCount);
-
-    for (int64_t column = 0; column < columnCount; ++column) {
-      SmallVector<OpFoldResult> offsets{rewriter.getIndexAttr(0),
-                                        rewriter.getIndexAttr(column)};
-      SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(reductionSize),
-                                      rewriter.getIndexAttr(1)};
-      SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1),
-                                        rewriter.getIndexAttr(1)};
-      auto inputColumn = tensor::ExtractSliceOp::create(
-          rewriter, location, columnType, inputs[1], offsets, sizes, strides);
-      auto matvec = linalg::MatvecOp::create(
-          rewriter, location, TypeRange{columnResultType},
-          ValueRange{inputs[0], inputColumn.getResult()}, ValueRange{zero});
-      matvec->setAttr(kMatMulIntegerMarker, rewriter.getUnitAttr());
-      matvec->setAttr(kMatTileMarker, rewriter.getI64IntegerAttr(column));
-      expandedColumns.push_back(
-          tensor::ExpandShapeOp::create(rewriter, location, expandedResultType,
-                                        matvec.getResult(0), reassociation));
-    }
-
-    if (columnCount == 1) {
-      rewriter.replaceOp(op, expandedColumns.front());
-      return success();
-    }
-    rewriter.replaceOpWithNewOp<tensor::ConcatOp>(op, 1, expandedColumns);
-    return success();
-  }
-};
-
 LogicalResult normalizeCIMConv(linalg::Conv2DNchwFchwOp op,
                                PatternRewriter &rewriter) {
   Location location = op.getLoc();
@@ -971,12 +786,16 @@ LogicalResult normalizeCIMConv(linalg::Conv2DNchwFchwOp op,
   int64_t filters = weightType.getDimSize(0);
   int64_t height = resultType.getDimSize(2);
   int64_t width = resultType.getDimSize(3);
+  int64_t patchSize = 0;
+  int64_t spatialSize = 0;
+  int64_t paddedHeight = 0;
+  int64_t paddedWidth = 0;
   if (channels <= 0 || filters <= 0 || height <= 0 || width <= 0 ||
-      channels > std::numeric_limits<int64_t>::max() / 9 ||
-      height > std::numeric_limits<int64_t>::max() - 2 ||
-      width > std::numeric_limits<int64_t>::max() - 2 ||
-      height > std::numeric_limits<int64_t>::max() / width ||
-      !hasType(inputs[0], {1, channels, height + 2, width + 2}, 8) ||
+      llvm::MulOverflow(channels, int64_t{9}, patchSize) ||
+      llvm::MulOverflow(height, width, spatialSize) ||
+      llvm::AddOverflow(height, int64_t{2}, paddedHeight) ||
+      llvm::AddOverflow(width, int64_t{2}, paddedWidth) ||
+      !hasType(inputs[0], {1, channels, paddedHeight, paddedWidth}, 8) ||
       !hasType(inputs[1], {filters, channels, 3, 3}, 8) ||
       !hasType(inits[0], {1, filters, height, width}, 32) ||
       !hasType(op->getResult(0), {1, filters, height, width}, 32) ||
@@ -1007,17 +826,16 @@ LogicalResult normalizeCIMConv(linalg::Conv2DNchwFchwOp op,
   auto batchedResultType =
       dyn_cast<RankedTensorType>(contraction->getResult(0).getType());
   if (!colType || !batchedResultType ||
-      colType.getShape() !=
-          ArrayRef<int64_t>{1, channels * 9, height * width} ||
+      colType.getShape() != ArrayRef<int64_t>{1, patchSize, spatialSize} ||
       batchedResultType.getShape() !=
-          ArrayRef<int64_t>{1, filters, height * width})
+          ArrayRef<int64_t>{1, filters, spatialSize})
     return reject("upstream im2col contraction has unexpected batch shape");
 
   rewriter.setInsertionPoint(contraction);
   SmallVector<ReassociationIndices> collapseBatch{{0, 1}, {2}};
-  auto col2DType = RankedTensorType::get({channels * 9, height * width},
-                                         colType.getElementType());
-  auto result2DType = RankedTensorType::get({filters, height * width},
+  auto col2DType =
+      RankedTensorType::get({patchSize, spatialSize}, colType.getElementType());
+  auto result2DType = RankedTensorType::get({filters, spatialSize},
                                             batchedResultType.getElementType());
   auto col2D = tensor::CollapseShapeOp::create(
       rewriter, location, col2DType, contractionInputs[1], collapseBatch);
@@ -1122,8 +940,8 @@ public:
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
     RewritePatternSet patterns(&getContext());
-    patterns.add<FormMatvec, FormMatmul, FormMatMulIntegerMatvec,
-                 FormMatMulIntegerMatmul>(&getContext());
+    patterns.add<FormMatvec, FormMatmul, FormMatMulIntegerMatvec>(
+        &getContext());
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
       signalPassFailure();
@@ -1186,15 +1004,15 @@ public:
       return signalPassFailure();
     }
 
-    if (maxM == std::numeric_limits<int64_t>::max() ||
-        maxN == std::numeric_limits<int64_t>::max() ||
-        maxK == std::numeric_limits<int64_t>::max()) {
+    int64_t mTiles = 0;
+    int64_t nTiles = 0;
+    int64_t kTiles = 0;
+    if (llvm::AddOverflow(maxM, int64_t{1}, mTiles) ||
+        llvm::AddOverflow(maxN, int64_t{1}, nTiles) ||
+        llvm::AddOverflow(maxK, int64_t{1}, kTiles)) {
       function.emitError("materialize-cim-schedule tile extent overflows i64");
       return signalPassFailure();
     }
-    int64_t mTiles = maxM + 1;
-    int64_t nTiles = maxN + 1;
-    int64_t kTiles = maxK + 1;
     int64_t mnTiles = 0;
     int64_t expectedWorkCount = 0;
     if (llvm::MulOverflow(mTiles, nTiles, mnTiles) ||
@@ -1215,6 +1033,7 @@ public:
         return signalPassFailure();
       }
     }
+
     if (expectedWorkCount != static_cast<int64_t>(vmms.size())) {
       function.emitError("materialize-cim-schedule requires a complete "
                          "rectangular tile identity space");
@@ -1243,7 +1062,9 @@ public:
     Builder builder(function.getContext());
     for (auto [index, vmm] : llvm::enumerate(vmms)) {
       int64_t workId = static_cast<int64_t>(index);
-      int64_t groupId = getGroupId(workId);
+      // TODO(CTQ-031): Keep software-only groups two-wide until cross-core
+      // waves are known.
+      int64_t groupId = workId / 2;
       if (allScheduled) {
         struct ExpectedAttribute {
           StringRef name;
@@ -1284,91 +1105,6 @@ bool isExecutionPlanOp(Operation *op) {
              ReadbackOp, GroupBarrierOp>(op);
 }
 
-LogicalResult verifySameExecutionPlanWork(Operation *expected,
-                                          Operation *actual) {
-  for (StringRef name : kExecutionPlanProvenanceAttrs)
-    if (expected->getAttr(name) != actual->getAttr(name))
-      return actual->emitOpError("expects '")
-             << name << "' to match its configure_input operation";
-  return success();
-}
-
-LogicalResult verifyExecutionPlanStructure(func::FuncOp function) {
-  if (!function.getBody().hasOneBlock())
-    return function.emitError(
-        "materialize-cim-execution-plan requires one straight-line block");
-
-  SmallVector<Operation *> operations;
-  for (Operation &op : function.getBody().front())
-    if (isExecutionPlanOp(&op))
-      operations.push_back(&op);
-
-  size_t cursor = 0;
-  int64_t expectedWork = 0;
-  int64_t expectedGroup = 0;
-  while (cursor < operations.size()) {
-    SmallVector<ConfigureInputOp> inputs;
-    while (cursor < operations.size() &&
-           isa<ConfigureInputOp>(operations[cursor]) && inputs.size() < 2) {
-      auto input = cast<ConfigureInputOp>(operations[cursor++]);
-      if (cursor >= operations.size() ||
-          !isa<ConfigureWeightOp>(operations[cursor]))
-        return input.emitOpError(
-            "must be followed by a per-Macro configure_weight operation");
-      Operation *weight = operations[cursor++];
-      if (failed(verifySameExecutionPlanWork(input, weight)))
-        return failure();
-      auto work = input->getAttrOfType<IntegerAttr>("work_id");
-      auto group = input->getAttrOfType<IntegerAttr>("group_id");
-      auto macro = input->getAttrOfType<IntegerAttr>("macro_slot");
-      if (!work || work.getInt() != expectedWork || !group ||
-          group.getInt() != expectedGroup || !macro ||
-          macro.getInt() != static_cast<int64_t>(inputs.size()))
-        return input.emitOpError(
-            "does not match contiguous work/group/Macro ordering");
-      inputs.push_back(input);
-      ++expectedWork;
-    }
-    if (inputs.empty())
-      return operations[cursor]->emitOpError(
-          "expected group to start with configure_input/configure_weight");
-
-    for (ConfigureInputOp input : inputs) {
-      if (cursor >= operations.size() || !isa<DispatchOp>(operations[cursor]))
-        return input.emitOpError(
-            "expects one dispatch for each configured Macro payload");
-      if (failed(verifySameExecutionPlanWork(input, operations[cursor++])))
-        return failure();
-    }
-    if (cursor >= operations.size() || !isa<OnceOp>(operations[cursor]))
-      return inputs.front().emitOpError(
-          "expects exactly one core-level once after all dispatches");
-    Operation *once = operations[cursor++];
-    if (once->getAttr("group_id") != inputs.front()->getAttr("group_id") ||
-        once->getAttr("core_slot") != inputs.front()->getAttr("core_slot") ||
-        once->getAttr("cim.mapping") != inputs.front()->getAttr("cim.mapping"))
-      return once->emitOpError("does not match its execution-plan group");
-
-    for (ConfigureInputOp input : inputs) {
-      if (cursor >= operations.size() || !isa<ReadbackOp>(operations[cursor]))
-        return input.emitOpError(
-            "expects one readback for each configured Macro payload");
-      if (failed(verifySameExecutionPlanWork(input, operations[cursor++])))
-        return failure();
-    }
-    if (cursor >= operations.size() || !isa<GroupBarrierOp>(operations[cursor]))
-      return inputs.front().emitOpError("expects a terminating group barrier");
-    Operation *barrier = operations[cursor++];
-    if (barrier->getAttr("group_id") != inputs.front()->getAttr("group_id"))
-      return barrier->emitOpError("does not match its execution-plan group");
-    if (inputs.size() == 1 && cursor != operations.size())
-      return inputs.front().emitOpError(
-          "single-Macro group is only valid as the final group");
-    ++expectedGroup;
-  }
-  return success();
-}
-
 class MaterializeCIMExecutionPlan final
     : public impl::MaterializeCIMExecutionPlanBase<
           MaterializeCIMExecutionPlan> {
@@ -1407,7 +1143,7 @@ public:
                                "cim.execution_plan_schema_version = 1 : i64");
             return signalPassFailure();
           }
-          if (failed(verifyExecutionPlanStructure(function)))
+          if (failed(cim22::host::buildHostProgram(function)))
             return signalPassFailure();
         }
         continue;
@@ -1562,7 +1298,7 @@ public:
         for (size_t offset = 0; offset < count; ++offset)
           plan.works[index + offset].vmm.erase();
       }
-      if (failed(verifyExecutionPlanStructure(plan.function)))
+      if (failed(cim22::host::buildHostProgram(plan.function)))
         return signalPassFailure();
     }
   }

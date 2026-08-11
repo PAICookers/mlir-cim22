@@ -53,13 +53,13 @@ func.func @native_m1_result_user(%weight: tensor<16x64xi8>,
 // POS-NOT: tensor.extract_slice %[[INIT]]
 // POS-NOT: arith.constant dense<0> : tensor<1xi21>
 // POS: %[[COL0:.*]] = tensor.extract_slice %[[X]][0, 0] [1, 1] [1, 1] : tensor<1x2xi8> to tensor<1xi8>
-// POS-NEXT: %[[K0M0:.*]] = tensor.extract_slice %[[COL0]][0] [1] [1] : tensor<1xi8> to tensor<1xi8>
-// POS: %[[VMM0:.*]] = cim.vmm %{{.*}}, %{{.*}} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+// POS: %[[PAD0:.*]] = tensor.pad %[[COL0]] low[0] high[63]
+// POS: %[[VMM0:.*]] = cim.vmm %[[PAD0]], %{{.*}} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
 // POS: %[[N0M0:.*]] = tensor.extract_slice %[[VMM0]][0] [1] [1] : tensor<16xi21> to tensor<1xi21>
 // POS-NEXT: %[[EXPANDED0:.*]] = tensor.expand_shape %[[N0M0]] {{.*}}output_shape [1, 1] : tensor<1xi21> into tensor<1x1xi21>
 // POS-NEXT: %[[COL1:.*]] = tensor.extract_slice %[[X]][0, 1] [1, 1] [1, 1] : tensor<1x2xi8> to tensor<1xi8>
-// POS-NEXT: %[[K0M1:.*]] = tensor.extract_slice %[[COL1]][0] [1] [1] : tensor<1xi8> to tensor<1xi8>
-// POS: %[[VMM1:.*]] = cim.vmm %{{.*}}, %{{.*}} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+// POS: %[[PAD1:.*]] = tensor.pad %[[COL1]] low[0] high[63]
+// POS: %[[VMM1:.*]] = cim.vmm %[[PAD1]], %{{.*}} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
 // POS: %[[N0M1:.*]] = tensor.extract_slice %[[VMM1]][0] [1] [1] : tensor<16xi21> to tensor<1xi21>
 // POS-NEXT: %[[EXPANDED1:.*]] = tensor.expand_shape %[[N0M1]] {{.*}}output_shape [1, 1] : tensor<1xi21> into tensor<1x1xi21>
 // POS-NEXT: %[[RESULT:.*]] = tensor.concat dim(1) %[[EXPANDED0]], %[[EXPANDED1]] : (tensor<1x1xi21>, tensor<1x1xi21>) -> tensor<1x2xi21>

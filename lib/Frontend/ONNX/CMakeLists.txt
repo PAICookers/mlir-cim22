@@ -17,5 +17,5 @@ add_mlir_library(MLIRCIM22ONNXFrontend
 # Use the MLIR helper so those requirements reach both the object and archive
 # targets created by add_mlir_library.
 mlir_target_link_libraries(MLIRCIM22ONNXFrontend PUBLIC
-  MLIRCIM22ONNXProto
+  ${MLIRCIM22_ONNX_PROTO_TARGET}
 )

@@ -36,24 +36,8 @@ add_executable(mlir-cim22-f0-importer-test EXCLUDE_FROM_ALL
 target_link_libraries(mlir-cim22-f0-importer-test PRIVATE
   MLIRCIM22LinalgToCIM
   MLIRCIM22ONNXFrontend
-  MLIRArithDialect
-  MLIRFuncDialect
-  MLIRLinalgDialect
-  MLIRPass
-  MLIRTensorDialect
 )
 set_target_properties(mlir-cim22-f0-importer-test PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR}
-)
-
-add_executable(mlir-cim22-program-image-test EXCLUDE_FROM_ALL
-  Artifact/ProgramImageTest.cpp
-)
-llvm_update_compile_flags(mlir-cim22-program-image-test)
-target_link_libraries(mlir-cim22-program-image-test PRIVATE
-  MLIRCIM22Artifact
-)
-set_target_properties(mlir-cim22-program-image-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR}
 )
 
@@ -63,7 +47,6 @@ set(MLIRCIM22_TEST_DEPENDS
   mlir-cim22-int8-weight-layout-test
   mlir-cim22-onnx-import
   mlir-cim22-opt
-  mlir-cim22-program-image-test
   split-file
 )
 
@@ -76,32 +59,4 @@ set_target_properties(check-mlir-cim22 PROPERTIES FOLDER "Tests")
 add_lit_testsuites(MLIRCIM22 ${CMAKE_CURRENT_SOURCE_DIR}
   BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${MLIRCIM22_TEST_DEPENDS}
-  SKIP "^Conversion($|/)" "^Dialect/CIM$" "^Target($|/)" "__pycache__"
-)
-
-add_lit_target(check-mlircim22-conversion
-  "Running lit suite ${CMAKE_CURRENT_SOURCE_DIR}/Conversion"
-  ${CMAKE_CURRENT_BINARY_DIR}
-  DEPENDS ${MLIRCIM22_TEST_DEPENDS}
-  ARGS --filter=Conversion/
-)
-add_lit_target(check-mlircim22-dialect-cim
-  "Running lit suite ${CMAKE_CURRENT_SOURCE_DIR}/Dialect/CIM"
-  ${CMAKE_CURRENT_BINARY_DIR}
-  DEPENDS ${MLIRCIM22_TEST_DEPENDS}
-  ARGS --filter=Dialect/CIM/
-)
-add_lit_target(check-mlircim22-target
-  "Running lit suite ${CMAKE_CURRENT_SOURCE_DIR}/Target"
-  ${CMAKE_CURRENT_BINARY_DIR}
-  DEPENDS FileCheck mlir-cim22-opt
-  ARGS --filter=Target/
-)
-get_subproject_title(mlircim22_subproject_title)
-set_target_properties(
-  check-mlircim22-conversion
-  check-mlircim22-dialect-cim
-  check-mlircim22-target
-  PROPERTIES
-  FOLDER "${mlircim22_subproject_title}/Tests/LIT Testsuites"
 )

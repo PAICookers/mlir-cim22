@@ -11,6 +11,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/LogicalResult.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace mlir;
 using namespace mlir::cim;
@@ -52,7 +53,7 @@ LogicalResult verifyMapping(Operation *op) {
   if (!route || route.size() != 6)
     return op->emitOpError("expects cim.mapping.route with six i64 values");
   for (int64_t value : route.asArrayRef())
-    if (value < 0 || value > 31)
+    if (!llvm::isUInt<5>(value))
       return op->emitOpError("expects route components in [0, 31]");
   if (route[3] != 0 || route[4] != 0 || route[5] != 0)
     return op->emitOpError("expects onecast route with zero Copy fields");

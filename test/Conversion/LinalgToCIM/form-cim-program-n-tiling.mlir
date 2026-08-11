@@ -9,9 +9,8 @@
 
 // POS-LABEL: func.func @n1_tail_only(
 // POS-SAME: %[[W1:.*]]: tensor<1x64xi8>, %[[I1:.*]]: tensor<64xi8>
-// POS: %[[S1:.*]] = tensor.extract_slice %[[W1]][0, 0] [1, 64] [1, 1] : tensor<1x64xi8> to tensor<1x64xi8>
-// POS-NEXT: %[[Z1:.*]] = arith.constant 0 : i8
-// POS-NEXT: %[[P1:.*]] = tensor.pad %[[S1]] low[0, 0] high[15, 0] {
+// POS: %[[Z1:.*]] = arith.constant 0 : i8
+// POS-NEXT: %[[P1:.*]] = tensor.pad %[[W1]] low[0, 0] high[15, 0] {
 // POS-NEXT: ^bb0(%{{.*}}: index, %{{.*}}: index):
 // POS-NEXT: tensor.yield %[[Z1]] : i8
 // POS-NEXT: } : tensor<1x64xi8> to tensor<16x64xi8>
@@ -33,9 +32,8 @@ func.func @n1_tail_only(%weight: tensor<1x64xi8>, %input: tensor<64xi8>)
 
 // POS-LABEL: func.func @n15_tail_only(
 // POS-SAME: %[[W15:.*]]: tensor<15x64xi8>, %[[I15:.*]]: tensor<64xi8>
-// POS: %[[S15:.*]] = tensor.extract_slice %[[W15]][0, 0] [15, 64] [1, 1] : tensor<15x64xi8> to tensor<15x64xi8>
-// POS-NEXT: %[[Z15:.*]] = arith.constant 0 : i8
-// POS-NEXT: %[[P15:.*]] = tensor.pad %[[S15]] low[0, 0] high[1, 0] {
+// POS: %[[Z15:.*]] = arith.constant 0 : i8
+// POS-NEXT: %[[P15:.*]] = tensor.pad %[[W15]] low[0, 0] high[1, 0] {
 // POS-NEXT: ^bb0(%{{.*}}: index, %{{.*}}: index):
 // POS-NEXT: tensor.yield %[[Z15]] : i8
 // POS-NEXT: } : tensor<15x64xi8> to tensor<16x64xi8>
