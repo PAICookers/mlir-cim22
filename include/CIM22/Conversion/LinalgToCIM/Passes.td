@@ -18,6 +18,19 @@ def NormalizeCIMConv : Pass<"normalize-cim-conv", "::mlir::ModuleOp"> {
                            "::mlir::tensor::TensorDialect"];
 }
 
+def FoldCIMInt8Bias : Pass<"fold-cim-int8-bias", "::mlir::ModuleOp"> {
+  let summary = "Fold eligible signed INT8 bias into marked CIM MatMul";
+  let dependentDialects = ["::mlir::arith::ArithDialect",
+                           "::mlir::linalg::LinalgDialect",
+                           "::mlir::tensor::TensorDialect"];
+  let options = [
+    Option<"enable", "enable", "bool", /*default=*/"true",
+           "Enable signed INT8 bias folding">,
+    Option<"allowExtraKTile", "allow-extra-k-tile", "bool",
+           /*default=*/"true", "Allow exact-K folding to add one K tile">
+  ];
+}
+
 def DumpCIMHostProgram
     : Pass<"dump-cim-host-program", "::mlir::func::FuncOp"> {
   let summary = "Dump the validated read-only Host/CIM program projection";

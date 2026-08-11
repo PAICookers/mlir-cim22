@@ -19,6 +19,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
@@ -30,6 +31,7 @@
 
 namespace mlir::cim {
 #define GEN_PASS_DEF_DUMPCIMHOSTPROGRAM
+#define GEN_PASS_DEF_FOLDCIMINT8BIAS
 #define GEN_PASS_DEF_FORMCIMPROGRAM
 #define GEN_PASS_DEF_MATERIALIZECIMEXECUTIONPLAN
 #define GEN_PASS_DEF_MATERIALIZECIMSCHEDULE
@@ -325,23 +327,77 @@ constexpr int64_t kReductionTileSize = 64;
 
 enum class MatMulIntegerStatus { valid, invalid, partialRangeOverflow };
 
+using IntegerRange = std::pair<int64_t, int64_t>;
+
 bool hasMatMulIntegerMarker(Operation *op) {
   return op->hasAttr(kMatMulIntegerMarker);
 }
 
-MatMulIntegerStatus proveMatMulIntegerRanges(Value weight) {
-  FailureOr<DenseElementsAttr> elements = evaluateDenseTensor(weight);
-  auto type = dyn_cast<RankedTensorType>(weight.getType());
-  if (failed(elements) || !type || type.getRank() != 2 ||
-      (*elements).getNumElements() != type.getNumElements())
+SmallVector<IntegerRange> getMatMulIntegerInputRanges(Value input,
+                                                      int64_t reductionSize) {
+  SmallVector<IntegerRange> ranges(reductionSize, {-128, 127});
+  Value matrix = input;
+  if (auto slice = input.getDefiningOp<tensor::ExtractSliceOp>()) {
+    auto resultType = dyn_cast<RankedTensorType>(slice.getType());
+    auto sourceType = dyn_cast<RankedTensorType>(slice.getSource().getType());
+    ArrayRef<int64_t> offsets = slice.getStaticOffsets();
+    ArrayRef<int64_t> sizes = slice.getStaticSizes();
+    ArrayRef<int64_t> strides = slice.getStaticStrides();
+    if (!resultType || resultType.getRank() != 1 || !sourceType ||
+        sourceType.getRank() != 2 || offsets.size() != 2 || sizes.size() != 2 ||
+        strides.size() != 2 || offsets[0] != 0 || offsets[1] < 0 ||
+        sizes[0] != reductionSize || sizes[1] != 1 || strides[0] != 1 ||
+        strides[1] != 1)
+      return ranges;
+    matrix = slice.getSource();
+  }
+
+  auto concat = matrix.getDefiningOp<tensor::ConcatOp>();
+  auto concatType = dyn_cast<RankedTensorType>(matrix.getType());
+  if (!concat || concat.getDim() != 0 || !concatType ||
+      concatType.getRank() != 2 || concatType.getDimSize(0) != reductionSize)
+    return ranges;
+
+  int64_t row = 0;
+  for (Value operand : concat.getInputs()) {
+    auto type = dyn_cast<RankedTensorType>(operand.getType());
+    if (!type || type.getRank() != 2 || type.getDimSize(0) < 0 ||
+        type.getDimSize(1) != concatType.getDimSize(1) ||
+        row + type.getDimSize(0) > reductionSize)
+      return SmallVector<IntegerRange>(reductionSize, {-128, 127});
+    row += type.getDimSize(0);
+  }
+  if (row != reductionSize)
+    return ranges;
+
+  row = 0;
+  for (Value operand : concat.getInputs()) {
+    auto type = cast<RankedTensorType>(operand.getType());
+    auto constant = operand.getDefiningOp<arith::ConstantOp>();
+    auto elements = constant ? dyn_cast<DenseElementsAttr>(constant.getValue())
+                             : DenseElementsAttr{};
+    if (type.getDimSize(0) == 1 && elements && elements.isSplat() &&
+        elements.getSplatValue<APInt>().isOne())
+      ranges[row] = {1, 1};
+    row += type.getDimSize(0);
+  }
+  return ranges;
+}
+
+MatMulIntegerStatus
+proveMatMulIntegerRanges(DenseElementsAttr elements,
+                         ArrayRef<IntegerRange> inputRanges) {
+  auto type = dyn_cast<RankedTensorType>(elements.getType());
+  if (!type || type.getRank() != 2 ||
+      elements.getNumElements() != type.getNumElements() ||
+      static_cast<int64_t>(inputRanges.size()) != type.getDimSize(1))
     return MatMulIntegerStatus::invalid;
 
   int64_t outputSize = type.getDimSize(0);
   int64_t reductionSize = type.getDimSize(1);
-
   SmallVector<int64_t> values;
-  values.reserve((*elements).getNumElements());
-  for (APInt value : (*elements).getValues<APInt>())
+  values.reserve(elements.getNumElements());
+  for (APInt value : elements.getValues<APInt>())
     values.push_back(value.getSExtValue());
 
   for (int64_t output = 0; output < outputSize; ++output) {
@@ -352,18 +408,30 @@ MatMulIntegerStatus proveMatMulIntegerRanges(Value weight) {
       int64_t tileSize =
           std::min(kReductionTileSize, reductionSize - reduction);
       for (int64_t offset = 0; offset < tileSize; ++offset) {
-        int64_t weightValue =
-            values[output * reductionSize + reduction + offset];
-        partialUpper +=
-            weightValue >= 0 ? 127 * weightValue : -128 * weightValue;
-        partialLower +=
-            weightValue >= 0 ? -128 * weightValue : 127 * weightValue;
+        int64_t lane = reduction + offset;
+        int64_t weightValue = values[output * reductionSize + lane];
+        auto [inputLower, inputUpper] = inputRanges[lane];
+        partialUpper += weightValue >= 0 ? inputUpper * weightValue
+                                         : inputLower * weightValue;
+        partialLower += weightValue >= 0 ? inputLower * weightValue
+                                         : inputUpper * weightValue;
       }
       if (!llvm::isInt<21>(partialLower) || !llvm::isInt<21>(partialUpper))
         return MatMulIntegerStatus::partialRangeOverflow;
     }
   }
   return MatMulIntegerStatus::valid;
+}
+
+MatMulIntegerStatus proveMatMulIntegerRanges(Value weight, Value input) {
+  FailureOr<DenseElementsAttr> elements = evaluateDenseTensor(weight);
+  auto type = dyn_cast<RankedTensorType>(weight.getType());
+  if (failed(elements) || !type || type.getRank() != 2 ||
+      (*elements).getNumElements() != type.getNumElements())
+    return MatMulIntegerStatus::invalid;
+  int64_t reductionSize = type.getDimSize(1);
+  return proveMatMulIntegerRanges(
+      *elements, getMatMulIntegerInputRanges(input, reductionSize));
 }
 
 MatMulIntegerStatus getMatMulIntegerStatus(linalg::MatvecOp op) {
@@ -388,7 +456,7 @@ MatMulIntegerStatus getMatMulIntegerStatus(linalg::MatvecOp op) {
       !hasCanonicalInt8ContractionBody(op.getRegion(), 32) ||
       !hasCanonicalMatvecIndexingMaps(op))
     return MatMulIntegerStatus::invalid;
-  return proveMatMulIntegerRanges(inputs[0]);
+  return proveMatMulIntegerRanges(inputs[0], inputs[1]);
 }
 
 MatMulIntegerStatus getMatMulIntegerStatus(linalg::MatmulOp op) {
@@ -419,7 +487,7 @@ MatMulIntegerStatus getMatMulIntegerStatus(linalg::MatmulOp op) {
       !hasCanonicalInt8ContractionBody(op.getRegion(), 32) ||
       !hasCanonicalMatmulIndexingMaps(op))
     return MatMulIntegerStatus::invalid;
-  return proveMatMulIntegerRanges(inputs[0]);
+  return proveMatMulIntegerRanges(inputs[0], inputs[1]);
 }
 
 LogicalResult rejectMatMulInteger(Operation *op, MatMulIntegerStatus status) {
@@ -855,6 +923,201 @@ LogicalResult normalizeCIMConv(linalg::Conv2DNchwFchwOp op,
   return success();
 }
 
+std::optional<std::pair<linalg::MatmulOp, bool>>
+matchBiasMatmulProducer(Value output) {
+  if (!output.hasOneUse())
+    return std::nullopt;
+
+  if (auto transpose = output.getDefiningOp<linalg::TransposeOp>()) {
+    if (transpose.getPermutation() != ArrayRef<int64_t>{1, 0})
+      return std::nullopt;
+    auto matmul = transpose.getInput().getDefiningOp<linalg::MatmulOp>();
+    auto sourceType =
+        dyn_cast<RankedTensorType>(transpose.getInput().getType());
+    auto resultType = dyn_cast<RankedTensorType>(output.getType());
+    if (!matmul || !matmul.getResult(0).hasOneUse() || !sourceType ||
+        !resultType || sourceType.getRank() != 2 || resultType.getRank() != 2 ||
+        sourceType.getDimSize(0) != resultType.getDimSize(1) ||
+        sourceType.getDimSize(1) != resultType.getDimSize(0))
+      return std::nullopt;
+    return std::pair<linalg::MatmulOp, bool>{matmul, false};
+  }
+
+  auto outer = output.getDefiningOp<tensor::ExpandShapeOp>();
+  auto inner = outer ? outer.getSrc().getDefiningOp<tensor::ExpandShapeOp>()
+                     : tensor::ExpandShapeOp{};
+  auto matmul = inner ? inner.getSrc().getDefiningOp<linalg::MatmulOp>()
+                      : linalg::MatmulOp{};
+  if (!outer || !inner || !matmul || !inner.getResult().hasOneUse() ||
+      !matmul.getResult(0).hasOneUse())
+    return std::nullopt;
+
+  auto matmulType = dyn_cast<RankedTensorType>(matmul.getResult(0).getType());
+  auto innerType = dyn_cast<RankedTensorType>(inner.getResult().getType());
+  auto outerType = dyn_cast<RankedTensorType>(outer.getResult().getType());
+  int64_t spatialSize = 0;
+  if (!matmulType || !innerType || !outerType || matmulType.getRank() != 2 ||
+      innerType.getRank() != 3 || outerType.getRank() != 4 ||
+      outerType.getDimSize(0) != 1 || outerType.getDimSize(2) <= 0 ||
+      outerType.getDimSize(3) <= 0 ||
+      llvm::MulOverflow(outerType.getDimSize(2), outerType.getDimSize(3),
+                        spatialSize) ||
+      innerType.getShape() != ArrayRef<int64_t>{1, matmulType.getDimSize(0),
+                                                matmulType.getDimSize(1)} ||
+      outerType.getDimSize(1) != matmulType.getDimSize(0) ||
+      spatialSize != matmulType.getDimSize(1))
+    return std::nullopt;
+  return std::pair<linalg::MatmulOp, bool>{matmul, true};
+}
+
+class FoldCIMInt8BiasPattern final : public OpRewritePattern<linalg::AddOp> {
+public:
+  FoldCIMInt8BiasPattern(MLIRContext *context, bool allowExtraKTile)
+      : OpRewritePattern(context), allowExtraKTile(allowExtraKTile) {}
+
+  LogicalResult matchAndRewrite(linalg::AddOp add,
+                                PatternRewriter &rewriter) const override {
+    auto inputs = add.getDpsInputs();
+    auto inits = add.getDpsInits();
+    if (inputs.size() != 2 || inits.size() != 1 || add->getNumResults() != 1)
+      return failure();
+
+    auto broadcast = inputs[1].getDefiningOp<linalg::BroadcastOp>();
+    auto empty = broadcast
+                     ? broadcast.getInit().getDefiningOp<tensor::EmptyOp>()
+                     : tensor::EmptyOp{};
+    auto bias = broadcast
+                    ? broadcast.getInput().getDefiningOp<arith::ConstantOp>()
+                    : arith::ConstantOp{};
+    auto biasElements = bias ? dyn_cast<DenseElementsAttr>(bias.getValue())
+                             : DenseElementsAttr{};
+    auto biasType =
+        bias ? dyn_cast<RankedTensorType>(bias.getType()) : RankedTensorType{};
+    if (!broadcast || !empty || !bias || !biasElements || !biasType ||
+        biasType.getRank() != 1 || !biasType.getElementType().isInteger(32) ||
+        broadcast.getResult().size() != 1 ||
+        broadcast.getResult().front() != inputs[1] ||
+        !broadcast.getResult().front().hasOneUse() ||
+        !broadcast.getInput().hasOneUse() || inits[0] != empty.getResult())
+      return failure();
+    if (!llvm::all_of(empty.getResult().getUsers(), [&](Operation *user) {
+          return user == add.getOperation() || user == broadcast.getOperation();
+        }))
+      return failure();
+
+    auto producer = matchBiasMatmulProducer(inputs[0]);
+    if (!producer)
+      return failure();
+    auto [matmul, convolution] = *producer;
+    SmallVector<int64_t> expectedDimensions =
+        convolution ? SmallVector<int64_t>{0, 2, 3} : SmallVector<int64_t>{0};
+    if (broadcast.getDimensions() != ArrayRef<int64_t>(expectedDimensions) ||
+        getMatMulIntegerStatus(matmul) != MatMulIntegerStatus::valid)
+      return failure();
+
+    auto matmulInputs = matmul.getDpsInputs();
+    auto weightType = cast<RankedTensorType>(matmulInputs[0].getType());
+    auto inputType = cast<RankedTensorType>(matmulInputs[1].getType());
+    int64_t outputSize = weightType.getDimSize(0);
+    int64_t reductionSize = weightType.getDimSize(1);
+    int64_t columnCount = inputType.getDimSize(1);
+    bool exactK = reductionSize % kReductionTileSize == 0;
+    if (biasType.getDimSize(0) != outputSize ||
+        biasElements.getNumElements() != outputSize ||
+        (exactK && !allowExtraKTile))
+      return failure();
+
+    SmallVector<APInt> biasValues(biasElements.getValues<APInt>());
+    if (!llvm::all_of(biasValues,
+                      [](const APInt &value) { return value.isSignedIntN(8); }))
+      return failure();
+
+    FailureOr<DenseElementsAttr> weightElements =
+        evaluateDenseTensor(matmulInputs[0]);
+    if (failed(weightElements))
+      return failure();
+    SmallVector<APInt> weightValues((*weightElements).getValues<APInt>());
+    int64_t biasLane = exactK ? reductionSize - 1 : reductionSize;
+    SmallVector<APInt> newWeightValues;
+    newWeightValues.reserve(outputSize * (reductionSize + 1));
+    for (int64_t output = 0; output < outputSize; ++output) {
+      for (int64_t reduction = 0; reduction < reductionSize; ++reduction) {
+        if (reduction == biasLane)
+          newWeightValues.push_back(biasValues[output].sextOrTrunc(8));
+        newWeightValues.push_back(
+            weightValues[output * reductionSize + reduction]);
+      }
+      if (!exactK)
+        newWeightValues.push_back(biasValues[output].sextOrTrunc(8));
+    }
+
+    auto newWeightType = RankedTensorType::get({outputSize, reductionSize + 1},
+                                               weightType.getElementType());
+    auto newWeightElements =
+        DenseElementsAttr::get(newWeightType, newWeightValues);
+    SmallVector<IntegerRange> inputRanges(reductionSize + 1, {-128, 127});
+    inputRanges[biasLane] = {1, 1};
+    if (proveMatMulIntegerRanges(newWeightElements, inputRanges) !=
+        MatMulIntegerStatus::valid)
+      return failure();
+
+    Location location = matmul.getLoc();
+    rewriter.setInsertionPoint(matmul);
+    Value newWeight = arith::ConstantOp::create(
+        rewriter, location, newWeightType, newWeightElements);
+    auto oneType =
+        RankedTensorType::get({1, columnCount}, inputType.getElementType());
+    Value one = arith::ConstantOp::create(
+        rewriter, location, oneType,
+        DenseElementsAttr::get(
+            oneType, rewriter.getIntegerAttr(inputType.getElementType(), 1)));
+
+    SmallVector<Value> inputParts;
+    if (exactK) {
+      auto prefixType = RankedTensorType::get({reductionSize - 1, columnCount},
+                                              inputType.getElementType());
+      auto lastType =
+          RankedTensorType::get({1, columnCount}, inputType.getElementType());
+      SmallVector<OpFoldResult> prefixOffsets{rewriter.getIndexAttr(0),
+                                              rewriter.getIndexAttr(0)};
+      SmallVector<OpFoldResult> prefixSizes{
+          rewriter.getIndexAttr(reductionSize - 1),
+          rewriter.getIndexAttr(columnCount)};
+      SmallVector<OpFoldResult> lastOffsets{
+          rewriter.getIndexAttr(reductionSize - 1), rewriter.getIndexAttr(0)};
+      SmallVector<OpFoldResult> lastSizes{rewriter.getIndexAttr(1),
+                                          rewriter.getIndexAttr(columnCount)};
+      SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1),
+                                        rewriter.getIndexAttr(1)};
+      Value prefix = tensor::ExtractSliceOp::create(
+          rewriter, location, prefixType, matmulInputs[1], prefixOffsets,
+          prefixSizes, strides);
+      Value last = tensor::ExtractSliceOp::create(rewriter, location, lastType,
+                                                  matmulInputs[1], lastOffsets,
+                                                  lastSizes, strides);
+      inputParts = {prefix, one, last};
+    } else {
+      inputParts = {matmulInputs[1], one};
+    }
+    Value newInput =
+        tensor::ConcatOp::create(rewriter, location, 0, inputParts);
+    auto newMatmul = linalg::MatmulOp::create(
+        rewriter, location, TypeRange{matmul.getResult(0).getType()},
+        ValueRange{newWeight, newInput}, matmul.getDpsInits());
+    newMatmul->setAttr(kMatMulIntegerMarker, rewriter.getUnitAttr());
+
+    rewriter.replaceOp(matmul, newMatmul.getResults());
+    rewriter.replaceOp(add, inputs[0]);
+    rewriter.eraseOp(broadcast);
+    rewriter.eraseOp(bias);
+    rewriter.eraseOp(empty);
+    return success();
+  }
+
+private:
+  bool allowExtraKTile;
+};
+
 class NormalizeCIMConv final
     : public impl::NormalizeCIMConvBase<NormalizeCIMConv> {
 public:
@@ -874,6 +1137,21 @@ public:
         return;
       }
     }
+  }
+};
+
+class FoldCIMInt8Bias final
+    : public impl::FoldCIMInt8BiasBase<FoldCIMInt8Bias> {
+public:
+  using Base::Base;
+
+  void runOnOperation() override {
+    if (!enable)
+      return;
+    RewritePatternSet patterns(&getContext());
+    patterns.add<FoldCIMInt8BiasPattern>(&getContext(), allowExtraKTile);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
+      signalPassFailure();
   }
 };
 
