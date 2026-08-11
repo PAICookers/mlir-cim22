@@ -341,17 +341,8 @@ bool isConvertible(linalg::MatmulOp op) {
 
 constexpr int64_t kOutputTileSize = 16;
 constexpr int64_t kReductionTileSize = 64;
-constexpr int64_t kSignedI21Min = -1048576;
-constexpr int64_t kSignedI21Max = 1048575;
-constexpr int64_t kSignedI32Min = -2147483648;
-constexpr int64_t kSignedI32Max = 2147483647;
 
-enum class MatMulIntegerStatus {
-  valid,
-  invalid,
-  partialRangeOverflow,
-  resultRangeOverflow
-};
+enum class MatMulIntegerStatus { valid, invalid, partialRangeOverflow };
 
 bool hasMatMulIntegerMarker(Operation *op) {
   return op->hasAttr(kMatMulIntegerMarker);
@@ -410,8 +401,6 @@ MatMulIntegerStatus proveMatMulIntegerRanges(Value weight) {
     values.push_back(value.getSExtValue());
 
   for (int64_t output = 0; output < outputSize; ++output) {
-    int64_t resultLower = 0;
-    int64_t resultUpper = 0;
     for (int64_t reduction = 0; reduction < reductionSize;
          reduction += kReductionTileSize) {
       int64_t partialLower = 0;
@@ -426,12 +415,8 @@ MatMulIntegerStatus proveMatMulIntegerRanges(Value weight) {
         partialLower +=
             weightValue >= 0 ? -128 * weightValue : 127 * weightValue;
       }
-      if (partialLower < kSignedI21Min || partialUpper > kSignedI21Max)
+      if (!llvm::isInt<21>(partialLower) || !llvm::isInt<21>(partialUpper))
         return MatMulIntegerStatus::partialRangeOverflow;
-      resultLower += partialLower;
-      resultUpper += partialUpper;
-      if (resultLower < kSignedI32Min || resultUpper > kSignedI32Max)
-        return MatMulIntegerStatus::resultRangeOverflow;
     }
   }
   return MatMulIntegerStatus::valid;
@@ -497,9 +482,6 @@ LogicalResult rejectMatMulInteger(Operation *op, MatMulIntegerStatus status) {
   if (status == MatMulIntegerStatus::partialRangeOverflow)
     op->emitError("ONNX MatMulInteger violates CTQ-013: a constant K<=64 "
                   "partial is outside signed i21");
-  else if (status == MatMulIntegerStatus::resultRangeOverflow)
-    op->emitError("ONNX MatMulInteger constant-weight range proof exceeds "
-                  "signed i32 result");
   else
     op->emitError("invalid ONNX MatMulInteger normalized i32 contract");
   return failure();
