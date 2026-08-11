@@ -148,6 +148,7 @@ bool testMixedPairOrder(OpBuilder &builder) {
 bool testInvalidStages(OpBuilder &builder) {
   constexpr Route zeroRoute{};
   constexpr Route otherRoute{1, 0, 0, 0, 0, 0};
+  constexpr Route copyRoute{0, 0, 0, 1, 0, 0};
   std::array<int32_t, 256> words{};
   ScopedDiagnosticHandler diagnostics(builder.getContext(),
                                       [](Diagnostic &) {});
@@ -220,6 +221,13 @@ bool testInvalidStages(OpBuilder &builder) {
   addWork(builder, *badRoute, outOfRange);
   if (!check(failed(encodeCIMFrameInt8Packets(*badRoute)),
              "invalid route is rejected"))
+    return false;
+
+  auto multicast = makeModule(builder);
+  addControl(builder, *multicast, copyRoute, 0);
+  addWork(builder, *multicast, copyRoute);
+  if (!check(failed(encodeCIMFrameInt8Packets(*multicast)),
+             "nonzero Copy route is rejected"))
     return false;
 
   auto badWords = makeModule(builder);

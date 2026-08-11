@@ -43,6 +43,10 @@ bool isPacket(Operation &op) {
   return isa<cimframe::ControlInt8PacketOp, cimframe::WorkOncePacketOp,
              cimframe::CIMInt8WeightPacketOp>(op);
 }
+
+bool isOnecastRoute(ArrayRef<int32_t> route) {
+  return route[3] == 0 && route[4] == 0 && route[5] == 0;
+}
 } // namespace
 
 FailureOr<SmallVector<uint64_t>> encodeCIMFrameInt8Packets(ModuleOp module) {
@@ -56,6 +60,12 @@ FailureOr<SmallVector<uint64_t>> encodeCIMFrameInt8Packets(ModuleOp module) {
       continue;
     if (!isPacket(op)) {
       op.emitOpError("static INT8 flit encoding requires packet-stage input");
+      return failure();
+    }
+    auto route = op.getAttrOfType<DenseI32ArrayAttr>("route");
+    if (!isOnecastRoute(route.asArrayRef())) {
+      op.emitOpError(
+          "static INT8 flit encoding requires zero Copy route fields");
       return failure();
     }
     hasPacket = true;
