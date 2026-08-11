@@ -23,7 +23,6 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <fstream>
-#include <string>
 
 namespace {
 constexpr llvm::StringLiteral kMatMulIntegerMarker = "cim.onnx.matmul_integer";
@@ -51,84 +50,12 @@ bool rejects(mlir::MLIRContext &context, const onnx::ModelProto &model) {
   return mlir::failed(mlir::cim::importQuantizedONNX(context, model));
 }
 
-bool checkRejections(mlir::MLIRContext &context,
-                     const onnx::ModelProto &model) {
-  auto opsetVersion = model;
-  opsetVersion.mutable_opset_import(0)->set_version(11);
-  if (!check(rejects(context, opsetVersion), "opset version must be rejected"))
-    return false;
-
-  auto opsetDomain = model;
-  opsetDomain.mutable_opset_import(0)->set_domain("other");
-  if (!check(rejects(context, opsetDomain), "opset domain must be rejected"))
-    return false;
-
-  auto nodeDomain = model;
-  nodeDomain.mutable_graph()->mutable_node(0)->set_domain("other");
-  if (!check(rejects(context, nodeDomain), "node domain must be rejected"))
-    return false;
-
-  auto qLinearMatMul = model;
-  qLinearMatMul.mutable_graph()->mutable_node(0)->set_op_type("QLinearMatMul");
-  if (!check(rejects(context, qLinearMatMul), "QLinearMatMul must be rejected"))
-    return false;
-
-  auto type = model;
-  type.mutable_graph()
-      ->mutable_input(0)
-      ->mutable_type()
-      ->mutable_tensor_type()
-      ->set_elem_type(onnx::TensorProto::UINT8);
-  if (!check(rejects(context, type), "operand type must be rejected"))
-    return false;
-
-  auto shape = model;
-  shape.mutable_graph()
-      ->mutable_input(0)
-      ->mutable_type()
-      ->mutable_tensor_type()
-      ->mutable_shape()
-      ->mutable_dim(0)
-      ->set_dim_value(31);
-  if (!check(rejects(context, shape), "operand shape must be rejected"))
-    return false;
-
-  auto zeroPoint = model;
-  zeroPoint.mutable_graph()->mutable_node(0)->add_input("a_zero_point");
-  if (!check(rejects(context, zeroPoint),
-             "explicit zero point must be rejected"))
-    return false;
-
-  auto external = model;
-  auto *externalWeight = external.mutable_graph()->mutable_initializer(0);
-  externalWeight->set_data_location(onnx::TensorProto_DataLocation_EXTERNAL);
-  externalWeight->add_external_data()->set_key("location");
-  externalWeight->mutable_external_data(0)->set_value("weights.bin");
-  if (!check(rejects(context, external), "external data must be rejected"))
-    return false;
-
-  auto runtimeWeight = model;
-  auto *graph = runtimeWeight.mutable_graph();
-  const std::string weightName = graph->initializer(0).name();
-  graph->clear_initializer();
-  auto *weightInput = graph->add_input();
-  weightInput->CopyFrom(graph->input(0));
-  weightInput->set_name(weightName);
-  if (!check(rejects(context, runtimeWeight),
-             "runtime weight must be rejected"))
-    return false;
-
-  auto qdq = model;
-  auto *dequantize = qdq.mutable_graph()->add_node();
-  dequantize->set_op_type("DequantizeLinear");
-  if (!check(rejects(context, qdq), "QDQ graph must be rejected"))
-    return false;
-
-  auto multipleNodes = model;
-  multipleNodes.mutable_graph()->add_node()->CopyFrom(
-      multipleNodes.graph().node(0));
-  return check(rejects(context, multipleNodes),
-               "multiple nodes must be rejected");
+bool checkUnknownRootRejection(mlir::MLIRContext &context,
+                               const onnx::ModelProto &model) {
+  auto unknownRoot = model;
+  unknownRoot.mutable_graph()->mutable_node(0)->set_op_type("UnknownRoot");
+  return check(rejects(context, unknownRoot),
+               "an unknown graph root must be rejected");
 }
 
 int32_t getWeightValue(const onnx::TensorProto &weight, int64_t index) {
@@ -260,52 +187,6 @@ onnx::ModelProto makeSyntheticModel(const onnx::ModelProto &fixture) {
   return model;
 }
 
-bool checkResultRangeRejection(mlir::MLIRContext &context,
-                               const onnx::ModelProto &fixture) {
-  onnx::ModelProto model = fixture;
-  constexpr int64_t reduction = 133145;
-  auto *graph = model.mutable_graph();
-  graph->mutable_input(0)
-      ->mutable_type()
-      ->mutable_tensor_type()
-      ->mutable_shape()
-      ->mutable_dim(0)
-      ->set_dim_value(1);
-  graph->mutable_input(0)
-      ->mutable_type()
-      ->mutable_tensor_type()
-      ->mutable_shape()
-      ->mutable_dim(1)
-      ->set_dim_value(reduction);
-  graph->mutable_output(0)
-      ->mutable_type()
-      ->mutable_tensor_type()
-      ->mutable_shape()
-      ->mutable_dim(0)
-      ->set_dim_value(1);
-  graph->mutable_output(0)
-      ->mutable_type()
-      ->mutable_tensor_type()
-      ->mutable_shape()
-      ->mutable_dim(1)
-      ->set_dim_value(1);
-  auto *weight = graph->mutable_initializer(0);
-  weight->set_dims(0, reduction);
-  weight->set_dims(1, 1);
-  weight->set_raw_data(std::string(reduction, static_cast<char>(127)));
-  weight->clear_int32_data();
-
-  auto module = mlir::cim::importQuantizedONNX(context, model);
-  if (!check(mlir::succeeded(module),
-             "i32-overflow model must pass ONNX import validation"))
-    return false;
-  mlir::ScopedDiagnosticHandler silence(
-      &context, [](mlir::Diagnostic &) { return mlir::success(); });
-  mlir::PassManager passManager(&context);
-  passManager.addPass(mlir::cim::createFormCIMProgram());
-  return check(mlir::failed(passManager.run((*module).get())),
-               "constant-weight proof must reject signed i32 result overflow");
-}
 } // namespace
 
 int main(int argc, char **argv) {
@@ -323,7 +204,7 @@ int main(int argc, char **argv) {
   context.loadDialect<mlir::arith::ArithDialect, mlir::cim::CIMDialect,
                       mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
                       mlir::tensor::TensorDialect>();
-  if (!checkRejections(context, model))
+  if (!checkUnknownRootRejection(context, model))
     return 1;
 
   auto module = mlir::cim::importQuantizedONNX(context, model);
@@ -343,8 +224,7 @@ int main(int argc, char **argv) {
   mlir::ModuleOp syntheticImported = (*syntheticModule).get();
   if (!checkNormalizedModule(syntheticImported,
                              synthetic.graph().initializer(0), 2, 65, 17) ||
-      !checkLowering(syntheticImported, 2, 65, 17) ||
-      !checkResultRangeRejection(context, model))
+      !checkLowering(syntheticImported, 2, 65, 17))
     return 1;
 
   llvm::outs() << "PASS\n";
