@@ -7,6 +7,8 @@ from typing import NamedTuple
 
 import numpy as np
 
+import int8_reference as reference
+
 PROVENANCE_FIELDS = {
     "function", "resource", "m_tile", "n_tile", "k_tile", "work_id",
     "group_id", "core_slot", "macro_slot", "mapping",
@@ -123,33 +125,18 @@ def _top_level_names(body: str) -> set[str]:
 def map_tiles(weight_tiles: np.ndarray) -> np.ndarray:
     """Map [B,16,64] opaque bytes to signed [B,256] MLIR i32 words."""
     tiles = np.asarray(weight_tiles, dtype=np.uint8).reshape(-1, 16, 64)
-    byte_bits = np.arange(8, dtype=np.uint8)
-    lane_bits = np.arange(16, dtype=np.uint32)
-    even_masks = np.left_shift(np.uint32(1), 2 * lane_bits)
-    odd_masks = np.left_shift(np.uint32(1), 2 * lane_bits + 1)
-    upper = tiles[:, :, np.arange(63, 31, -1)]
-    lower = tiles[:, :, np.arange(31, -1, -1)]
-    upper_bits = (upper[:, :, :, None] >> byte_bits) & 1
-    lower_bits = (lower[:, :, :, None] >> byte_bits) & 1
-    even = np.sum(
-        upper_bits.astype(np.uint32) * even_masks[None, :, None, None],
-        axis=1, dtype=np.uint32)
-    odd = np.sum(
-        lower_bits.astype(np.uint32) * odd_masks[None, :, None, None],
-        axis=1, dtype=np.uint32)
-    return np.ascontiguousarray(even | odd).reshape(-1, 256).view(np.int32)
+    return np.stack([
+        reference.encode_int8_weight_words(tile.view(np.int8)).view(np.int32)
+        for tile in tiles
+    ])
 
 
 def invert_words(words: np.ndarray) -> np.ndarray:
-    values = np.asarray(words, dtype=np.int32).view(np.uint32).reshape(-1, 32, 8)
-    tiles = np.zeros((values.shape[0], 16, 64), dtype=np.uint8)
-    for lane in range(16):
-        for q in range(32):
-            for bit in range(8):
-                word = values[:, q, bit]
-                tiles[:, lane, 63 - q] |= ((word >> (2 * lane)) & 1).astype(np.uint8) << bit
-                tiles[:, lane, 31 - q] |= ((word >> (2 * lane + 1)) & 1).astype(np.uint8) << bit
-    return tiles
+    values = np.asarray(words, dtype=np.int32).reshape(-1, 256)
+    return np.stack([
+        reference.decode_int8_weight_words(row.view(np.uint32)).view(np.uint8)
+        for row in values
+    ])
 
 
 def _parse_dense(line: str, line_number: int) -> tuple[str, np.ndarray] | None:

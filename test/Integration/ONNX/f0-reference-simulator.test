@@ -1,0 +1,11 @@
+// RUN: mlir-cim22-onnx-import %S/../../Inputs/ONNX/int8_matmul_m1_k128_n320.onnx > %t.imported
+// RUN: mlir-cim22-opt %t.imported --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule))' > %t.schedule
+// RUN: %python %S/../../python/CIM22/schedule_oracle.py %t.schedule --m 1 --k 128 --n 320 --onnx %S/../../Inputs/ONNX/int8_matmul_m1_k128_n320.onnx | FileCheck %s --check-prefix=SCHEDULE
+// RUN: mlir-cim22-opt %t.imported --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan)' > %t.plan
+// RUN: %python %S/../../python/CIM22/execution_plan_oracle.py %t.plan | FileCheck %s --check-prefix=PLAN
+// RUN: mlir-cim22-opt %t.plan --pass-pipeline='builtin.module(materialize-cim-static-weight-section)' > %t.static
+// RUN: %python %S/../../python/CIM22/static_weight_section_oracle.py %t.static --expect-commands 40 | FileCheck %s --check-prefix=WEIGHT
+
+// SCHEDULE: PASS software-only M=1 K=128 N=320 work=40 groups=20 dtype=int32 shape=(1, 320) seed=2205 weight=onnx
+// PLAN: PASS software-only profile=cim22-4x5-v1 schema=1 groups=20 works=40 configs=80
+// WEIGHT: PASS software-only commands=40 resources=40

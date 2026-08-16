@@ -9,6 +9,8 @@ from typing import NamedTuple
 
 import numpy as np
 
+import int8_reference as reference
+
 
 ATTRS = (
     "work_id", "m_tile", "n_tile", "k_tile",
@@ -157,13 +159,20 @@ def verify_numeric(m: int, k: int, n: int, seed: int,
     for item in expected_schedule(m, k, n):
         k_begin = item.k_tile * 64
         n_begin = item.n_tile * 16
-        partial = (
-            activation[item.m_tile, k_begin:k_begin + 64].astype(np.int32)
-            @ weight[k_begin:k_begin + 64, n_begin:n_begin + 16].astype(np.int32)
-        )
+        valid_k = min(64, k - k_begin)
+        valid_n = min(16, n - n_begin)
+        input_tile = np.zeros(64, dtype=np.int8)
+        weight_tile = np.zeros((16, 64), dtype=np.int8)
+        input_tile[:valid_k] = activation[
+            item.m_tile, k_begin:k_begin + valid_k]
+        weight_tile[:valid_n, :valid_k] = weight[
+            k_begin:k_begin + valid_k,
+            n_begin:n_begin + valid_n].T
+        partial = reference.simulate_int8_tile(
+            input_tile, weight_tile)[:valid_n]
         partial_min = min(partial_min, int(partial.min()))
         partial_max = max(partial_max, int(partial.max()))
-        actual[item.m_tile, n_begin:n_begin + len(partial)] += partial
+        actual[item.m_tile, n_begin:n_begin + len(partial)] += partial.astype(np.int32)
     if not I21_MIN <= partial_min <= partial_max <= I21_MAX:
         raise OracleError(f"random partial outside i21: [{partial_min},{partial_max}]")
     np.testing.assert_array_equal(actual, expected)
