@@ -1,0 +1,3 @@
+// RUN: %python %S/supplier_fixture_replay.py %S/../../Inputs/CIM22/fixtures.json | FileCheck %s
+
+// CHECK: PASS supplier-fixture-match cases=4 words=1024 slots=2048 tokens=512
