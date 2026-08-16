@@ -1,5 +1,5 @@
-// RUN: %python %S/../../Reference/F2/generate_conv_integer_onnx.py --emit-dir %t.first | FileCheck %s --check-prefix=GENERATE
-// RUN: %python %S/../../Reference/F2/generate_conv_integer_onnx.py --emit-dir %t.second
+// RUN: %python %S/../../python/ONNX/generate_conv_integer_onnx.py --emit-dir %t.first | FileCheck %s --check-prefix=GENERATE
+// RUN: %python %S/../../python/ONNX/generate_conv_integer_onnx.py --emit-dir %t.second
 // RUN: cmp %t.first/canonical.onnx %t.second/canonical.onnx
 // RUN: cmp %t.first/odd.onnx %t.second/odd.onnx
 // RUN: cmp %t.first/pointwise.onnx %t.second/pointwise.onnx

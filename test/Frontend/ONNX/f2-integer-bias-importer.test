@@ -1,5 +1,5 @@
-// RUN: %python %S/../../Reference/F2/generate_integer_bias_onnx.py --emit-dir %t.first | FileCheck %s --check-prefix=GENERATE
-// RUN: %python %S/../../Reference/F2/generate_integer_bias_onnx.py --emit-dir %t.second
+// RUN: %python %S/../../python/ONNX/generate_integer_bias_onnx.py --emit-dir %t.first | FileCheck %s --check-prefix=GENERATE
+// RUN: %python %S/../../python/ONNX/generate_integer_bias_onnx.py --emit-dir %t.second
 // RUN: cmp %t.first/linear-bias.onnx %t.second/linear-bias.onnx
 // RUN: cmp %t.first/conv-bias.onnx %t.second/conv-bias.onnx
 // RUN: cmp %t.first/linear-bias-fold.onnx %t.second/linear-bias-fold.onnx

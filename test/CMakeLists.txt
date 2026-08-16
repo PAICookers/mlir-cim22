@@ -21,7 +21,7 @@ if(NOT MLIRCIM22_PYTHON_TEST_DEPS_RESULT EQUAL 0)
 endif()
 
 add_executable(mlir-cim22-int8-weight-layout-test EXCLUDE_FROM_ALL
-  Support/Int8WeightLayoutTest.cpp
+  Unit/Support/Int8WeightLayoutTest.cpp
 )
 target_link_libraries(mlir-cim22-int8-weight-layout-test PRIVATE
   MLIRCIM22Support
@@ -31,7 +31,7 @@ set_target_properties(mlir-cim22-int8-weight-layout-test PROPERTIES
 )
 
 add_executable(mlir-cim22-f0-importer-test EXCLUDE_FROM_ALL
-  Frontend/ONNX/F0ImporterTest.cpp
+  Unit/Frontend/ONNX/F0ImporterTest.cpp
 )
 target_link_libraries(mlir-cim22-f0-importer-test PRIVATE
   MLIRCIM22LinalgToCIM
@@ -42,7 +42,7 @@ set_target_properties(mlir-cim22-f0-importer-test PROPERTIES
 )
 
 add_executable(mlir-cim22-cimframe-codec-test EXCLUDE_FROM_ALL
-  Target/CIMFrameCodecTest.cpp
+  Unit/Target/CIMFrame/CIMFrameCodecTest.cpp
 )
 target_link_libraries(mlir-cim22-cimframe-codec-test PRIVATE
   MLIRCIM22Target

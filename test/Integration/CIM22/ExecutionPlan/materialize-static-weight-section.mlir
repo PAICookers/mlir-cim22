@@ -1,9 +1,9 @@
 // RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section)' > %t.first
 // RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section)' > %t.second
 // RUN: cmp %t.first %t.second
-// RUN: %python %S/../../Reference/M2/static_weight_section_oracle.py %t.first --expect-commands 2 | FileCheck %s --check-prefix=ORACLE
+// RUN: %python %S/../../../python/CIM22/static_weight_section_oracle.py %t.first --expect-commands 2 | FileCheck %s --check-prefix=ORACLE
 // RUN: sed '0,/macro = 0 : i32/s//macro = 1 : i32/' %t.first > %t.bad
-// RUN: not %python %S/../../Reference/M2/static_weight_section_oracle.py %t.bad --expect-commands 2 2>&1 | FileCheck %s --check-prefix=FAULT
+// RUN: not %python %S/../../../python/CIM22/static_weight_section_oracle.py %t.bad --expect-commands 2 2>&1 | FileCheck %s --check-prefix=FAULT
 // RUN: FileCheck %s --check-prefix=HOST < %t.first
 
 // ORACLE: PASS software-only commands=2 resources=2

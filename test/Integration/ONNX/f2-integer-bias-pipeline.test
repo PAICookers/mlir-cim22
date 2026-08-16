@@ -1,4 +1,4 @@
-// RUN: %python %S/../../Reference/F2/generate_integer_bias_onnx.py --emit-dir %t.models
+// RUN: %python %S/../../python/ONNX/generate_integer_bias_onnx.py --emit-dir %t.models
 // RUN: mlir-cim22-onnx-import %t.models/linear-bias.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(fold-cim-int8-bias,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.linear-wide.host
 // RUN: grep -c '^cim_segment ' %t.linear-wide.host | FileCheck %s --check-prefix=LINEAR-TAIL-SEGMENTS
 // RUN: grep -c 'direction=host_to_cim' %t.linear-wide.host | FileCheck %s --check-prefix=LINEAR-TAIL-WORKS

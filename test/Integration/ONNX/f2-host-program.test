@@ -1,4 +1,4 @@
-// RUN: %python %S/../../Reference/F2/generate_conv_integer_onnx.py --emit-dir %t.models
+// RUN: %python %S/../../python/ONNX/generate_conv_integer_onnx.py --emit-dir %t.models
 // RUN: mlir-cim22-onnx-import %t.models/canonical.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.canonical.first
 // RUN: mlir-cim22-onnx-import %t.models/canonical.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(dump-cim-host-program))' -o /dev/null 2> %t.canonical.second
 // RUN: diff %t.canonical.first %t.canonical.second
