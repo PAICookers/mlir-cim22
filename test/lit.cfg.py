@@ -9,7 +9,7 @@ config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
 config.suffixes = [".mlir", ".test"]
 config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = os.path.join(config.mlir_cim22_obj_root, "test")
-config.excludes = ["CMakeLists.txt", "Inputs", "README.txt"]
+config.excludes = ["CMakeLists.txt", "Inputs", "README.md"]
 
 llvm_config.use_default_substitutions()
 config.substitutions = [
