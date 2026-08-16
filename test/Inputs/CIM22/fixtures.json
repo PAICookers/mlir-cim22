@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "snapshot_source_id": "HWSRC-051",
+  "evidence_level": "supplier-fixture-match",
+  "cases": [
+    {
+      "case_id": "cim22_tb_0p9_macro1",
+      "source_id": "HWSRC-018",
+      "source_root": "docs/CIM22_tb/0p9_0509_last",
+      "supplier_macro": 1,
+      "mode": "int8",
+      "shapes": {
+        "weight": [16, 64],
+        "input": [8, 64],
+        "output": [8, 16]
+      },
+      "files": {
+        "weight": {
+          "path": "cim22_tb_0p9_macro1/cim_w.txt",
+          "source_path": "docs/CIM22_tb/0p9_0509_last/cim1_w.txt",
+          "sha256": "bc898ec944a3cd382532887894ea076643024972f59dbd4473dbfcfb8f19e6d3"
+        },
+        "input": {
+          "path": "cim22_tb_0p9_macro1/cache_in_int8.txt",
+          "source_path": "docs/CIM22_tb/0p9_0509_last/cache1_in_int8.txt",
+          "sha256": "2d63ba19a683ce054911fdb8832ad85912e33d9a25a3940f5373e2014d513004"
+        },
+        "output": {
+          "path": "cim22_tb_0p9_macro1/output_int8.txt",
+          "source_path": "docs/CIM22_tb/0p9_0509_last/output_int8_1.txt",
+          "sha256": "ebe3387ccb430591621a456a5b1d3cd8911458b8f431225f48cd4ebea0b31715"
+        }
+      }
+    },
+    {
+      "case_id": "cim22_tb_0p9_macro2",
+      "source_id": "HWSRC-018",
+      "source_root": "docs/CIM22_tb/0p9_0509_last",
+      "supplier_macro": 2,
+      "mode": "int8",
+      "shapes": {
+        "weight": [16, 64],
+        "input": [8, 64],
+        "output": [8, 16]
+      },
+      "files": {
+        "weight": {
+          "path": "cim22_tb_0p9_macro2/cim_w.txt",
+          "source_path": "docs/CIM22_tb/0p9_0509_last/cim2_w.txt",
+          "sha256": "94fe5afdb4a22424927ede79ddcec3e7c98f96f47092a0fd5a27a3236ece13a8"
+        },
+        "input": {
+          "path": "cim22_tb_0p9_macro2/cache_in_int8.txt",
+          "source_path": "docs/CIM22_tb/0p9_0509_last/cache2_in_int8.txt",
+          "sha256": "13408650ac10afde8c875fbe509e1f7391251fe93a0c0104321c7c049153145b"
+        },
+        "output": {
+          "path": "cim22_tb_0p9_macro2/output_int8.txt",
+          "source_path": "docs/CIM22_tb/0p9_0509_last/output_int8_2.txt",
+          "sha256": "0c9f5e30e24ddfe49435bc2ff00a39415d9b74dd61f2150d47f578b197a25124"
+        }
+      }
+    },
+    {
+      "case_id": "test_data_1_17_macro1",
+      "source_id": "HWSRC-020",
+      "source_root": "docs/test_data_1_17",
+      "supplier_macro": 1,
+      "mode": "int8",
+      "shapes": {
+        "weight": [16, 64],
+        "input": [8, 64],
+        "output": [8, 16]
+      },
+      "files": {
+        "weight": {
+          "path": "test_data_1_17_macro1/cim_w.txt",
+          "source_path": "docs/test_data_1_17/cim1_w.txt",
+          "sha256": "1524ba249cc3d4e501bb1a1ee64ce60b81ae4898f92ea2c300effbc1aa578101"
+        },
+        "input": {
+          "path": "test_data_1_17_macro1/cache_in_int8.txt",
+          "source_path": "docs/test_data_1_17/cache1_in_int8.txt",
+          "sha256": "1dbe9fafd9a37f5ed1e3cf6a815048d2fa5bb538ee59b37367b1da723900307e"
+        },
+        "output": {
+          "path": "test_data_1_17_macro1/output_int8.txt",
+          "source_path": "docs/test_data_1_17/output_int8_1.txt",
+          "sha256": "044c38ed69d28addf891731a4cf77cc34f12f89d413b902a06cbacc9a5e47864"
+        }
+      }
+    },
+    {
+      "case_id": "test_data_1_17_macro2",
+      "source_id": "HWSRC-020",
+      "source_root": "docs/test_data_1_17",
+      "supplier_macro": 2,
+      "mode": "int8",
+      "shapes": {
+        "weight": [16, 64],
+        "input": [8, 64],
+        "output": [8, 16]
+      },
+      "files": {
+        "weight": {
+          "path": "test_data_1_17_macro2/cim_w.txt",
+          "source_path": "docs/test_data_1_17/cim2_w.txt",
+          "sha256": "2008607f3bd8be4e401126d4fd403d47e42d9eed1f4196881d5dfb630a159814"
+        },
+        "input": {
+          "path": "test_data_1_17_macro2/cache_in_int8.txt",
+          "source_path": "docs/test_data_1_17/cache2_in_int8.txt",
+          "sha256": "aab25fecdf3e98587d23c6dde3b04c61a060b5a84afca4f35bcb483510fbbaa6"
+        },
+        "output": {
+          "path": "test_data_1_17_macro2/output_int8.txt",
+          "source_path": "docs/test_data_1_17/output_int8_2.txt",
+          "sha256": "f933b4c7047f274d732eec3b79c219391c8fcbeebd68be320a984547bcb872f0"
+        }
+      }
+    }
+  ]
+}
