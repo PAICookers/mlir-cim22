@@ -1,6 +1,7 @@
 """Verify canonical M5 schedule MLIR dumps and tiled INT8 execution."""
 
 import argparse
+import itertools
 import re
 from collections import Counter
 from pathlib import Path
@@ -10,6 +11,11 @@ import int8_reference as reference
 import numpy as np
 
 ATTRS = ("work_id", "m_tile", "n_tile", "k_tile", "group_id")
+VMM_PATTERN = re.compile(r"\bcim\.vmm\b")
+ATTR_PATTERN = re.compile(
+    r"\b(work_id|m_tile|n_tile|k_tile|group_id)\s*=\s*(-?\d+)\s*:\s*i64\b"
+)
+RESULT_PATTERN = re.compile(r"->\s*tensor<16xi21>(?![A-Za-z0-9_])")
 OP_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_.])"
     r"(cim\.vmm|arith\.extsi|arith\.addi|arith\.trunci)"
@@ -38,14 +44,14 @@ def ceil_div(value: int, divisor: int) -> int:
 def expected_schedule(m: int, k: int, n: int) -> list[Work]:
     if min(m, k, n) <= 0:
         raise VerificationError("M, K, and N must be positive")
-    work = []
-    for m_tile in range(m):
-        for n_tile in range(ceil_div(n, 16)):
-            for k_tile in range(ceil_div(k, 64)):
-                work_id = len(work)
-                group_id = work_id // 2
-                work.append(Work(work_id, m_tile, n_tile, k_tile, group_id))
-    return work
+    return [
+        Work(index, m_tile, n_tile, k_tile, index // 2)
+        for index, (m_tile, n_tile, k_tile) in enumerate(
+            itertools.product(
+                range(m), range(ceil_div(n, 16)), range(ceil_div(k, 64))
+            )
+        )
+    ]
 
 
 def _operation_counts(text: str) -> Counter[str]:
@@ -61,23 +67,18 @@ def parse_schedule(text: str) -> list[Work]:
     """Parse only one-line canonical cim.vmm operations and their frozen attrs."""
     work = []
     for line_number, line in enumerate(text.splitlines(), 1):
-        if line.lstrip().startswith("//") or not re.search(
-            r"\bcim\.vmm\b", line
-        ):
+        if line.lstrip().startswith("//") or not VMM_PATTERN.search(line):
             continue
-        values = []
-        for attr in ATTRS:
-            match = re.search(rf"\b{attr}\s*=\s*(-?\d+)\s*:\s*i64\b", line)
-            if not match:
-                raise VerificationError(
-                    f"line {line_number}: missing canonical i64 attribute {attr}"
-                )
-            values.append(int(match.group(1)))
-        if not re.search(r"->\s*tensor<16xi21>(?![A-Za-z0-9_])", line):
+        attributes = dict(ATTR_PATTERN.findall(line))
+        if set(attributes) != set(ATTRS):
+            raise VerificationError(
+                f"line {line_number}: missing canonical i64 attribute"
+            )
+        if not RESULT_PATTERN.search(line):
             raise VerificationError(
                 f"line {line_number}: cim.vmm partial is not tensor<16xi21>"
             )
-        work.append(Work(*values))
+        work.append(Work(*(int(attributes[attr]) for attr in ATTRS)))
     return work
 
 
@@ -106,9 +107,11 @@ def validate_dump(text: str, m: int, k: int, n: int) -> list[Work]:
     if len(set(tiles)) != len(tiles):
         raise VerificationError("duplicate logical tile identity")
 
-    groups: dict[int, list[Work]] = {}
-    for item in actual:
-        groups.setdefault(item.group_id, []).append(item)
+    groups = {}
+    for group_id, items in itertools.groupby(
+        actual, key=lambda item: item.group_id
+    ):
+        groups[group_id] = tuple(items)
     if list(groups) != list(range(ceil_div(len(actual), 2))):
         raise VerificationError(
             "group_id values are not dense and strictly ordered"
@@ -186,30 +189,24 @@ def verify_numeric(
             f"weight: expected int8[{k},{n}], actual {weight.dtype}{weight.shape}"
         )
     full_result = activation.astype(np.int32) @ weight.astype(np.int32)
-    tiled_result = np.zeros((m, n), dtype=np.int32)
-    partial_min = I21_MAX
-    partial_max = I21_MIN
-    for item in expected_schedule(m, k, n):
-        k_begin = item.k_tile * 64
-        n_begin = item.n_tile * 16
-        valid_k = min(64, k - k_begin)
-        valid_n = min(16, n - n_begin)
-        input_tile = np.zeros(64, dtype=np.int8)
-        weight_tile = np.zeros((16, 64), dtype=np.int8)
-        input_tile[:valid_k] = activation[
-            item.m_tile, k_begin : k_begin + valid_k
-        ]
-        weight_tile[:valid_n, :valid_k] = weight[
-            k_begin : k_begin + valid_k, n_begin : n_begin + valid_n
-        ].T
-        partial = reference.simulate_int8_tile(input_tile, weight_tile)[
-            :valid_n
-        ]
-        partial_min = min(partial_min, int(partial.min()))
-        partial_max = max(partial_max, int(partial.max()))
-        tiled_result[item.m_tile, n_begin : n_begin + len(partial)] += (
-            partial.astype(np.int32)
-        )
+    k_tiles = ceil_div(k, 64)
+    n_tiles = ceil_div(n, 16)
+    padded_activation = np.pad(
+        activation, ((0, 0), (0, k_tiles * 64 - k))
+    ).reshape(m, k_tiles, 64)
+    padded_weight = (
+        np.pad(weight, ((0, k_tiles * 64 - k), (0, n_tiles * 16 - n)))
+        .reshape(k_tiles, 64, n_tiles, 16)
+        .transpose(0, 2, 3, 1)
+    )
+    partials = reference.simulate_int8_tiles(
+        padded_activation[:, :, None, :], padded_weight[None, :, :, :, :]
+    )
+    partial_min = int(partials.min())
+    partial_max = int(partials.max())
+    tiled_result = (
+        partials.sum(axis=1).reshape(m, n_tiles * 16)[:, :n].astype(np.int32)
+    )
     if not I21_MIN <= partial_min <= partial_max <= I21_MAX:
         raise VerificationError(
             f"random partial outside i21: [{partial_min},{partial_max}]"

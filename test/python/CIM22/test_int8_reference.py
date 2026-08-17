@@ -105,6 +105,21 @@ class CacheLayoutTest(unittest.TestCase):
 
 
 class TileSimulationTest(unittest.TestCase):
+    def test_batched_tiles_broadcast_and_match_scalar(self):
+        inputs = (
+            np.arange(2 * 64, dtype=np.uint16)
+            .astype(np.uint8)
+            .view(np.int8)
+            .reshape(2, 64)
+        )
+        weights = np.zeros((16, 64), dtype=np.int8)
+        weights[:, :2] = 1
+        batched = reference.simulate_int8_tiles(inputs, weights)
+        expected = np.stack(
+            [reference.simulate_int8_tile(row, weights) for row in inputs]
+        )
+        np.testing.assert_array_equal(batched, expected)
+
     def test_zero_and_signed_lane_markers(self):
         activation = np.arange(64, dtype=np.int8) - np.int8(32)
         weight = np.zeros((16, 64), dtype=np.int8)

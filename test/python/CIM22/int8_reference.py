@@ -150,11 +150,38 @@ def decode_int8_cache_lines(lines: Sequence[tuple[int, str]]) -> np.ndarray:
     return values
 
 
-def simulate_int8_tile(input_: np.ndarray, weight: np.ndarray) -> np.ndarray:
-    """Compute one native 64x16 tile and reject results outside signed i21."""
-    _require_i8_array(input_, (TILE_K,), "input")
-    _require_i8_array(weight, (LANES, TILE_K), "weight")
-    result = weight.astype(np.int64) @ input_.astype(np.int64)
+def simulate_int8_tiles(inputs: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """Compute broadcastable native tiles and enforce signed i21 results."""
+    if (
+        not isinstance(inputs, np.ndarray)
+        or inputs.dtype != np.int8
+        or inputs.ndim < 1
+        or inputs.shape[-1] != TILE_K
+    ):
+        raise ReferenceModelError("inputs: expected np.int8[...,64]")
+    if (
+        not isinstance(weights, np.ndarray)
+        or weights.dtype != np.int8
+        or weights.ndim < 2
+        or weights.shape[-2:] != (LANES, TILE_K)
+    ):
+        raise ReferenceModelError("weights: expected np.int8[...,16,64]")
+    try:
+        leading_shape = np.broadcast_shapes(
+            inputs.shape[:-1], weights.shape[:-2]
+        )
+    except ValueError as error:
+        raise ReferenceModelError(
+            "inputs and weights have incompatible batch shapes"
+        ) from error
+    result = np.einsum(
+        "...q,...lq->...l",
+        np.broadcast_to(inputs, leading_shape + (TILE_K,)).astype(np.int64),
+        np.broadcast_to(weights, leading_shape + (LANES, TILE_K)).astype(
+            np.int64
+        ),
+        optimize=True,
+    )
     if np.any(result < I21_MIN) or np.any(result > I21_MAX):
         minimum = int(result.min())
         maximum = int(result.max())
@@ -162,6 +189,13 @@ def simulate_int8_tile(input_: np.ndarray, weight: np.ndarray) -> np.ndarray:
             f"tile result outside signed i21: [{minimum},{maximum}]"
         )
     return result
+
+
+def simulate_int8_tile(input_: np.ndarray, weight: np.ndarray) -> np.ndarray:
+    """Compute one native 64x16 tile and reject results outside signed i21."""
+    _require_i8_array(input_, (TILE_K,), "input")
+    _require_i8_array(weight, (LANES, TILE_K), "weight")
+    return simulate_int8_tiles(input_[None, :], weight[None, :, :])[0]
 
 
 def encode_int8_output_response(result: Sequence[int]) -> tuple[int, ...]:
