@@ -1,0 +1,3 @@
+// RUN: mlir-cim22-matmulinteger-importer-test %S/../../../Inputs/ONNX/int8_matmulinteger_model.onnx | FileCheck %s
+
+// CHECK: PASS

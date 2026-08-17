@@ -1,4 +1,4 @@
-//===- F0ImporterTest.cpp - Quantized ONNX importer regression -*- C++ -*-===//
+//===- MatMulIntegerImporterTest.cpp - ONNX importer regression -*- C++ -*-===//
 //
 // Licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -271,7 +271,8 @@ static onnx::ModelProto makeSyntheticModel(const onnx::ModelProto &Fixture) {
 
 int main(int argc, char **argv) {
   if (argc != 2) {
-    llvm::errs() << "usage: mlir-cim22-f0-importer-test <model.onnx>\n";
+    llvm::errs()
+        << "usage: mlir-cim22-matmulinteger-importer-test <model.onnx>\n";
     return 1;
   }
 

@@ -26,7 +26,7 @@ llvm_config.add_tool_substitutions(
     [
         "FileCheck",
         "mlir-cim22-cimframe-codec-test",
-        "mlir-cim22-f0-importer-test",
+        "mlir-cim22-matmulinteger-importer-test",
         "mlir-cim22-int8-weight-layout-test",
         "mlir-cim22-onnx-import",
         "mlir-cim22-opt",

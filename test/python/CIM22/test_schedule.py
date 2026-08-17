@@ -6,7 +6,9 @@ from pathlib import Path
 
 import verify_schedule as verify
 
-F0_FIXTURE = Path(__file__).parents[2] / "Inputs/ONNX/int8_linear_model.onnx"
+MATMULINTEGER_FIXTURE = (
+    Path(__file__).parents[2] / "Inputs/ONNX/int8_matmulinteger_model.onnx"
+)
 
 
 SMALL_SCHEDULE = [
@@ -57,7 +59,7 @@ class ScheduleVerificationTest(unittest.TestCase):
         self.assertEqual(verify.expected_schedule(2, 65, 17), SMALL_SCHEDULE)
         verify.validate_dump(render_dump(SMALL_SCHEDULE, 2, 65, 17), 2, 65, 17)
 
-    def test_f0_boundaries_dense_ids_and_group_size(self):
+    def test_matmulinteger_boundaries_dense_ids_and_group_size(self):
         work = verify.expected_schedule(32, 512, 1024)
         self.assertEqual(len(work), 16384)
         self.assertEqual(work[0], verify.Work(0, 0, 0, 0, 0))
@@ -92,8 +94,10 @@ class ScheduleVerificationTest(unittest.TestCase):
         self.assertLessEqual(partial_min, partial_max)
         self.assertLessEqual(partial_max, verify.I21_MAX)
 
-    def test_real_f0_fixture_int32_direct_equals_tiled_reconstruction(self):
-        weight = verify.load_onnx_weight(F0_FIXTURE, 512, 1024)
+    def test_real_matmulinteger_fixture_int32_direct_equals_tiled_reconstruction(
+        self,
+    ):
+        weight = verify.load_onnx_weight(MATMULINTEGER_FIXTURE, 512, 1024)
         self.assertEqual(weight.shape, (512, 1024))
         self.assertEqual(weight.dtype.name, "int8")
         result_shape, partial_min, partial_max = verify.verify_numeric(

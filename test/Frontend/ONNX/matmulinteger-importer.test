@@ -1,4 +1,4 @@
-// RUN: mlir-cim22-onnx-import %S/../../Inputs/ONNX/int8_linear_model.onnx | grep -E 'func.func|linalg.transpose|linalg.matmul|return' | FileCheck %s --check-prefix=IMPORT
+// RUN: mlir-cim22-onnx-import %S/../../Inputs/ONNX/int8_matmulinteger_model.onnx | grep -E 'func.func|linalg.transpose|linalg.matmul|return' | FileCheck %s --check-prefix=IMPORT
 
 // IMPORT: func.func @main({{.*}}: tensor<32x512xi8>) -> tensor<32x1024xi32>
 // IMPORT: linalg.transpose ins({{.*}} : tensor<32x512xi8>) outs({{.*}} : tensor<512x32xi8>) permutation = [1, 0]

@@ -30,14 +30,14 @@ set_target_properties(mlir-cim22-int8-weight-layout-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR}
 )
 
-add_executable(mlir-cim22-f0-importer-test EXCLUDE_FROM_ALL
-  Unit/Frontend/ONNX/F0ImporterTest.cpp
+add_executable(mlir-cim22-matmulinteger-importer-test EXCLUDE_FROM_ALL
+  Unit/Frontend/ONNX/MatMulIntegerImporterTest.cpp
 )
-target_link_libraries(mlir-cim22-f0-importer-test PRIVATE
+target_link_libraries(mlir-cim22-matmulinteger-importer-test PRIVATE
   MLIRCIM22LinalgToCIM
   MLIRCIM22ONNXFrontend
 )
-set_target_properties(mlir-cim22-f0-importer-test PROPERTIES
+set_target_properties(mlir-cim22-matmulinteger-importer-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR}
 )
 
@@ -54,7 +54,7 @@ set_target_properties(mlir-cim22-cimframe-codec-test PROPERTIES
 set(MLIRCIM22_TEST_DEPENDS
   FileCheck
   mlir-cim22-cimframe-codec-test
-  mlir-cim22-f0-importer-test
+  mlir-cim22-matmulinteger-importer-test
   mlir-cim22-int8-weight-layout-test
   mlir-cim22-onnx-import
   mlir-cim22-opt

@@ -1,3 +1,0 @@
-// RUN: mlir-cim22-f0-importer-test %S/../../../Inputs/ONNX/int8_linear_model.onnx | FileCheck %s
-
-// CHECK: PASS

@@ -1,4 +1,4 @@
-"""Generate the F0 source result with ONNX ReferenceEvaluator."""
+"""Generate the MatMulInteger source result with ONNX ReferenceEvaluator."""
 
 import hashlib
 import sys
@@ -26,7 +26,9 @@ def partial_bounds(weights: np.ndarray) -> tuple[int, int]:
 
 def main() -> None:
     if len(sys.argv) != 2:
-        raise SystemExit("usage: verify_f0_reference.py <model.onnx>")
+        raise SystemExit(
+            "usage: verify_matmulinteger_reference.py <model.onnx>"
+        )
     model_path = sys.argv[1]
     with open(model_path, "rb") as model_file:
         assert hashlib.sha256(model_file.read()).hexdigest() == EXPECTED_HASH
