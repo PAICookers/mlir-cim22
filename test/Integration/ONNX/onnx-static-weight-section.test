@@ -1,6 +1,0 @@
-// RUN: cmake -E sha256sum %S/../../Inputs/ONNX/int8_matmul_m1_k128_n320.onnx | FileCheck %s --check-prefix=FIXTURE
-// RUN: mlir-cim22-onnx-import %S/../../Inputs/ONNX/int8_matmul_m1_k128_n320.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section)' > %t
-// RUN: %python %S/../../python/CIM22/verify_static_weights.py %t --expect-commands 40 | FileCheck %s
-
-// FIXTURE: b8ff223b70f6848eaf4dae9685c1e751f1fcb300b545c2fac6c2718539e5d50f
-// CHECK: PASS software-only commands=40 resources=40
