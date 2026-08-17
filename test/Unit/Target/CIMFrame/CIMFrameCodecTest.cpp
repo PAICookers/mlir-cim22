@@ -15,6 +15,7 @@
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <iostream>
@@ -24,243 +25,253 @@ using namespace mlir;
 using namespace mlir::cimframe;
 using mlir::cim22::target::encodeCIMFrameInt8Packets;
 
-namespace {
 using Route = std::array<int32_t, 6>;
 
-bool check(bool condition, const char *message) {
-  if (condition)
+static bool check(bool Condition, const char *Message) {
+  if (Condition)
     return true;
-  std::cerr << "FAIL: " << message << '\n';
+  std::cerr << "FAIL: " << Message << '\n';
   return false;
 }
 
-OwningOpRef<ModuleOp> makeModule(OpBuilder &builder) {
-  return ModuleOp::create(builder.getUnknownLoc());
+static OwningOpRef<ModuleOp> makeModule(OpBuilder &Builder) {
+  return ModuleOp::create(Builder.getUnknownLoc());
 }
 
-DenseI32ArrayAttr routeAttr(OpBuilder &builder, const Route &route) {
-  return builder.getDenseI32ArrayAttr(route);
+static DenseI32ArrayAttr routeAttr(OpBuilder &Builder, const Route &Route) {
+  return Builder.getDenseI32ArrayAttr(Route);
 }
 
-ControlInt8PacketOp addControl(OpBuilder &builder, ModuleOp module,
-                               const Route &route, int32_t macro) {
-  builder.setInsertionPointToEnd(module.getBody());
-  return ControlInt8PacketOp::create(builder, builder.getUnknownLoc(),
-                                     routeAttr(builder, route),
-                                     builder.getI32IntegerAttr(macro));
+static ControlInt8PacketOp addControl(OpBuilder &Builder, ModuleOp Module,
+                                      const Route &Route, int32_t Macro) {
+  Builder.setInsertionPointToEnd(Module.getBody());
+  return ControlInt8PacketOp::create(Builder, Builder.getUnknownLoc(),
+                                     routeAttr(Builder, Route),
+                                     Builder.getI32IntegerAttr(Macro));
 }
 
-void addWork(OpBuilder &builder, ModuleOp module, const Route &route) {
-  builder.setInsertionPointToEnd(module.getBody());
-  WorkOncePacketOp::create(builder, builder.getUnknownLoc(),
-                           routeAttr(builder, route));
+static void addWork(OpBuilder &Builder, ModuleOp Module, const Route &Route) {
+  Builder.setInsertionPointToEnd(Module.getBody());
+  WorkOncePacketOp::create(Builder, Builder.getUnknownLoc(),
+                           routeAttr(Builder, Route));
 }
 
-void addWeight(OpBuilder &builder, ModuleOp module, const Route &route,
-               ArrayRef<int32_t> words) {
-  builder.setInsertionPointToEnd(module.getBody());
-  CIMInt8WeightPacketOp::create(builder, builder.getUnknownLoc(),
-                                routeAttr(builder, route),
-                                builder.getDenseI32ArrayAttr(words));
+static void addWeight(OpBuilder &Builder, ModuleOp Module, const Route &Route,
+                      ArrayRef<int32_t> Words) {
+  Builder.setInsertionPointToEnd(Module.getBody());
+  CIMInt8WeightPacketOp::create(Builder, Builder.getUnknownLoc(),
+                                routeAttr(Builder, Route),
+                                Builder.getDenseI32ArrayAttr(Words));
 }
 
-bool testControlAndWork(OpBuilder &builder) {
-  constexpr Route zeroRoute{};
-  auto module = makeModule(builder);
-  addControl(builder, *module, zeroRoute, 0);
-  addWork(builder, *module, zeroRoute);
+static bool testControlAndWork(OpBuilder &Builder) {
+  constexpr Route ZeroRoute{};
+  auto Module = makeModule(Builder);
+  addControl(Builder, *Module, ZeroRoute, 0);
+  addWork(Builder, *Module, ZeroRoute);
 
-  auto flits = encodeCIMFrameInt8Packets(*module);
-  return check(succeeded(flits), "control/work encoding succeeds") &&
-         check(flits->size() == 2, "control/work emits 2 flits") &&
-         check((*flits)[0] == UINT64_C(0x8000000000000000),
+  auto Flits = encodeCIMFrameInt8Packets(*Module);
+  return check(succeeded(Flits), "control/work encoding succeeds") &&
+         check(Flits->size() == 2, "control/work emits 2 flits") &&
+         check((*Flits)[0] == UINT64_C(0x8000000000000000),
                "zero-route Macro 0 control") &&
-         check((*flits)[1] == UINT64_C(0x9000000000000001),
+         check((*Flits)[1] == UINT64_C(0x9000000000000001),
                "zero-route once work");
 }
 
-bool testMacroAndRouteBoundaries(OpBuilder &builder) {
-  constexpr Route zeroRoute{};
-  constexpr Route boundaryRoute{-31, 31, -1, 0, 0, 0};
-  auto module = makeModule(builder);
-  addControl(builder, *module, zeroRoute, 1);
-  addWork(builder, *module, zeroRoute);
-  addControl(builder, *module, boundaryRoute, 1);
-  addWork(builder, *module, boundaryRoute);
+static bool testMacroAndRouteBoundaries(OpBuilder &Builder) {
+  constexpr Route ZeroRoute{};
+  constexpr Route BoundaryRoute{-31, 31, -1, 0, 0, 0};
+  auto Module = makeModule(Builder);
+  addControl(Builder, *Module, ZeroRoute, 1);
+  addWork(Builder, *Module, ZeroRoute);
+  addControl(Builder, *Module, BoundaryRoute, 1);
+  addWork(Builder, *Module, BoundaryRoute);
 
-  auto flits = encodeCIMFrameInt8Packets(*module);
-  return check(succeeded(flits), "boundary route encoding succeeds") &&
-         check(flits->size() == 4, "two work pairs emit 4 flits") &&
-         check((*flits)[0] == UINT64_C(0x8000000000000001),
+  auto Flits = encodeCIMFrameInt8Packets(*Module);
+  return check(succeeded(Flits), "boundary route encoding succeeds") &&
+         check(Flits->size() == 4, "two work pairs emit 4 flits") &&
+         check((*Flits)[0] == UINT64_C(0x8000000000000001),
                "zero-route Macro 1 control") &&
-         check((*flits)[2] == UINT64_C(0x8fdf840000000001),
+         check((*Flits)[2] == UINT64_C(0x8fdf840000000001),
                "sign-magnitude route boundary");
 }
 
-bool testWeightPacket(OpBuilder &builder) {
-  constexpr Route route{3, 1, 0, 0, 0, 0};
-  std::array<int32_t, 256> words{};
-  words.front() = -1;
-  words.back() = std::numeric_limits<int32_t>::min();
+static bool testWeightPacket(OpBuilder &Builder) {
+  constexpr Route Route{3, 1, 0, 0, 0, 0};
+  std::array<int32_t, 256> Words{};
+  Words.front() = -1;
+  Words.back() = std::numeric_limits<int32_t>::min();
 
-  auto module = makeModule(builder);
-  addControl(builder, *module, route, 0);
-  addWeight(builder, *module, route, words);
+  auto Module = makeModule(Builder);
+  addControl(Builder, *Module, Route, 0);
+  addWeight(Builder, *Module, Route, Words);
 
-  auto first = encodeCIMFrameInt8Packets(*module);
-  auto second = encodeCIMFrameInt8Packets(*module);
-  return check(succeeded(first), "weight encoding succeeds") &&
-         check(succeeded(second), "repeated weight encoding succeeds") &&
-         check(first->size() == 258, "control/weight emits 258 flits") &&
-         check(*first == *second, "weight encoding is deterministic") &&
-         check((*first)[0] == UINT64_C(0x80c1000000000000),
-               "mapped control flit") &&
-         check((*first)[1] == UINT64_C(0x20c1000000000100),
-               "mapped weight head") &&
-         check((*first)[2] == UINT64_C(0x000000ffffffff00),
-               "address 0 all-ones body") &&
-         check((*first)[257] == UINT64_C(0x00000080000000ff),
-               "address 255 signed-min body");
+  auto First = encodeCIMFrameInt8Packets(*Module);
+  auto Second = encodeCIMFrameInt8Packets(*Module);
+  if (!check(succeeded(First), "weight encoding succeeds") ||
+      !check(succeeded(Second), "repeated weight encoding succeeds") ||
+      !check(First->size() == 258, "control/weight emits 258 flits") ||
+      !check(*First == *Second, "weight encoding is deterministic") ||
+      !check((*First)[0] == UINT64_C(0x80c1000000000000),
+             "mapped control flit") ||
+      !check((*First)[1] == UINT64_C(0x20c1000000000100),
+             "mapped weight head") ||
+      !check((*First)[2] == UINT64_C(0x000000ffffffff00),
+             "address 0 all-ones body") ||
+      !check((*First)[257] == UINT64_C(0x00000080000000ff),
+             "address 255 signed-min body"))
+    return false;
+
+  addControl(Builder, *Module, Route, 0);
+  addWeight(Builder, *Module, Route, Words);
+  auto Repeated = encodeCIMFrameInt8Packets(*Module);
+  return check(succeeded(Repeated), "repeated transaction encoding succeeds") &&
+         check(Repeated->size() == First->size() * 2,
+               "repeated transaction emits two independent pairs") &&
+         check(std::equal(First->begin(), First->end(), Repeated->begin()),
+               "first transaction is preserved") &&
+         check(std::equal(First->begin(), First->end(),
+                          Repeated->begin() + First->size()),
+               "second transaction is preserved");
 }
 
-bool testMixedPairOrder(OpBuilder &builder) {
-  constexpr Route route{};
-  std::array<int32_t, 256> words{};
-  auto module = makeModule(builder);
-  addControl(builder, *module, route, 0);
-  addWork(builder, *module, route);
-  addControl(builder, *module, route, 1);
-  addWeight(builder, *module, route, words);
+static bool testMixedPairOrder(OpBuilder &Builder) {
+  constexpr Route Route{};
+  std::array<int32_t, 256> Words{};
+  auto Module = makeModule(Builder);
+  addControl(Builder, *Module, Route, 0);
+  addWork(Builder, *Module, Route);
+  addControl(Builder, *Module, Route, 1);
+  addWeight(Builder, *Module, Route, Words);
 
-  auto flits = encodeCIMFrameInt8Packets(*module);
-  return check(succeeded(flits), "mixed pair encoding succeeds") &&
-         check(flits->size() == 260, "mixed pairs preserve total length") &&
-         check((*flits)[0] == UINT64_C(0x8000000000000000),
+  auto Flits = encodeCIMFrameInt8Packets(*Module);
+  return check(succeeded(Flits), "mixed pair encoding succeeds") &&
+         check(Flits->size() == 260, "mixed pairs preserve total length") &&
+         check((*Flits)[0] == UINT64_C(0x8000000000000000),
                "mixed first control") &&
-         check((*flits)[1] == UINT64_C(0x9000000000000001),
+         check((*Flits)[1] == UINT64_C(0x9000000000000001),
                "mixed work follows control") &&
-         check((*flits)[2] == UINT64_C(0x8000000000000001),
+         check((*Flits)[2] == UINT64_C(0x8000000000000001),
                "mixed second control") &&
-         check((*flits)[3] == UINT64_C(0x2000000000000100),
+         check((*Flits)[3] == UINT64_C(0x2000000000000100),
                "mixed weight head follows control");
 }
 
-bool testInvalidStages(OpBuilder &builder) {
-  constexpr Route zeroRoute{};
-  constexpr Route otherRoute{1, 0, 0, 0, 0, 0};
-  constexpr Route copyRoute{0, 0, 0, 1, 0, 0};
-  std::array<int32_t, 256> words{};
-  ScopedDiagnosticHandler diagnostics(builder.getContext(),
+static bool testInvalidStages(OpBuilder &Builder) {
+  constexpr Route ZeroRoute{};
+  constexpr Route OtherRoute{1, 0, 0, 0, 0, 0};
+  constexpr Route CopyRoute{0, 0, 0, 1, 0, 0};
+  std::array<int32_t, 256> Words{};
+  ScopedDiagnosticHandler Diagnostics(Builder.getContext(),
                                       [](Diagnostic &) {});
 
-  auto empty = makeModule(builder);
-  if (!check(failed(encodeCIMFrameInt8Packets(*empty)),
+  auto Empty = makeModule(Builder);
+  if (!check(failed(encodeCIMFrameInt8Packets(*Empty)),
              "empty packet stage is rejected"))
     return false;
 
-  auto command = makeModule(builder);
-  builder.setInsertionPointToEnd(command->getBody());
-  StartInt8OnceOp::create(builder, builder.getUnknownLoc(),
-                          routeAttr(builder, zeroRoute),
-                          builder.getI32IntegerAttr(0));
-  if (!check(failed(encodeCIMFrameInt8Packets(*command)),
+  auto Command = makeModule(Builder);
+  Builder.setInsertionPointToEnd(Command->getBody());
+  StartInt8OnceOp::create(Builder, Builder.getUnknownLoc(),
+                          routeAttr(Builder, ZeroRoute),
+                          Builder.getI32IntegerAttr(0));
+  if (!check(failed(encodeCIMFrameInt8Packets(*Command)),
              "command stage is rejected"))
     return false;
 
-  auto mixed = makeModule(builder);
-  builder.setInsertionPointToEnd(mixed->getBody());
-  StartInt8OnceOp::create(builder, builder.getUnknownLoc(),
-                          routeAttr(builder, zeroRoute),
-                          builder.getI32IntegerAttr(0));
-  addControl(builder, *mixed, zeroRoute, 0);
-  addWork(builder, *mixed, zeroRoute);
-  if (!check(failed(encodeCIMFrameInt8Packets(*mixed)),
+  auto Mixed = makeModule(Builder);
+  Builder.setInsertionPointToEnd(Mixed->getBody());
+  StartInt8OnceOp::create(Builder, Builder.getUnknownLoc(),
+                          routeAttr(Builder, ZeroRoute),
+                          Builder.getI32IntegerAttr(0));
+  addControl(Builder, *Mixed, ZeroRoute, 0);
+  addWork(Builder, *Mixed, ZeroRoute);
+  if (!check(failed(encodeCIMFrameInt8Packets(*Mixed)),
              "mixed command/packet stage is rejected"))
     return false;
 
-  auto orphan = makeModule(builder);
-  addWork(builder, *orphan, zeroRoute);
-  if (!check(failed(encodeCIMFrameInt8Packets(*orphan)),
+  auto Orphan = makeModule(Builder);
+  addWork(Builder, *Orphan, ZeroRoute);
+  if (!check(failed(encodeCIMFrameInt8Packets(*Orphan)),
              "orphan work is rejected"))
     return false;
 
-  auto reversed = makeModule(builder);
-  addWork(builder, *reversed, zeroRoute);
-  addControl(builder, *reversed, zeroRoute, 0);
-  if (!check(failed(encodeCIMFrameInt8Packets(*reversed)),
+  auto Reversed = makeModule(Builder);
+  addWork(Builder, *Reversed, ZeroRoute);
+  addControl(Builder, *Reversed, ZeroRoute, 0);
+  if (!check(failed(encodeCIMFrameInt8Packets(*Reversed)),
              "reversed pair is rejected"))
     return false;
 
-  auto separated = makeModule(builder);
-  addControl(builder, *separated, zeroRoute, 0);
-  builder.setInsertionPointToEnd(separated->getBody());
-  ModuleOp separator = ModuleOp::create(builder.getUnknownLoc());
-  builder.insert(separator.getOperation());
-  addWork(builder, *separated, zeroRoute);
-  if (!check(failed(encodeCIMFrameInt8Packets(*separated)),
+  auto Separated = makeModule(Builder);
+  addControl(Builder, *Separated, ZeroRoute, 0);
+  Builder.setInsertionPointToEnd(Separated->getBody());
+  ModuleOp Separator = ModuleOp::create(Builder.getUnknownLoc());
+  Builder.insert(Separator.getOperation());
+  addWork(Builder, *Separated, ZeroRoute);
+  if (!check(failed(encodeCIMFrameInt8Packets(*Separated)),
              "separated pair is rejected"))
     return false;
 
-  auto mismatch = makeModule(builder);
-  addControl(builder, *mismatch, zeroRoute, 0);
-  addWork(builder, *mismatch, otherRoute);
-  if (!check(failed(encodeCIMFrameInt8Packets(*mismatch)),
+  auto Mismatch = makeModule(Builder);
+  addControl(Builder, *Mismatch, ZeroRoute, 0);
+  addWork(Builder, *Mismatch, OtherRoute);
+  if (!check(failed(encodeCIMFrameInt8Packets(*Mismatch)),
              "route mismatch is rejected"))
     return false;
 
-  auto badMacro = makeModule(builder);
-  addControl(builder, *badMacro, zeroRoute, 2);
-  addWork(builder, *badMacro, zeroRoute);
-  if (!check(failed(encodeCIMFrameInt8Packets(*badMacro)),
+  auto BadMacro = makeModule(Builder);
+  addControl(Builder, *BadMacro, ZeroRoute, 2);
+  addWork(Builder, *BadMacro, ZeroRoute);
+  if (!check(failed(encodeCIMFrameInt8Packets(*BadMacro)),
              "invalid Macro is rejected"))
     return false;
 
-  auto badRoute = makeModule(builder);
-  constexpr Route outOfRange{32, 0, 0, 0, 0, 0};
-  addControl(builder, *badRoute, outOfRange, 0);
-  addWork(builder, *badRoute, outOfRange);
-  if (!check(failed(encodeCIMFrameInt8Packets(*badRoute)),
+  auto BadRoute = makeModule(Builder);
+  constexpr Route OutOfRange{32, 0, 0, 0, 0, 0};
+  addControl(Builder, *BadRoute, OutOfRange, 0);
+  addWork(Builder, *BadRoute, OutOfRange);
+  if (!check(failed(encodeCIMFrameInt8Packets(*BadRoute)),
              "invalid route is rejected"))
     return false;
 
-  auto multicast = makeModule(builder);
-  addControl(builder, *multicast, copyRoute, 0);
-  addWork(builder, *multicast, copyRoute);
-  if (!check(failed(encodeCIMFrameInt8Packets(*multicast)),
+  auto Multicast = makeModule(Builder);
+  addControl(Builder, *Multicast, CopyRoute, 0);
+  addWork(Builder, *Multicast, CopyRoute);
+  if (!check(failed(encodeCIMFrameInt8Packets(*Multicast)),
              "nonzero Copy route is rejected"))
     return false;
 
-  auto badWords = makeModule(builder);
-  addControl(builder, *badWords, zeroRoute, 0);
-  addWeight(builder, *badWords, zeroRoute, ArrayRef(words).drop_back());
-  if (!check(failed(encodeCIMFrameInt8Packets(*badWords)),
+  auto BadWords = makeModule(Builder);
+  addControl(Builder, *BadWords, ZeroRoute, 0);
+  addWeight(Builder, *BadWords, ZeroRoute, ArrayRef(Words).drop_back());
+  if (!check(failed(encodeCIMFrameInt8Packets(*BadWords)),
              "wrong word count is rejected"))
     return false;
 
-  std::array<int32_t, 257> tooManyWords{};
-  auto oversizedWords = makeModule(builder);
-  addControl(builder, *oversizedWords, zeroRoute, 0);
-  addWeight(builder, *oversizedWords, zeroRoute, tooManyWords);
-  if (!check(failed(encodeCIMFrameInt8Packets(*oversizedWords)),
+  std::array<int32_t, 257> TooManyWords{};
+  auto OversizedWords = makeModule(Builder);
+  addControl(Builder, *OversizedWords, ZeroRoute, 0);
+  addWeight(Builder, *OversizedWords, ZeroRoute, TooManyWords);
+  if (!check(failed(encodeCIMFrameInt8Packets(*OversizedWords)),
              "oversized word count is rejected"))
     return false;
 
-  auto unexpectedAttribute = makeModule(builder);
-  auto control = addControl(builder, *unexpectedAttribute, zeroRoute, 0);
-  control->setAttr("type", builder.getI32IntegerAttr(8));
-  addWeight(builder, *unexpectedAttribute, zeroRoute, words);
-  return check(failed(encodeCIMFrameInt8Packets(*unexpectedAttribute)),
+  auto UnexpectedAttribute = makeModule(Builder);
+  auto Control = addControl(Builder, *UnexpectedAttribute, ZeroRoute, 0);
+  Control->setAttr("type", Builder.getI32IntegerAttr(8));
+  addWeight(Builder, *UnexpectedAttribute, ZeroRoute, Words);
+  return check(failed(encodeCIMFrameInt8Packets(*UnexpectedAttribute)),
                "unexpected protocol attribute is rejected");
 }
-} // namespace
-
 int main() {
-  MLIRContext context;
-  context.loadDialect<CIMFrameDialect>();
-  OpBuilder builder(&context);
-  return testControlAndWork(builder) && testMacroAndRouteBoundaries(builder) &&
-                 testWeightPacket(builder) && testMixedPairOrder(builder) &&
-                 testInvalidStages(builder)
+  MLIRContext Context;
+  Context.loadDialect<CIMFrameDialect>();
+  OpBuilder Builder(&Context);
+  return testControlAndWork(Builder) && testMacroAndRouteBoundaries(Builder) &&
+                 testWeightPacket(Builder) && testMixedPairOrder(Builder) &&
+                 testInvalidStages(Builder)
              ? 0
              : 1;
 }
