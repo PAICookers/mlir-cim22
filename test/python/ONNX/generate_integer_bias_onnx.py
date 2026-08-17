@@ -1,7 +1,4 @@
-#!/usr/bin/env python3
 """Generate the accepted integer bias epilogue corpus."""
-
-from __future__ import annotations
 
 import argparse
 from pathlib import Path
@@ -11,7 +8,9 @@ import onnx
 from onnx import TensorProto, checker, helper, numpy_helper, shape_inference
 
 
-def make_linear(*, foldable: bool = False, exact_k: bool = False) -> onnx.ModelProto:
+def make_linear(
+    *, foldable: bool = False, exact_k: bool = False
+) -> onnx.ModelProto:
     reduction = 64 if exact_k else 65
     batch = 1 if exact_k else 2
     rng = np.random.default_rng(2601 if foldable else 2501)
@@ -31,8 +30,16 @@ def make_linear(*, foldable: bool = False, exact_k: bool = False) -> onnx.ModelP
             helper.make_node("Add", ["core", "bias"], ["output"]),
         ],
         "matmul_integer_bias",
-        [helper.make_tensor_value_info("input", TensorProto.INT8, [batch, reduction])],
-        [helper.make_tensor_value_info("output", TensorProto.INT32, [batch, 17])],
+        [
+            helper.make_tensor_value_info(
+                "input", TensorProto.INT8, [batch, reduction]
+            )
+        ],
+        [
+            helper.make_tensor_value_info(
+                "output", TensorProto.INT32, [batch, 17]
+            )
+        ],
         [
             numpy_helper.from_array(weight, name="weight"),
             numpy_helper.from_array(bias, name="bias"),
@@ -46,7 +53,9 @@ def make_linear(*, foldable: bool = False, exact_k: bool = False) -> onnx.ModelP
     )
 
 
-def make_conv(*, foldable: bool = False, exact_k: bool = False) -> onnx.ModelProto:
+def make_conv(
+    *, foldable: bool = False, exact_k: bool = False
+) -> onnx.ModelProto:
     rng = np.random.default_rng(2602 if foldable else 2502)
     if exact_k:
         weight_shape = (17, 1, 8, 8)
@@ -87,7 +96,11 @@ def make_conv(*, foldable: bool = False, exact_k: bool = False) -> onnx.ModelPro
         ],
         "conv_integer_bias",
         [helper.make_tensor_value_info("input", TensorProto.INT8, input_shape)],
-        [helper.make_tensor_value_info("output", TensorProto.INT32, output_shape)],
+        [
+            helper.make_tensor_value_info(
+                "output", TensorProto.INT32, output_shape
+            )
+        ],
         [
             numpy_helper.from_array(weight, name="weight"),
             numpy_helper.from_array(bias.reshape(1, 17, 1, 1), name="bias"),
@@ -117,9 +130,7 @@ def main() -> None:
     write_model(
         args.emit_dir / "linear-bias-fold.onnx", make_linear(foldable=True)
     )
-    write_model(
-        args.emit_dir / "conv-bias-fold.onnx", make_conv(foldable=True)
-    )
+    write_model(args.emit_dir / "conv-bias-fold.onnx", make_conv(foldable=True))
     write_model(
         args.emit_dir / "linear-bias-exact.onnx",
         make_linear(foldable=True, exact_k=True),

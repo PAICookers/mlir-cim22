@@ -1,11 +1,10 @@
-from collections import Counter
-from pathlib import Path
 import re
 import sys
 import unittest
+from collections import Counter
+from pathlib import Path
 
 import schedule_oracle as oracle
-
 
 F0_FIXTURE = Path(__file__).parents[2] / "Inputs/ONNX/int8_linear_model.onnx"
 
@@ -25,21 +24,31 @@ SMALL_SCHEDULE = [
 def render_dump(work, m, k, n):
     lines = []
     for item in work:
-        attrs = ", ".join(f"{name} = {value} : i64" for name, value in zip(oracle.ATTRS, item))
+        attrs = ", ".join(
+            f"{name} = {value} : i64"
+            for name, value in zip(oracle.ATTRS, item, strict=True)
+        )
         lines.append(
             f"%v{item.work_id} = cim.vmm %input, %weight {{{attrs}}} : "
-            "tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>")
+            "tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>"
+        )
     k_tiles = oracle.ceil_div(k, 64)
-    lines.extend("%e = arith.extsi %v : tensor<16xi21> to tensor<16xi32>"
-                 for _ in range(len(work) if k_tiles > 1 else 0))
-    lines.extend("%a = arith.addi %lhs, %rhs : tensor<16xi32>"
-                 for _ in range(m * oracle.ceil_div(n, 16) * (k_tiles - 1)))
+    lines.extend(
+        "%e = arith.extsi %v : tensor<16xi21> to tensor<16xi32>"
+        for _ in range(len(work) if k_tiles > 1 else 0)
+    )
+    lines.extend(
+        "%a = arith.addi %lhs, %rhs : tensor<16xi32>"
+        for _ in range(m * oracle.ceil_div(n, 16) * (k_tiles - 1))
+    )
     return "\n".join(lines)
 
 
 def replace_attr(text, line_index, attr, value):
     lines = text.splitlines()
-    lines[line_index] = re.sub(rf"\b{attr}\s*=\s*-?\d+", f"{attr} = {value}", lines[line_index])
+    lines[line_index] = re.sub(
+        rf"\b{attr}\s*=\s*-?\d+", f"{attr} = {value}", lines[line_index]
+    )
     return "\n".join(lines)
 
 
@@ -52,23 +61,32 @@ class ScheduleOracleTest(unittest.TestCase):
         work = oracle.expected_schedule(32, 512, 1024)
         self.assertEqual(len(work), 16384)
         self.assertEqual(work[0], oracle.Work(0, 0, 0, 0, 0))
-        self.assertEqual(work[38:40], [
-            oracle.Work(38, 0, 4, 6, 19),
-            oracle.Work(39, 0, 4, 7, 19),
-        ])
+        self.assertEqual(
+            work[38:40],
+            [
+                oracle.Work(38, 0, 4, 6, 19),
+                oracle.Work(39, 0, 4, 7, 19),
+            ],
+        )
         self.assertEqual(work[40], oracle.Work(40, 0, 5, 0, 20))
-        self.assertEqual(work[-2:], [
-            oracle.Work(16382, 31, 63, 6, 8191),
-            oracle.Work(16383, 31, 63, 7, 8191),
-        ])
+        self.assertEqual(
+            work[-2:],
+            [
+                oracle.Work(16382, 31, 63, 6, 8191),
+                oracle.Work(16383, 31, 63, 7, 8191),
+            ],
+        )
         self.assertEqual([item.work_id for item in work], list(range(16384)))
-        self.assertEqual(max(Counter(item.group_id for item in work).values()), 2)
+        self.assertEqual(
+            max(Counter(item.group_id for item in work).values()), 2
+        )
         oracle.validate_dump(render_dump(work, 32, 512, 1024), 32, 512, 1024)
 
     def test_fixed_seed_int32_direct_equals_tiled_reconstruction(self):
         shape = (2, 65, 17)
         result_shape, partial_min, partial_max = oracle.verify_numeric(
-            *shape, seed=2205)
+            *shape, seed=2205
+        )
         self.assertEqual(result_shape, (shape[0], shape[2]))
         self.assertLessEqual(oracle.I21_MIN, partial_min)
         self.assertLessEqual(partial_min, partial_max)
@@ -79,7 +97,8 @@ class ScheduleOracleTest(unittest.TestCase):
         self.assertEqual(weight.shape, (512, 1024))
         self.assertEqual(weight.dtype.name, "int8")
         result_shape, partial_min, partial_max = oracle.verify_numeric(
-            32, 512, 1024, seed=2205, weight=weight)
+            32, 512, 1024, seed=2205, weight=weight
+        )
         self.assertEqual(result_shape, (32, 1024))
         self.assertLessEqual(oracle.I21_MIN, partial_min)
         self.assertLessEqual(partial_min, partial_max)
@@ -101,8 +120,10 @@ class ScheduleOracleTest(unittest.TestCase):
                 elif fault == "missing":
                     dump = "\n".join(dump.splitlines()[1:])
                 else:
-                    dump += ("\n%bad = arith.trunci %value : "
-                             "tensor<16xi32> to tensor<16xi21>")
+                    dump += (
+                        "\n%bad = arith.trunci %value : "
+                        "tensor<16xi32> to tensor<16xi21>"
+                    )
                 expected_error = {
                     "duplicate": "VMM count",
                     "missing": "VMM count",
@@ -114,4 +135,5 @@ class ScheduleOracleTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(
-        testRunner=unittest.TextTestRunner(stream=sys.stdout, verbosity=2))
+        testRunner=unittest.TextTestRunner(stream=sys.stdout, verbosity=2)
+    )

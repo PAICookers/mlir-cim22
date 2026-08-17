@@ -1,7 +1,4 @@
-#!/usr/bin/env python3
 """Verify ConvInteger padding, patch order, work count, and INT32 results."""
-
-from __future__ import annotations
 
 import argparse
 from math import ceil
@@ -20,11 +17,11 @@ def patch_matrix(
     pads: tuple[int, int, int, int],
     output_shape: tuple[int, int],
 ) -> np.ndarray:
-    _, channels, height, width = input_value.shape
-    del height, width
+    _, channels, _, _ = input_value.shape
     pad_top, pad_left, pad_bottom, pad_right = pads
     padded = np.pad(
-        input_value, ((0, 0), (0, 0), (pad_top, pad_bottom), (pad_left, pad_right))
+        input_value,
+        ((0, 0), (0, 0), (pad_top, pad_bottom), (pad_left, pad_right)),
     )
     output_height, output_width = output_shape
     patches = np.empty(
@@ -49,11 +46,13 @@ def verify(model_path: Path) -> int:
     checker.check_model(model, full_check=True)
     shape_inference.infer_shapes(model, strict_mode=True)
     initializers = {
-        value.name: numpy_helper.to_array(value) for value in model.graph.initializer
+        value.name: numpy_helper.to_array(value)
+        for value in model.graph.initializer
     }
     node = model.graph.node[0]
     attributes = {
-        value.name: helper.get_attribute_value(value) for value in node.attribute
+        value.name: helper.get_attribute_value(value)
+        for value in node.attribute
     }
     weight = initializers[node.input[1]]
     filters, channels, kernel_height, kernel_width = weight.shape
@@ -71,7 +70,11 @@ def verify(model_path: Path) -> int:
     ]
     _, _, input_height, input_width = input_shape
     input_value = (
-        (np.arange(channels * input_height * input_width, dtype=np.int32) % 17 - 8)
+        (
+            np.arange(channels * input_height * input_width, dtype=np.int32)
+            % 17
+            - 8
+        )
         .astype(np.int8)
         .reshape(1, channels, input_height, input_width)
     )
@@ -80,16 +83,21 @@ def verify(model_path: Path) -> int:
         input_value, kernel, strides, pads, (output_height, output_width)
     )
     patch_size = channels * kernel_height * kernel_width
-    expected = (weight.reshape(filters, patch_size).astype(np.int32) @ patches).reshape(
-        1, filters, output_height, output_width
-    )
+    expected = (
+        weight.reshape(filters, patch_size).astype(np.int32) @ patches
+    ).reshape(1, filters, output_height, output_width)
     evaluator = ReferenceEvaluator(model)
     actual = evaluator.run(None, {"input": input_value})[0]
     repeated = evaluator.run(None, {"input": input_value})[0]
     np.testing.assert_array_equal(actual, expected)
     np.testing.assert_array_equal(repeated, expected)
     assert actual.dtype == np.int32
-    return output_height * output_width * ceil(filters / 16) * ceil(patch_size / 64)
+    return (
+        output_height
+        * output_width
+        * ceil(filters / 16)
+        * ceil(patch_size / 64)
+    )
 
 
 def main() -> None:

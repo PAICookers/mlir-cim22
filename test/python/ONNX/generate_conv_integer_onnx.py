@@ -1,10 +1,8 @@
-#!/usr/bin/env python3
 """Generate the accepted opset-10 ConvInteger corpus."""
-
-from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import onnx
@@ -25,19 +23,25 @@ def make_model(
     explicit_zero_points: bool,
 ) -> onnx.ModelProto:
     rng = np.random.default_rng(seed)
-    weight = rng.integers(-7, 8, size=(filters, channels, *kernel), dtype=np.int8)
+    weight = rng.integers(
+        -7, 8, size=(filters, channels, *kernel), dtype=np.int8
+    )
     initializers = [numpy_helper.from_array(weight, name="weight")]
     node_inputs = ["input", "weight"]
     if explicit_zero_points:
         initializers.extend(
             [
-                numpy_helper.from_array(np.array(0, dtype=np.int8), name="x_zp"),
-                numpy_helper.from_array(np.zeros(filters, dtype=np.int8), name="w_zp"),
+                numpy_helper.from_array(
+                    np.array(0, dtype=np.int8), name="x_zp"
+                ),
+                numpy_helper.from_array(
+                    np.zeros(filters, dtype=np.int8), name="w_zp"
+                ),
             ]
         )
         node_inputs.extend(["x_zp", "w_zp"])
 
-    attributes: dict[str, object] = {
+    attributes: dict[str, Any] = {
         "strides": strides,
         "dilations": [1, 1],
         "group": 1,
@@ -46,9 +50,13 @@ def make_model(
         attributes["pads"] = pads
     if include_kernel_shape:
         attributes["kernel_shape"] = kernel
-    node = helper.make_node("ConvInteger", node_inputs, ["output"], **attributes)
+    node = helper.make_node(
+        "ConvInteger", node_inputs, ["output"], **attributes
+    )
     pad_top, pad_left, pad_bottom, pad_right = pads or (0, 0, 0, 0)
-    output_height = (height + pad_top + pad_bottom - kernel[0]) // strides[0] + 1
+    output_height = (height + pad_top + pad_bottom - kernel[0]) // strides[
+        0
+    ] + 1
     output_width = (width + pad_left + pad_right - kernel[1]) // strides[1] + 1
     graph = helper.make_graph(
         [node],

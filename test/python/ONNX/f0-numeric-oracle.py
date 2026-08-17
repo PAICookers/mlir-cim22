@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Independent ONNX ReferenceEvaluator and NumPy oracle for the F0 fixture."""
 
 import hashlib
@@ -9,8 +8,9 @@ import onnx
 from onnx import numpy_helper
 from onnx.reference import ReferenceEvaluator
 
-
-EXPECTED_HASH = "5fd6f6d5dfa733419c465996772022b2ac92e6547057769e29ac2c8562d8e697"
+EXPECTED_HASH = (
+    "5fd6f6d5dfa733419c465996772022b2ac92e6547057769e29ac2c8562d8e697"
+)
 I21_MIN = -1048576
 I21_MAX = 1048575
 
@@ -34,15 +34,24 @@ def main() -> None:
     model = onnx.load(model_path)
     onnx.checker.check_model(model)
     graph = model.graph
-    assert len(graph.node) == len(graph.input) == len(graph.initializer) == len(graph.output) == 1
+    assert (
+        len(graph.node)
+        == len(graph.input)
+        == len(graph.initializer)
+        == len(graph.output)
+        == 1
+    )
     assert graph.node[0].op_type == "MatMulInteger"
     assert len(graph.node[0].input) == 2
     assert len(graph.node[0].output) == 1
     weights = numpy_helper.to_array(graph.initializer[0])
     assert weights.shape == (512, 1024) and weights.dtype == np.int8
 
-    partial_ranges = [partial_bounds(weights[k : k + 64, n])
-                      for n in range(1024) for k in range(0, 512, 64)]
+    partial_ranges = [
+        partial_bounds(weights[k : k + 64, n])
+        for n in range(1024)
+        for k in range(0, 512, 64)
+    ]
     partial_lower = min(bound[0] for bound in partial_ranges)
     partial_upper = max(bound[1] for bound in partial_ranges)
     assert (partial_lower, partial_upper) == (-656251, 655469)
@@ -52,13 +61,19 @@ def main() -> None:
     full_upper = max(bound[1] for bound in full_ranges)
     assert (full_lower, full_upper) == (-4483020, 4484565)
 
-    input_values = ((np.arange(32 * 512, dtype=np.int32) * 37 + 11) % 256 - 128).astype(np.int8)
+    input_values = (
+        (np.arange(32 * 512, dtype=np.int32) * 37 + 11) % 256 - 128
+    ).astype(np.int8)
     input_values = input_values.reshape(32, 512)
     expected = input_values.astype(np.int32) @ weights.astype(np.int32)
-    actual = ReferenceEvaluator(model).run(None, {graph.input[0].name: input_values})[0]
+    actual = ReferenceEvaluator(model).run(
+        None, {graph.input[0].name: input_values}
+    )[0]
     np.testing.assert_array_equal(actual, expected)
     assert actual.shape == (32, 1024) and actual.dtype == np.int32
-    print("PASS: shape=(32, 1024) dtype=int32 partial=[-656251,655469] full=[-4483020,4484565]")
+    print(
+        "PASS: shape=(32, 1024) dtype=int32 partial=[-656251,655469] full=[-4483020,4484565]"
+    )
 
 
 if __name__ == "__main__":

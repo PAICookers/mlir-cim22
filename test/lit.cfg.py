@@ -3,7 +3,6 @@ import os
 import lit.formats
 from lit.llvm import llvm_config
 
-
 config.name = "MLIR-CIM22"
 config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
 config.suffixes = [".mlir", ".test"]

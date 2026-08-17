@@ -5,11 +5,18 @@ requires-python = ">=3.10,<3.15"
 dependencies = []
 
 [dependency-groups]
-test = [
-  "numpy>=1.23.2,<3",
-  "onnx==1.21.0",
-]
+test = ["numpy>=1.23.2,<3", "onnx==1.21.0"]
 
 [tool.uv]
 package = false
 default-groups = ["test"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 80
+
+[tool.ruff.lint]
+select = ["F", "E9", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"test/lit.cfg.py" = ["F821"]

@@ -1,7 +1,4 @@
-#!/usr/bin/env python3
 """Verify integer bias broadcasting, INT32 wrap, and unchanged CIM work."""
-
-from __future__ import annotations
 
 import argparse
 from math import ceil
@@ -24,8 +21,12 @@ def extend_bias_operands(
     one_row = np.ones((1, input_value.shape[1]), dtype=np.int8)
     if exact_k:
         return (
-            np.concatenate((weight[:, :-1], bias_column, weight[:, -1:]), axis=1),
-            np.concatenate((input_value[:-1], one_row, input_value[-1:]), axis=0),
+            np.concatenate(
+                (weight[:, :-1], bias_column, weight[:, -1:]), axis=1
+            ),
+            np.concatenate(
+                (input_value[:-1], one_row, input_value[-1:]), axis=0
+            ),
         )
     return (
         np.concatenate((weight, bias_column), axis=1),
@@ -40,7 +41,8 @@ def verify_linear(
     checker.check_model(model, full_check=True)
     shape_inference.infer_shapes(model, strict_mode=True)
     initializers = {
-        value.name: numpy_helper.to_array(value) for value in model.graph.initializer
+        value.name: numpy_helper.to_array(value)
+        for value in model.graph.initializer
     }
     weight = initializers["weight"]
     bias = initializers["bias"]
@@ -50,11 +52,16 @@ def verify_linear(
     )
     if foldable:
         input_value = (
-            np.arange(batch * reduction, dtype=np.int32) % 23 - 11
-        ).astype(np.int8).reshape(batch, reduction)
+            (np.arange(batch * reduction, dtype=np.int32) % 23 - 11)
+            .astype(np.int8)
+            .reshape(batch, reduction)
+        )
     else:
         input_value = np.stack(
-            [np.ones(reduction, dtype=np.int8), -np.ones(reduction, dtype=np.int8)]
+            [
+                np.ones(reduction, dtype=np.int8),
+                -np.ones(reduction, dtype=np.int8),
+            ]
         )
     unwrapped = input_value.astype(np.int64) @ weight.astype(np.int64) + bias
     expected = wrap_i32(unwrapped)
@@ -75,7 +82,9 @@ def verify_linear(
         assert unwrapped[0, 0] == 2**31 + 64
         assert expected[0, 0] == -(2**31) + 64
     reduction_tiles = ceil((reduction + int(foldable)) / 64)
-    return batch * ceil(weight.shape[1] / 16) * reduction_tiles, batch * reduction_tiles
+    return batch * ceil(
+        weight.shape[1] / 16
+    ) * reduction_tiles, batch * reduction_tiles
 
 
 def verify_conv(
@@ -85,11 +94,13 @@ def verify_conv(
     checker.check_model(model, full_check=True)
     shape_inference.infer_shapes(model, strict_mode=True)
     initializers = {
-        value.name: numpy_helper.to_array(value) for value in model.graph.initializer
+        value.name: numpy_helper.to_array(value)
+        for value in model.graph.initializer
     }
     node = model.graph.node[0]
     attributes = {
-        value.name: helper.get_attribute_value(value) for value in node.attribute
+        value.name: helper.get_attribute_value(value)
+        for value in node.attribute
     }
     weight = initializers["weight"]
     bias = initializers["bias"]
@@ -97,9 +108,11 @@ def verify_conv(
         dimension.dim_value
         for dimension in model.graph.input[0].type.tensor_type.shape.dim
     )
-    input_value = (np.arange(np.prod(input_shape), dtype=np.int32) % 17 - 8).astype(
-        np.int8
-    ).reshape(input_shape)
+    input_value = (
+        (np.arange(np.prod(input_shape), dtype=np.int32) % 17 - 8)
+        .astype(np.int8)
+        .reshape(input_shape)
+    )
     pad_top, pad_left, pad_bottom, pad_right = attributes["pads"]
     stride_height, stride_width = attributes["strides"]
     padded = np.pad(
@@ -134,14 +147,19 @@ def verify_conv(
     np.testing.assert_array_equal(repeated, expected)
     if foldable:
         folded_weight, folded_input = extend_bias_operands(
-            weight.reshape(filters, reduction), patches, bias.reshape(-1), exact_k
+            weight.reshape(filters, reduction),
+            patches,
+            bias.reshape(-1),
+            exact_k,
         )
         folded = wrap_i32(
             folded_weight.astype(np.int64) @ folded_input.astype(np.int64)
         ).reshape(1, filters, output_height, output_width)
         np.testing.assert_array_equal(folded, expected)
     reduction_tiles = ceil((reduction + int(foldable)) / 64)
-    return spatial * ceil(filters / 16) * reduction_tiles, spatial * reduction_tiles
+    return spatial * ceil(
+        filters / 16
+    ) * reduction_tiles, spatial * reduction_tiles
 
 
 def main() -> None:
@@ -152,7 +170,10 @@ def main() -> None:
     assert verify_conv(args.model_dir / "conv-bias.onnx") == (18, 9)
     assert verify_linear(
         args.model_dir / "linear-bias-fold.onnx", foldable=True
-    ) == (8, 4)
+    ) == (
+        8,
+        4,
+    )
     assert verify_conv(
         args.model_dir / "conv-bias-fold.onnx", foldable=True
     ) == (18, 9)
@@ -162,9 +183,7 @@ def main() -> None:
     assert verify_conv(
         args.model_dir / "conv-bias-exact.onnx", foldable=True, exact_k=True
     ) == (4, 2)
-    print(
-        "PASS integer bias oracle: tail=8/4,18/9 exact=4/2,4/2 wrap=int32"
-    )
+    print("PASS integer bias oracle: tail=8/4,18/9 exact=4/2,4/2 wrap=int32")
 
 
 if __name__ == "__main__":
