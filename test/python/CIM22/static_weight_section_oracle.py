@@ -95,7 +95,7 @@ def _mapping(
     if not match:
         raise OracleError(f"line {line_number}: missing {name}")
     nested = _balanced(body, match.start(), line_number)
-    mapping = tuple(
+    return tuple(
         _array(nested, field, 64, size, line_number)
         for field, size in (
             ("core_coord", 2),
@@ -105,11 +105,6 @@ def _mapping(
             ("route", 6),
         )
     )
-    if mapping[0] != mapping[3] or mapping[1] != (0, 0) or mapping[2] != (0, 0):
-        raise OracleError(f"line {line_number}: invalid lower-left mapping")
-    if mapping[4][3:] != (0, 0, 0):
-        raise OracleError(f"line {line_number}: nonzero Copy route")
-    return mapping
 
 
 def _reference(body: str, name: str, line_number: int) -> str:

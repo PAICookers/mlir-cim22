@@ -76,6 +76,15 @@ func.func @route_mismatch(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) attr
 
 // -----
 
+// expected-error@+2 {{map-cim-schedule rejects invalid or stale cim.mapping}}
+func.func @copy_route(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) attributes {cim.placement_policy = "core-major-dual-macro-v1", cim.route_policy = "lower-left-maximal-xy-v1", cim.target_profile = "cim22-4x5-v1", cim.target_profile_version = 1 : i64} {
+  %0 = cim.vmm %input, %weight {cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 1, 0, 0>, source = array<i64: 0, 0>}, core_slot = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_slot = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64}
+      : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  return
+}
+
+// -----
+
 // expected-error@+1 {{map-cim-schedule rejects mixed mapped and unmapped cim.vmm work}}
 func.func @mixed_mapping(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
   %0 = cim.vmm %input, %weight {cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}, core_slot = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_slot = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64}

@@ -172,7 +172,7 @@ class ExecutionPlanOracleTest(unittest.TestCase):
             "macro_slot = 0 : i64",
             "macro_slot = 2 : i64",
         )
-        nonzero_copy = mutate_line(
+        mismatched_mapping = mutate_line(
             text,
             "cim.configure_input",
             "route = array<i64: 0, 0, 0, 0, 0, 0>",
@@ -194,7 +194,7 @@ class ExecutionPlanOracleTest(unittest.TestCase):
         faults = (
             (missing_work, "missing work_id"),
             (invalid_macro, "invalid macro_slot 2"),
-            (nonzero_copy, "nonzero Copy route"),
+            (mismatched_mapping, "configuration provenance mismatch"),
             (same_macro, "Macro selectors do not match scheduled work"),
             (missing_config, "each Macro needs separate"),
             (wrong_single_macro, "Macro selectors do not match scheduled work"),

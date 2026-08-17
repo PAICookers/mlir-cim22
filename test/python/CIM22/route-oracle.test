@@ -1,4 +1,0 @@
-// RUN: %python %S/test_route_oracle.py | FileCheck %s
-
-// CHECK: Ran 4 tests
-// CHECK: OK

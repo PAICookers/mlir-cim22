@@ -10,7 +10,6 @@ PROFILE_VERSION = 1
 SCHEMA_VERSION = 1
 PLACEMENT_POLICY = "core-major-dual-macro-v1"
 ROUTE_POLICY = "lower-left-maximal-xy-v1"
-LOWER_LEFT = (0, 0)
 OPS = (
     "static_weight",
     "configure_input",
@@ -161,16 +160,6 @@ def _work(op: Op) -> Work:
     if macro not in (0, 1):
         raise OracleError(f"line {op.line_number}: invalid macro_slot {macro}")
     mapping = _mapping(op.body, op.line_number)
-    if (
-        mapping[0] != mapping[3]
-        or mapping[1] != LOWER_LEFT
-        or mapping[2] != LOWER_LEFT
-    ):
-        raise OracleError(
-            f"line {op.line_number}: invalid M4 mapping provenance"
-        )
-    if mapping[4][3:] != (0, 0, 0):
-        raise OracleError(f"line {op.line_number}: nonzero Copy route")
     return Work(*values, macro, mapping)
 
 

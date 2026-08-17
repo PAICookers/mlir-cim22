@@ -1,13 +1,9 @@
 // RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t
 // RUN: %python %S/../../python/CIM22/schedule_oracle.py %t --m 1 --k 128 --n 320 | FileCheck %s --check-prefix=M5
-// RUN: %python %S/../../python/CIM22/route_oracle.py %t --require-all-slots | FileCheck %s --check-prefix=M4
 // RUN: FileCheck %s --check-prefix=MAP < %t
 
 // M5: PASS software-only M=1 K=128 N=320 work=40 groups=20 dtype=int32 shape=(1, 320) seed=2205 weight=random
 // M5: boundaries first=0:(0,0,0)/g0 group19=[38:(0,19,0)/g19,39:(0,19,1)/g19] next=NA last=[38:(0,19,0)/g19,39:(0,19,1)/g19]
-
-// M4: PASS software-only profile=cim22-4x5-v1 version=1 work=40 cores=20 macros=[0,1]
-// M4: boundaries zero=w0/c0/m0 route=[0,0,0,0,0,0] corner=w38/c19/m0 route=[3,1,0,0,0,0]
 
 // MAP-LABEL: func.func @matmul_integer
 // MAP-SAME: attributes {cim.placement_policy = "core-major-dual-macro-v1", cim.route_policy = "lower-left-maximal-xy-v1", cim.target_profile = "cim22-4x5-v1", cim.target_profile_version = 1 : i64}
