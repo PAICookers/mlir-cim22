@@ -1,13 +1,13 @@
 import sys
 import unittest
 
-import execution_plan_oracle as oracle
+import verify_execution_plan as verify
 
 ZERO_MAPPING = ((0, 0), (0, 0), (0, 0), (0, 0), (0, 0, 0, 0, 0, 0))
 NEXT_MAPPING = ((0, 1), (0, 0), (0, 0), (0, 1), (0, 1, 0, 0, 0, 0))
-WORK0 = oracle.Work(0, 0, 0, 0, 0, 0, 0, ZERO_MAPPING)
-WORK1 = oracle.Work(1, 0, 0, 0, 1, 0, 1, ZERO_MAPPING)
-WORK2 = oracle.Work(2, 1, 0, 1, 0, 1, 0, NEXT_MAPPING)
+WORK0 = verify.Work(0, 0, 0, 0, 0, 0, 0, ZERO_MAPPING)
+WORK1 = verify.Work(1, 0, 0, 0, 1, 0, 1, ZERO_MAPPING)
+WORK2 = verify.Work(2, 1, 0, 1, 0, 1, 0, NEXT_MAPPING)
 
 
 def array(values):
@@ -25,8 +25,8 @@ def mapping_text(mapping):
 
 def profile_attrs():
     return (
-        f'cim.target_profile = "{oracle.PROFILE_ID}", '
-        f"cim.target_profile_version = {oracle.PROFILE_VERSION} : i64"
+        f'cim.target_profile = "{verify.PROFILE_ID}", '
+        f"cim.target_profile_version = {verify.PROFILE_VERSION} : i64"
     )
 
 
@@ -42,9 +42,9 @@ def work_attrs(work):
 
 def render_dump(groups=((WORK0, WORK1),)):
     function_attrs = (
-        f"cim.execution_plan_schema_version = {oracle.SCHEMA_VERSION} : i64, "
-        f'cim.placement_policy = "{oracle.PLACEMENT_POLICY}", '
-        f'cim.route_policy = "{oracle.ROUTE_POLICY}", '
+        f"cim.execution_plan_schema_version = {verify.SCHEMA_VERSION} : i64, "
+        f'cim.placement_policy = "{verify.PLACEMENT_POLICY}", '
+        f'cim.route_policy = "{verify.ROUTE_POLICY}", '
         f"{profile_attrs()}"
     )
     lines = [
@@ -112,10 +112,10 @@ def mutate_line(text, token, old, new):
     return "\n".join(lines)
 
 
-class ExecutionPlanOracleTest(unittest.TestCase):
+class ExecutionPlanVerificationTest(unittest.TestCase):
     def test_valid_dual_macro_and_single_work_groups(self):
-        dual = oracle.validate_dump(render_dump())
-        single = oracle.validate_dump(render_dump(((WORK0,),)))
+        dual = verify.validate_dump(render_dump())
+        single = verify.validate_dump(render_dump(((WORK0,),)))
         self.assertEqual(sum(op.kind == "dispatch" for op in dual), 2)
         self.assertEqual(sum(op.kind == "configure_input" for op in dual), 2)
         self.assertEqual(sum(op.kind == "once" for op in dual), 1)
@@ -123,7 +123,7 @@ class ExecutionPlanOracleTest(unittest.TestCase):
 
     def test_deterministic_parse(self):
         text = render_dump()
-        self.assertEqual(oracle.validate_dump(text), oracle.validate_dump(text))
+        self.assertEqual(verify.validate_dump(text), verify.validate_dump(text))
 
     def test_function_and_static_resource_faults(self):
         text = render_dump()
@@ -154,9 +154,9 @@ class ExecutionPlanOracleTest(unittest.TestCase):
         for faulty, error in faults:
             with (
                 self.subTest(error=error),
-                self.assertRaisesRegex(oracle.OracleError, error),
+                self.assertRaisesRegex(verify.VerificationError, error),
             ):
-                oracle.validate_dump(faulty)
+                verify.validate_dump(faulty)
 
     def test_configuration_faults(self):
         text = render_dump()
@@ -203,9 +203,9 @@ class ExecutionPlanOracleTest(unittest.TestCase):
         for faulty, error in faults:
             with (
                 self.subTest(error=error),
-                self.assertRaisesRegex(oracle.OracleError, error),
+                self.assertRaisesRegex(verify.VerificationError, error),
             ):
-                oracle.validate_dump(faulty)
+                verify.validate_dump(faulty)
 
     def test_once_readback_barrier_and_group_faults(self):
         text = render_dump()
@@ -254,9 +254,9 @@ class ExecutionPlanOracleTest(unittest.TestCase):
         for faulty, error in faults:
             with (
                 self.subTest(error=error),
-                self.assertRaisesRegex(oracle.OracleError, error),
+                self.assertRaisesRegex(verify.VerificationError, error),
             ):
-                oracle.validate_dump(faulty)
+                verify.validate_dump(faulty)
 
 
 if __name__ == "__main__":

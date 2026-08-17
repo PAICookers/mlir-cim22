@@ -1,8 +1,8 @@
 // RUN: mlir-cim22-opt %s > %t
-// RUN: %python %S/../../python/CIM22/execution_plan_oracle.py %t | FileCheck %s --check-prefix=ORACLE
+// RUN: %python %S/../../python/CIM22/verify_execution_plan.py %t | FileCheck %s --check-prefix=VERIFY
 // RUN: FileCheck %s --check-prefix=MLIR < %t
 
-// ORACLE: PASS software-only profile=cim22-4x5-v1 schema=1 groups=1 works=2 configs=4
+// VERIFY: PASS software-only profile=cim22-4x5-v1 schema=1 groups=1 works=2 configs=4
 
 // MLIR: cim.static_weight @weight0 = dense<0> : tensor<16x64xi8>
 // MLIR-LABEL: func.func @invoke

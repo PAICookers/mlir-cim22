@@ -4,20 +4,20 @@ import unittest
 from collections import Counter
 from pathlib import Path
 
-import schedule_oracle as oracle
+import verify_schedule as verify
 
 F0_FIXTURE = Path(__file__).parents[2] / "Inputs/ONNX/int8_linear_model.onnx"
 
 
 SMALL_SCHEDULE = [
-    oracle.Work(0, 0, 0, 0, 0),
-    oracle.Work(1, 0, 0, 1, 0),
-    oracle.Work(2, 0, 1, 0, 1),
-    oracle.Work(3, 0, 1, 1, 1),
-    oracle.Work(4, 1, 0, 0, 2),
-    oracle.Work(5, 1, 0, 1, 2),
-    oracle.Work(6, 1, 1, 0, 3),
-    oracle.Work(7, 1, 1, 1, 3),
+    verify.Work(0, 0, 0, 0, 0),
+    verify.Work(1, 0, 0, 1, 0),
+    verify.Work(2, 0, 1, 0, 1),
+    verify.Work(3, 0, 1, 1, 1),
+    verify.Work(4, 1, 0, 0, 2),
+    verify.Work(5, 1, 0, 1, 2),
+    verify.Work(6, 1, 1, 0, 3),
+    verify.Work(7, 1, 1, 1, 3),
 ]
 
 
@@ -26,20 +26,20 @@ def render_dump(work, m, k, n):
     for item in work:
         attrs = ", ".join(
             f"{name} = {value} : i64"
-            for name, value in zip(oracle.ATTRS, item, strict=True)
+            for name, value in zip(verify.ATTRS, item, strict=True)
         )
         lines.append(
             f"%v{item.work_id} = cim.vmm %input, %weight {{{attrs}}} : "
             "tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>"
         )
-    k_tiles = oracle.ceil_div(k, 64)
+    k_tiles = verify.ceil_div(k, 64)
     lines.extend(
         "%e = arith.extsi %v : tensor<16xi21> to tensor<16xi32>"
         for _ in range(len(work) if k_tiles > 1 else 0)
     )
     lines.extend(
         "%a = arith.addi %lhs, %rhs : tensor<16xi32>"
-        for _ in range(m * oracle.ceil_div(n, 16) * (k_tiles - 1))
+        for _ in range(m * verify.ceil_div(n, 16) * (k_tiles - 1))
     )
     return "\n".join(lines)
 
@@ -52,57 +52,57 @@ def replace_attr(text, line_index, attr, value):
     return "\n".join(lines)
 
 
-class ScheduleOracleTest(unittest.TestCase):
+class ScheduleVerificationTest(unittest.TestCase):
     def test_m2_k65_n17_exact_schedule_and_operation_counts(self):
-        self.assertEqual(oracle.expected_schedule(2, 65, 17), SMALL_SCHEDULE)
-        oracle.validate_dump(render_dump(SMALL_SCHEDULE, 2, 65, 17), 2, 65, 17)
+        self.assertEqual(verify.expected_schedule(2, 65, 17), SMALL_SCHEDULE)
+        verify.validate_dump(render_dump(SMALL_SCHEDULE, 2, 65, 17), 2, 65, 17)
 
     def test_f0_boundaries_dense_ids_and_group_size(self):
-        work = oracle.expected_schedule(32, 512, 1024)
+        work = verify.expected_schedule(32, 512, 1024)
         self.assertEqual(len(work), 16384)
-        self.assertEqual(work[0], oracle.Work(0, 0, 0, 0, 0))
+        self.assertEqual(work[0], verify.Work(0, 0, 0, 0, 0))
         self.assertEqual(
             work[38:40],
             [
-                oracle.Work(38, 0, 4, 6, 19),
-                oracle.Work(39, 0, 4, 7, 19),
+                verify.Work(38, 0, 4, 6, 19),
+                verify.Work(39, 0, 4, 7, 19),
             ],
         )
-        self.assertEqual(work[40], oracle.Work(40, 0, 5, 0, 20))
+        self.assertEqual(work[40], verify.Work(40, 0, 5, 0, 20))
         self.assertEqual(
             work[-2:],
             [
-                oracle.Work(16382, 31, 63, 6, 8191),
-                oracle.Work(16383, 31, 63, 7, 8191),
+                verify.Work(16382, 31, 63, 6, 8191),
+                verify.Work(16383, 31, 63, 7, 8191),
             ],
         )
         self.assertEqual([item.work_id for item in work], list(range(16384)))
         self.assertEqual(
             max(Counter(item.group_id for item in work).values()), 2
         )
-        oracle.validate_dump(render_dump(work, 32, 512, 1024), 32, 512, 1024)
+        verify.validate_dump(render_dump(work, 32, 512, 1024), 32, 512, 1024)
 
     def test_fixed_seed_int32_direct_equals_tiled_reconstruction(self):
         shape = (2, 65, 17)
-        result_shape, partial_min, partial_max = oracle.verify_numeric(
+        result_shape, partial_min, partial_max = verify.verify_numeric(
             *shape, seed=2205
         )
         self.assertEqual(result_shape, (shape[0], shape[2]))
-        self.assertLessEqual(oracle.I21_MIN, partial_min)
+        self.assertLessEqual(verify.I21_MIN, partial_min)
         self.assertLessEqual(partial_min, partial_max)
-        self.assertLessEqual(partial_max, oracle.I21_MAX)
+        self.assertLessEqual(partial_max, verify.I21_MAX)
 
     def test_real_f0_fixture_int32_direct_equals_tiled_reconstruction(self):
-        weight = oracle.load_onnx_weight(F0_FIXTURE, 512, 1024)
+        weight = verify.load_onnx_weight(F0_FIXTURE, 512, 1024)
         self.assertEqual(weight.shape, (512, 1024))
         self.assertEqual(weight.dtype.name, "int8")
-        result_shape, partial_min, partial_max = oracle.verify_numeric(
+        result_shape, partial_min, partial_max = verify.verify_numeric(
             32, 512, 1024, seed=2205, weight=weight
         )
         self.assertEqual(result_shape, (32, 1024))
-        self.assertLessEqual(oracle.I21_MIN, partial_min)
+        self.assertLessEqual(verify.I21_MIN, partial_min)
         self.assertLessEqual(partial_min, partial_max)
-        self.assertLessEqual(partial_max, oracle.I21_MAX)
+        self.assertLessEqual(partial_max, verify.I21_MAX)
 
     def test_fault_injection_is_rejected(self):
         faults = ("work", "tile", "group", "duplicate", "missing", "trunci")
@@ -129,8 +129,10 @@ class ScheduleOracleTest(unittest.TestCase):
                     "missing": "VMM count",
                     "trunci": "arith.trunci count",
                 }.get(fault, "first divergent work 1")
-                with self.assertRaisesRegex(oracle.OracleError, expected_error):
-                    oracle.validate_dump(dump, 2, 65, 17)
+                with self.assertRaisesRegex(
+                    verify.VerificationError, expected_error
+                ):
+                    verify.validate_dump(dump, 2, 65, 17)
 
 
 if __name__ == "__main__":

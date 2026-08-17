@@ -1,0 +1,4 @@
+// RUN: %python %S/test_static_weights.py | FileCheck %s
+
+// CHECK: Ran 3 tests
+// CHECK: OK

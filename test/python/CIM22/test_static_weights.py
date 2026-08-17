@@ -2,10 +2,10 @@ import sys
 import unittest
 
 import numpy as np
-import static_weight_section_oracle as oracle
+import verify_static_weights as verify
 
 
-class StaticWeightSectionOracleTest(unittest.TestCase):
+class StaticWeightVerificationTest(unittest.TestCase):
     def test_zero_and_all_one(self):
         tiles = np.stack(
             (
@@ -13,7 +13,7 @@ class StaticWeightSectionOracleTest(unittest.TestCase):
                 np.full((16, 64), 0xFF, dtype=np.uint8),
             )
         )
-        words = oracle.map_tiles(tiles).view(np.uint32)
+        words = verify.map_tiles(tiles).view(np.uint32)
         self.assertTrue(np.all(words[0] == 0))
         self.assertTrue(np.all(words[1] == 0xFFFFFFFF))
 
@@ -24,7 +24,7 @@ class StaticWeightSectionOracleTest(unittest.TestCase):
                     with self.subTest(lane=lane, k=k_value, bit=byte_bit):
                         tile = np.zeros((1, 16, 64), dtype=np.uint8)
                         tile[0, lane, k_value] = 1 << byte_bit
-                        words = oracle.map_tiles(tile).view(np.uint32)[0]
+                        words = verify.map_tiles(tile).view(np.uint32)[0]
                         upper = k_value >= 32
                         q_value = (63 if upper else 31) - k_value
                         word_bit = 2 * lane + (0 if upper else 1)
@@ -39,10 +39,10 @@ class StaticWeightSectionOracleTest(unittest.TestCase):
         tile = (0x5A + 67 * lane + 29 * k_value + 7 * (lane ^ k_value)).astype(
             np.uint8
         )
-        first = oracle.map_tiles(tile[None, ...])
-        second = oracle.map_tiles(tile[None, ...])
+        first = verify.map_tiles(tile[None, ...])
+        second = verify.map_tiles(tile[None, ...])
         np.testing.assert_array_equal(first, second)
-        np.testing.assert_array_equal(oracle.invert_words(first)[0], tile)
+        np.testing.assert_array_equal(verify.invert_words(first)[0], tile)
 
 
 if __name__ == "__main__":

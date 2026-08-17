@@ -1,8 +1,8 @@
 // RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan)' > %t
-// RUN: %python %S/../../python/CIM22/execution_plan_oracle.py %t | FileCheck %s --check-prefix=ORACLE
+// RUN: %python %S/../../python/CIM22/verify_execution_plan.py %t | FileCheck %s --check-prefix=VERIFY
 // RUN: FileCheck %s --check-prefix=HOST < %t
 
-// ORACLE: PASS software-only profile=cim22-4x5-v1 schema=1 groups=1 works=1 configs=2
+// VERIFY: PASS software-only profile=cim22-4x5-v1 schema=1 groups=1 works=1 configs=2
 
 // HOST: cim.configure_input {{.*}}macro_slot = 0 : i64{{.*}}work_id = 0 : i64
 // HOST-NEXT: cim.configure_weight {{.*}}macro_slot = 0 : i64{{.*}}work_id = 0 : i64

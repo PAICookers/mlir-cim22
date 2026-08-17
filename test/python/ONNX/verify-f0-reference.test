@@ -1,0 +1,3 @@
+// RUN: %python %S/verify_f0_reference.py %S/../../Inputs/ONNX/int8_linear_model.onnx | FileCheck %s
+
+// CHECK: PASS: shape=(32, 1024) dtype=int32 partial=[-656251,655469] full=[-4483020,4484565]

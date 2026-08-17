@@ -14,27 +14,27 @@ I21_MIN = -(1 << 20)
 I21_MAX = (1 << 20) - 1
 
 
-class ReferenceError(ValueError):
+class ReferenceModelError(ValueError):
     """Raised when data is outside the evidenced CIM22 INT8 contract."""
 
 
 def _encode_signed(value: int, bits: int) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
-        raise ReferenceError(f"expected signed i{bits} integer")
+        raise ReferenceModelError(f"expected signed i{bits} integer")
     value = int(value)
     minimum = -(1 << (bits - 1))
     maximum = (1 << (bits - 1)) - 1
     if not minimum <= value <= maximum:
-        raise ReferenceError(f"{value} is outside signed i{bits}")
+        raise ReferenceModelError(f"{value} is outside signed i{bits}")
     return value & ((1 << bits) - 1)
 
 
 def _decode_signed(value: int, bits: int) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
-        raise ReferenceError(f"expected unsigned i{bits} bit pattern")
+        raise ReferenceModelError(f"expected unsigned i{bits} bit pattern")
     value = int(value)
     if not 0 <= value < (1 << bits):
-        raise ReferenceError(f"{value} is outside unsigned i{bits}")
+        raise ReferenceModelError(f"{value} is outside unsigned i{bits}")
     sign = 1 << (bits - 1)
     return value - (1 << bits) if value & sign else value
 
@@ -65,7 +65,7 @@ def _require_i8_array(
     ):
         dtype = getattr(value, "dtype", type(value).__name__)
         actual_shape = getattr(value, "shape", None)
-        raise ReferenceError(
+        raise ReferenceModelError(
             f"{name}: expected np.int8{shape}, actual {dtype}{actual_shape}"
         )
 
@@ -95,7 +95,7 @@ def decode_int8_weight_words(words: np.ndarray) -> np.ndarray:
     ):
         dtype = getattr(words, "dtype", type(words).__name__)
         shape = getattr(words, "shape", None)
-        raise ReferenceError(
+        raise ReferenceModelError(
             f"words: expected np.uint32({WEIGHT_WORDS},), actual {dtype}{shape}"
         )
     weight = np.zeros((LANES, TILE_K), dtype=np.uint8)
@@ -116,24 +116,26 @@ def decode_int8_weight_words(words: np.ndarray) -> np.ndarray:
 def decode_int8_cache_lines(lines: Sequence[tuple[int, str]]) -> np.ndarray:
     """Decode eight address-tagged 1024-bit Cache lines to ``input[8,64]``."""
     if len(lines) != CACHE_ROWS:
-        raise ReferenceError(
+        raise ReferenceModelError(
             f"cache: expected {CACHE_ROWS} lines, actual {len(lines)}"
         )
     ordered: list[str | None] = [None] * CACHE_ROWS
     for address, bits in lines:
         if isinstance(address, bool) or not isinstance(address, int):
-            raise ReferenceError("cache address must be an integer")
+            raise ReferenceModelError("cache address must be an integer")
         if not 0 <= address < CACHE_ROWS:
-            raise ReferenceError(f"cache address {address} is outside 0..7")
+            raise ReferenceModelError(
+                f"cache address {address} is outside 0..7"
+            )
         if ordered[address] is not None:
-            raise ReferenceError(f"duplicate cache address {address}")
+            raise ReferenceModelError(f"duplicate cache address {address}")
         if len(bits) != CACHE_LINE_BITS or set(bits) - {"0", "1"}:
-            raise ReferenceError(
+            raise ReferenceModelError(
                 f"cache address {address}: expected {CACHE_LINE_BITS} binary bits"
             )
         ordered[address] = bits
     if any(bits is None for bits in ordered):
-        raise ReferenceError("cache addresses must cover 0..7")
+        raise ReferenceModelError("cache addresses must cover 0..7")
 
     values = np.zeros((CACHE_ROWS, TILE_K), dtype=np.int8)
     for row, bits in enumerate(ordered):
@@ -141,7 +143,7 @@ def decode_int8_cache_lines(lines: Sequence[tuple[int, str]]) -> np.ndarray:
         for k in range(TILE_K):
             slot = bits[16 * k : 16 * (k + 1)]
             if slot[:8] != "00000000":
-                raise ReferenceError(
+                raise ReferenceModelError(
                     f"cache address {row} slot {k}: high byte is nonzero"
                 )
             values[row, k] = decode_signed_i8(int(slot[8:], 2))
@@ -156,7 +158,7 @@ def simulate_int8_tile(input_: np.ndarray, weight: np.ndarray) -> np.ndarray:
     if np.any(result < I21_MIN) or np.any(result > I21_MAX):
         minimum = int(result.min())
         maximum = int(result.max())
-        raise ReferenceError(
+        raise ReferenceModelError(
             f"tile result outside signed i21: [{minimum},{maximum}]"
         )
     return result
@@ -165,7 +167,7 @@ def simulate_int8_tile(input_: np.ndarray, weight: np.ndarray) -> np.ndarray:
 def encode_int8_output_response(result: Sequence[int]) -> tuple[int, ...]:
     """Encode lanes 0..15 into six uint64 flits sent most-significant first."""
     if len(result) != LANES:
-        raise ReferenceError(
+        raise ReferenceModelError(
             f"output: expected {LANES} lanes, actual {len(result)}"
         )
     payload = 0
@@ -181,19 +183,19 @@ def encode_int8_output_response(result: Sequence[int]) -> tuple[int, ...]:
 def decode_int8_output_response(flits: Sequence[int]) -> np.ndarray:
     """Decode six most-significant-first uint64 flits to canonical lanes 0..15."""
     if len(flits) != OUTPUT_FLITS:
-        raise ReferenceError(
+        raise ReferenceModelError(
             f"response: expected {OUTPUT_FLITS} flits, actual {len(flits)}"
         )
     response = 0
     for index, flit in enumerate(flits):
         if isinstance(flit, bool) or not isinstance(flit, (int, np.integer)):
-            raise ReferenceError(f"flit {index}: expected uint64 integer")
+            raise ReferenceModelError(f"flit {index}: expected uint64 integer")
         flit = int(flit)
         if not 0 <= flit < (1 << 64):
-            raise ReferenceError(f"flit {index}: outside uint64")
+            raise ReferenceModelError(f"flit {index}: outside uint64")
         response = (response << 64) | flit
     if response & ((1 << 48) - 1):
-        raise ReferenceError("response has nonzero low 48-bit padding")
+        raise ReferenceModelError("response has nonzero low 48-bit padding")
     payload = response >> 48
     return np.asarray(
         [

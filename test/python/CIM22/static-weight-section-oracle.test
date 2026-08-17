@@ -1,4 +1,0 @@
-// RUN: %python %S/test_static_weight_section_oracle.py | FileCheck %s
-
-// CHECK: Ran 3 tests
-// CHECK: OK

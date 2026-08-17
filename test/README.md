@@ -8,6 +8,13 @@
 - `Inputs` contains immutable fixtures and manifests excluded from lit discovery.
 - `Unit` contains C++ API/helper tests invoked through lit wrappers.
 
+Test-only names describe their role:
+
+- `reference` implements evidenced numeric or layout behavior.
+- `verify` checks compiler IR or artifacts, optionally using a reference model.
+- `replay` runs immutable supplier fixtures through a reference model.
+- `runner` is reserved for a future executable-artifact consumer.
+
 Do not encode temporary milestone names in directory paths. Record milestone,
 source provenance, and evidence level in task records, test comments, or fixture
 manifests instead.

@@ -28,7 +28,7 @@ class SignedIntegerTest(unittest.TestCase):
                 value,
             )
         for value in (-129, 128):
-            with self.assertRaises(reference.ReferenceError):
+            with self.assertRaises(reference.ReferenceModelError):
                 reference.encode_signed_i8(value)
 
     def test_i21_boundaries(self):
@@ -38,7 +38,7 @@ class SignedIntegerTest(unittest.TestCase):
                 value,
             )
         for value in (reference.I21_MIN - 1, reference.I21_MAX + 1):
-            with self.assertRaises(reference.ReferenceError):
+            with self.assertRaises(reference.ReferenceModelError):
                 reference.encode_signed_i21(value)
 
 
@@ -65,11 +65,11 @@ class WeightLayoutTest(unittest.TestCase):
             )
 
     def test_input_contract_is_strict(self):
-        with self.assertRaises(reference.ReferenceError):
+        with self.assertRaises(reference.ReferenceModelError):
             reference.encode_int8_weight_words(
                 np.zeros((16, 64), dtype=np.int16)
             )
-        with self.assertRaises(reference.ReferenceError):
+        with self.assertRaises(reference.ReferenceModelError):
             reference.decode_int8_weight_words(np.zeros(256, dtype=np.int32))
 
 
@@ -99,7 +99,7 @@ class CacheLayoutTest(unittest.TestCase):
         ):
             with (
                 self.subTest(broken=broken[0][0] if broken else None),
-                self.assertRaises(reference.ReferenceError),
+                self.assertRaises(reference.ReferenceModelError),
             ):
                 reference.decode_int8_cache_lines(broken)
 
@@ -126,12 +126,12 @@ class TileSimulationTest(unittest.TestCase):
         )
 
     def test_rejects_i21_overflow_and_dynamic_shape(self):
-        with self.assertRaises(reference.ReferenceError):
+        with self.assertRaises(reference.ReferenceModelError):
             reference.simulate_int8_tile(
                 np.full(64, -128, dtype=np.int8),
                 np.full((16, 64), -128, dtype=np.int8),
             )
-        with self.assertRaises(reference.ReferenceError):
+        with self.assertRaises(reference.ReferenceModelError):
             reference.simulate_int8_tile(
                 np.zeros(63, dtype=np.int8), np.zeros((16, 64), dtype=np.int8)
             )
@@ -178,13 +178,13 @@ class OutputResponseTest(unittest.TestCase):
     def test_rejects_padding_lane_overflow_and_bad_flits(self):
         flits = list(reference.encode_int8_output_response([0] * 16))
         flits[-1] |= 1
-        with self.assertRaises(reference.ReferenceError):
+        with self.assertRaises(reference.ReferenceModelError):
             reference.decode_int8_output_response(flits)
-        with self.assertRaises(reference.ReferenceError):
+        with self.assertRaises(reference.ReferenceModelError):
             reference.encode_int8_output_response(
                 [reference.I21_MAX + 1] + [0] * 15
             )
-        with self.assertRaises(reference.ReferenceError):
+        with self.assertRaises(reference.ReferenceModelError):
             reference.decode_int8_output_response([0] * 5)
 
 

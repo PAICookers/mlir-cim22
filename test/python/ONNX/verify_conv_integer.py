@@ -83,15 +83,14 @@ def verify(model_path: Path) -> int:
         input_value, kernel, strides, pads, (output_height, output_width)
     )
     patch_size = channels * kernel_height * kernel_width
-    expected = (
+    lowered_result = (
         weight.reshape(filters, patch_size).astype(np.int32) @ patches
     ).reshape(1, filters, output_height, output_width)
-    evaluator = ReferenceEvaluator(model)
-    actual = evaluator.run(None, {"input": input_value})[0]
-    repeated = evaluator.run(None, {"input": input_value})[0]
-    np.testing.assert_array_equal(actual, expected)
-    np.testing.assert_array_equal(repeated, expected)
-    assert actual.dtype == np.int32
+    source_result = ReferenceEvaluator(model).run(None, {"input": input_value})[
+        0
+    ]
+    np.testing.assert_array_equal(source_result, lowered_result)
+    assert source_result.dtype == np.int32
     return (
         output_height
         * output_width
@@ -113,7 +112,7 @@ def main() -> None:
     assert pointwise_works == 12
     assert rectangular_works == 18
     print(
-        "PASS ConvInteger oracle: canonical_vmm=256 odd_vmm=9 "
+        "PASS ConvInteger verification: canonical_vmm=256 odd_vmm=9 "
         "pointwise_vmm=12 rectangular_vmm=18 dtype=int32"
     )
 

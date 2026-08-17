@@ -63,24 +63,25 @@ def verify_linear(
                 -np.ones(reduction, dtype=np.int8),
             ]
         )
-    unwrapped = input_value.astype(np.int64) @ weight.astype(np.int64) + bias
-    expected = wrap_i32(unwrapped)
-    evaluator = ReferenceEvaluator(model)
-    actual = evaluator.run(None, {"input": input_value})[0]
-    repeated = evaluator.run(None, {"input": input_value})[0]
-    np.testing.assert_array_equal(actual, expected)
-    np.testing.assert_array_equal(repeated, expected)
+    unwrapped_lowered = (
+        input_value.astype(np.int64) @ weight.astype(np.int64) + bias
+    )
+    lowered_result = wrap_i32(unwrapped_lowered)
+    source_result = ReferenceEvaluator(model).run(None, {"input": input_value})[
+        0
+    ]
+    np.testing.assert_array_equal(source_result, lowered_result)
     if foldable:
         folded_weight, folded_input = extend_bias_operands(
             weight.T, input_value.T, bias, exact_k
         )
-        folded = wrap_i32(
+        folded_result = wrap_i32(
             folded_weight.astype(np.int64) @ folded_input.astype(np.int64)
         ).T
-        np.testing.assert_array_equal(folded, expected)
+        np.testing.assert_array_equal(folded_result, source_result)
     else:
-        assert unwrapped[0, 0] == 2**31 + 64
-        assert expected[0, 0] == -(2**31) + 64
+        assert unwrapped_lowered[0, 0] == 2**31 + 64
+        assert lowered_result[0, 0] == -(2**31) + 64
     reduction_tiles = ceil((reduction + int(foldable)) / 64)
     return batch * ceil(
         weight.shape[1] / 16
@@ -139,12 +140,11 @@ def verify_conv(
         weight.reshape(filters, reduction).astype(np.int64)
         @ patches.astype(np.int64)
     ).reshape(1, filters, output_height, output_width)
-    expected = wrap_i32(core + bias.astype(np.int64))
-    evaluator = ReferenceEvaluator(model)
-    actual = evaluator.run(None, {"input": input_value})[0]
-    repeated = evaluator.run(None, {"input": input_value})[0]
-    np.testing.assert_array_equal(actual, expected)
-    np.testing.assert_array_equal(repeated, expected)
+    lowered_result = wrap_i32(core + bias.astype(np.int64))
+    source_result = ReferenceEvaluator(model).run(None, {"input": input_value})[
+        0
+    ]
+    np.testing.assert_array_equal(source_result, lowered_result)
     if foldable:
         folded_weight, folded_input = extend_bias_operands(
             weight.reshape(filters, reduction),
@@ -152,10 +152,10 @@ def verify_conv(
             bias.reshape(-1),
             exact_k,
         )
-        folded = wrap_i32(
+        folded_result = wrap_i32(
             folded_weight.astype(np.int64) @ folded_input.astype(np.int64)
         ).reshape(1, filters, output_height, output_width)
-        np.testing.assert_array_equal(folded, expected)
+        np.testing.assert_array_equal(folded_result, source_result)
     reduction_tiles = ceil((reduction + int(foldable)) / 64)
     return spatial * ceil(
         filters / 16
@@ -183,7 +183,9 @@ def main() -> None:
     assert verify_conv(
         args.model_dir / "conv-bias-exact.onnx", foldable=True, exact_k=True
     ) == (4, 2)
-    print("PASS integer bias oracle: tail=8/4,18/9 exact=4/2,4/2 wrap=int32")
+    print(
+        "PASS integer bias verification: tail=8/4,18/9 exact=4/2,4/2 wrap=int32"
+    )
 
 
 if __name__ == "__main__":

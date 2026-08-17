@@ -1,5 +1,5 @@
 // RUN: mlir-cim22-opt %s -form-cim-program -materialize-cim-schedule > %t
-// RUN: %python %S/../../python/CIM22/schedule_oracle.py %t --m 2 --k 65 --n 17 | FileCheck %s
+// RUN: %python %S/../../python/CIM22/verify_schedule.py %t --m 2 --k 65 --n 17 | FileCheck %s
 
 // CHECK: PASS software-only M=2 K=65 N=17 work=8 groups=4 dtype=int32 shape=(2, 17) seed=2205
 // CHECK: boundaries first=0:(0,0,0)/g0 group19=[NA] next=NA last=[6:(1,1,0)/g3,7:(1,1,1)/g3]

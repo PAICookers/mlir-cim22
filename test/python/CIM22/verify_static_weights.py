@@ -1,4 +1,4 @@
-"""Independent software-only oracle for the M2.4b static-weight section."""
+"""Verify the M2.4b static-weight section and encoded INT8 words."""
 
 import argparse
 import re
@@ -31,7 +31,7 @@ WORK_FIELDS = (
 )
 
 
-class OracleError(ValueError):
+class VerificationError(ValueError):
     pass
 
 
@@ -48,7 +48,9 @@ class Record(NamedTuple):
 def _balanced(text: str, start: int, line_number: int) -> str:
     opening = text.find("{", start)
     if opening < 0:
-        raise OracleError(f"line {line_number}: missing attribute dictionary")
+        raise VerificationError(
+            f"line {line_number}: missing attribute dictionary"
+        )
     depth = 0
     for index in range(opening, len(text)):
         if text[index] == "{":
@@ -57,7 +59,9 @@ def _balanced(text: str, start: int, line_number: int) -> str:
             depth -= 1
             if depth == 0:
                 return text[opening + 1 : index]
-    raise OracleError(f"line {line_number}: unterminated attribute dictionary")
+    raise VerificationError(
+        f"line {line_number}: unterminated attribute dictionary"
+    )
 
 
 def _integer(body: str, name: str, bits: int, line_number: int) -> int:
@@ -65,7 +69,7 @@ def _integer(body: str, name: str, bits: int, line_number: int) -> int:
         rf"\b{re.escape(name)}\s*=\s*(-?\d+)\s*:\s*i{bits}\b", body
     )
     if not match:
-        raise OracleError(f"line {line_number}: missing {name} : i{bits}")
+        raise VerificationError(f"line {line_number}: missing {name} : i{bits}")
     return int(match.group(1))
 
 
@@ -76,15 +80,19 @@ def _array(
         rf"\b{re.escape(name)}\s*=\s*array<i{bits}:\s*([^>]*)>", body
     )
     if not match:
-        raise OracleError(f"line {line_number}: missing {name}")
+        raise VerificationError(f"line {line_number}: missing {name}")
     try:
         values = tuple(
             int(value.strip()) for value in match.group(1).split(",")
         )
     except ValueError as error:
-        raise OracleError(f"line {line_number}: invalid {name}") from error
+        raise VerificationError(
+            f"line {line_number}: invalid {name}"
+        ) from error
     if len(values) != size:
-        raise OracleError(f"line {line_number}: {name} expects {size} values")
+        raise VerificationError(
+            f"line {line_number}: {name} expects {size} values"
+        )
     return values
 
 
@@ -93,7 +101,7 @@ def _mapping(
 ) -> tuple[tuple[int, ...], ...]:
     match = re.search(rf"\b{re.escape(name)}\s*=", body)
     if not match:
-        raise OracleError(f"line {line_number}: missing {name}")
+        raise VerificationError(f"line {line_number}: missing {name}")
     nested = _balanced(body, match.start(), line_number)
     return tuple(
         _array(nested, field, 64, size, line_number)
@@ -112,7 +120,7 @@ def _reference(body: str, name: str, line_number: int) -> str:
         rf"\b{re.escape(name)}\s*=\s*@([A-Za-z_][A-Za-z0-9_.$-]*)", body
     )
     if not match:
-        raise OracleError(f"line {line_number}: missing {name} symbol")
+        raise VerificationError(f"line {line_number}: missing {name} symbol")
     return match.group(1)
 
 
@@ -135,7 +143,9 @@ def _top_level_names(body: str) -> set[str]:
     for part in parts:
         match = re.match(r"\s*([A-Za-z_][A-Za-z0-9_.]*)\s*=", part)
         if not match:
-            raise OracleError(f"malformed provenance field: {part.strip()}")
+            raise VerificationError(
+                f"malformed provenance field: {part.strip()}"
+            )
         names.add(match.group(1))
     return names
 
@@ -186,7 +196,9 @@ def _parse_dense(line: str, line_number: int) -> tuple[str, np.ndarray] | None:
     if values.size == 1:
         values = np.full(1024, values[0], dtype=np.int16)
     if values.size != 1024 or np.any(values < -128) or np.any(values > 255):
-        raise OracleError(f"line {line_number}: invalid static weight payload")
+        raise VerificationError(
+            f"line {line_number}: invalid static weight payload"
+        )
     return match.group(1), values.astype(np.uint8).reshape(16, 64)
 
 
@@ -213,11 +225,11 @@ def _parse_command(line: str, line_number: int) -> Record | None:
     body = _balanced(line, match.start(), line_number)
     marker = re.search(r"\bcim\.provenance\s*=", body)
     if not marker:
-        raise OracleError(f"line {line_number}: missing cim.provenance")
+        raise VerificationError(f"line {line_number}: missing cim.provenance")
     provenance = _balanced(body, marker.start(), line_number)
     names = _top_level_names(provenance)
     if names != PROVENANCE_FIELDS:
-        raise OracleError(
+        raise VerificationError(
             f"line {line_number}: provenance fields mismatch: {sorted(names)}"
         )
     function = _reference(provenance, "function", line_number)
@@ -230,14 +242,14 @@ def _parse_command(line: str, line_number: int) -> Record | None:
     macro = _integer(body, "macro", 32, line_number)
     words_match = re.search(r"\bwords\s*=\s*array<i32:\s*([^>]*)>", body)
     if not words_match:
-        raise OracleError(f"line {line_number}: missing words")
+        raise VerificationError(f"line {line_number}: missing words")
     words = np.fromstring(words_match.group(1), sep=",", dtype=np.int64)
     if (
         words.size != 256
         or np.any(words < -(1 << 31))
         or np.any(words >= (1 << 31))
     ):
-        raise OracleError(
+        raise VerificationError(
             f"line {line_number}: words expects 256 signed i32 values"
         )
     return Record(
@@ -258,7 +270,7 @@ def validate_lines(
         if re.search(
             r"\b(?:uint64|flit|flatbuffer|runtime)\b", line, re.IGNORECASE
         ):
-            raise OracleError(
+            raise VerificationError(
                 "typed M2.4b dump contains a forbidden raw/runtime marker"
             )
         function_match = re.search(
@@ -269,7 +281,7 @@ def validate_lines(
         dense = _parse_dense(line, line_number)
         if dense:
             if dense[0] in weights:
-                raise OracleError(
+                raise VerificationError(
                     f"line {line_number}: duplicate resource {dense[0]}"
                 )
             weights[dense[0]] = dense[1]
@@ -281,20 +293,20 @@ def validate_lines(
             commands.append(command)
 
     if expected_commands is not None and len(commands) != expected_commands:
-        raise OracleError(
+        raise VerificationError(
             f"expected {expected_commands} commands, found {len(commands)}"
         )
     if len(commands) != len(configurations):
-        raise OracleError("command/configure_weight count mismatch")
+        raise VerificationError("command/configure_weight count mismatch")
     for index, (command, configure) in enumerate(
         zip(commands, configurations, strict=True)
     ):
         if command[:-1] != configure[:-1]:
-            raise OracleError(
+            raise VerificationError(
                 f"command {index}: provenance/route/Macro mismatch"
             )
         if command.resource not in weights:
-            raise OracleError(
+            raise VerificationError(
                 f"command {index}: unknown resource {command.resource}"
             )
 
@@ -306,7 +318,7 @@ def validate_lines(
         actual = np.stack([command.words for command in chunk])
         if not np.array_equal(actual, expected):
             mismatch = np.argwhere(actual != expected)[0]
-            raise OracleError(
+            raise VerificationError(
                 f"command {start + int(mismatch[0])}: word {int(mismatch[1])} mismatch"
             )
     return len(commands), len(weights)

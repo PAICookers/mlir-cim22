@@ -1,4 +1,4 @@
-"""Independent software-only oracle for canonical M5 schedule MLIR dumps."""
+"""Verify canonical M5 schedule MLIR dumps and tiled INT8 execution."""
 
 import argparse
 import re
@@ -19,7 +19,7 @@ I21_MIN = -(1 << 20)
 I21_MAX = (1 << 20) - 1
 
 
-class OracleError(ValueError):
+class VerificationError(ValueError):
     pass
 
 
@@ -37,7 +37,7 @@ def ceil_div(value: int, divisor: int) -> int:
 
 def expected_schedule(m: int, k: int, n: int) -> list[Work]:
     if min(m, k, n) <= 0:
-        raise OracleError("M, K, and N must be positive")
+        raise VerificationError("M, K, and N must be positive")
     work = []
     for m_tile in range(m):
         for n_tile in range(ceil_div(n, 16)):
@@ -69,12 +69,12 @@ def parse_schedule(text: str) -> list[Work]:
         for attr in ATTRS:
             match = re.search(rf"\b{attr}\s*=\s*(-?\d+)\s*:\s*i64\b", line)
             if not match:
-                raise OracleError(
+                raise VerificationError(
                     f"line {line_number}: missing canonical i64 attribute {attr}"
                 )
             values.append(int(match.group(1)))
         if not re.search(r"->\s*tensor<16xi21>(?![A-Za-z0-9_])", line):
-            raise OracleError(
+            raise VerificationError(
                 f"line {line_number}: cim.vmm partial is not tensor<16xi21>"
             )
         work.append(Work(*values))
@@ -85,7 +85,7 @@ def validate_dump(text: str, m: int, k: int, n: int) -> list[Work]:
     expected = expected_schedule(m, k, n)
     actual = parse_schedule(text)
     if len(actual) != len(expected):
-        raise OracleError(
+        raise VerificationError(
             f"VMM count: expected {len(expected)}, actual {len(actual)}"
         )
 
@@ -93,26 +93,30 @@ def validate_dump(text: str, m: int, k: int, n: int) -> list[Work]:
         zip(expected, actual, strict=True)
     ):
         if actual_item != expected_item:
-            raise OracleError(
+            raise VerificationError(
                 f"first divergent work {index}: expected {expected_item}, actual {actual_item}"
             )
 
     ids = [item.work_id for item in actual]
     if ids != list(range(len(expected))):
-        raise OracleError(
+        raise VerificationError(
             f"work_id values are not dense and ordered: {ids[:8]}"
         )
     tiles = [(item.m_tile, item.n_tile, item.k_tile) for item in actual]
     if len(set(tiles)) != len(tiles):
-        raise OracleError("duplicate logical tile identity")
+        raise VerificationError("duplicate logical tile identity")
 
     groups: dict[int, list[Work]] = {}
     for item in actual:
         groups.setdefault(item.group_id, []).append(item)
     if list(groups) != list(range(ceil_div(len(actual), 2))):
-        raise OracleError("group_id values are not dense and strictly ordered")
+        raise VerificationError(
+            "group_id values are not dense and strictly ordered"
+        )
     if max(map(len, groups.values()), default=0) > 2:
-        raise OracleError("schedule group contains more than two work items")
+        raise VerificationError(
+            "schedule group contains more than two work items"
+        )
     counts = _operation_counts(text)
     k_tiles = ceil_div(k, 64)
     expected_counts = {
@@ -123,7 +127,7 @@ def validate_dump(text: str, m: int, k: int, n: int) -> list[Work]:
     }
     for operation, expected_count in expected_counts.items():
         if counts[operation] != expected_count:
-            raise OracleError(
+            raise VerificationError(
                 f"{operation} count: expected {expected_count}, actual {counts[operation]}"
             )
     return actual
@@ -139,15 +143,19 @@ def load_onnx_weight(model_path: Path, k: int, n: int) -> np.ndarray:
         len(model.graph.node) != 1
         or model.graph.node[0].op_type != "MatMulInteger"
     ):
-        raise OracleError("ONNX fixture must contain one MatMulInteger node")
+        raise VerificationError(
+            "ONNX fixture must contain one MatMulInteger node"
+        )
     node = model.graph.node[0]
     if len(node.input) != 2:
-        raise OracleError("ONNX fixture must omit MatMulInteger zero points")
+        raise VerificationError(
+            "ONNX fixture must omit MatMulInteger zero points"
+        )
     initializers = {
         initializer.name: initializer for initializer in model.graph.initializer
     }
     if node.input[1] not in initializers:
-        raise OracleError(
+        raise VerificationError(
             "ONNX MatMulInteger B must be an embedded initializer"
         )
     initializer = initializers[node.input[1]]
@@ -155,10 +163,12 @@ def load_onnx_weight(model_path: Path, k: int, n: int) -> np.ndarray:
         initializer.data_location == onnx.TensorProto.EXTERNAL
         or initializer.external_data
     ):
-        raise OracleError("ONNX MatMulInteger B must not use external data")
+        raise VerificationError(
+            "ONNX MatMulInteger B must not use external data"
+        )
     weight = numpy_helper.to_array(initializer)
     if weight.dtype != np.int8 or weight.shape != (k, n):
-        raise OracleError(
+        raise VerificationError(
             f"ONNX weight: expected int8[{k},{n}], actual {weight.dtype}{weight.shape}"
         )
     return weight
@@ -172,11 +182,11 @@ def verify_numeric(
     if weight is None:
         weight = rng.integers(-128, 128, size=(k, n), dtype=np.int8)
     elif weight.dtype != np.int8 or weight.shape != (k, n):
-        raise OracleError(
+        raise VerificationError(
             f"weight: expected int8[{k},{n}], actual {weight.dtype}{weight.shape}"
         )
-    expected = activation.astype(np.int32) @ weight.astype(np.int32)
-    actual = np.zeros((m, n), dtype=np.int32)
+    full_result = activation.astype(np.int32) @ weight.astype(np.int32)
+    tiled_result = np.zeros((m, n), dtype=np.int32)
     partial_min = I21_MAX
     partial_max = I21_MIN
     for item in expected_schedule(m, k, n):
@@ -197,19 +207,19 @@ def verify_numeric(
         ]
         partial_min = min(partial_min, int(partial.min()))
         partial_max = max(partial_max, int(partial.max()))
-        actual[item.m_tile, n_begin : n_begin + len(partial)] += partial.astype(
-            np.int32
+        tiled_result[item.m_tile, n_begin : n_begin + len(partial)] += (
+            partial.astype(np.int32)
         )
     if not I21_MIN <= partial_min <= partial_max <= I21_MAX:
-        raise OracleError(
+        raise VerificationError(
             f"random partial outside i21: [{partial_min},{partial_max}]"
         )
-    np.testing.assert_array_equal(actual, expected)
-    if actual.dtype != np.int32 or actual.shape != (m, n):
-        raise OracleError(
-            f"numeric result has dtype={actual.dtype}, shape={actual.shape}"
+    np.testing.assert_array_equal(tiled_result, full_result)
+    if tiled_result.dtype != np.int32 or tiled_result.shape != (m, n):
+        raise VerificationError(
+            f"numeric result has dtype={tiled_result.dtype}, shape={tiled_result.shape}"
         )
-    return actual.shape, partial_min, partial_max
+    return tiled_result.shape, partial_min, partial_max
 
 
 def _format(item: Work) -> str:
@@ -218,7 +228,7 @@ def _format(item: Work) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Validate a canonical scheduled MLIR dump and an independent INT32 oracle"
+        description="Verify a canonical schedule against tiled INT8 execution"
     )
     parser.add_argument("mlir", type=Path)
     parser.add_argument("--m", type=int, required=True)

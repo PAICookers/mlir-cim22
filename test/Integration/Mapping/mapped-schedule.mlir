@@ -1,5 +1,5 @@
 // RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t
-// RUN: %python %S/../../python/CIM22/schedule_oracle.py %t --m 1 --k 128 --n 320 | FileCheck %s --check-prefix=M5
+// RUN: %python %S/../../python/CIM22/verify_schedule.py %t --m 1 --k 128 --n 320 | FileCheck %s --check-prefix=M5
 // RUN: FileCheck %s --check-prefix=MAP < %t
 
 // M5: PASS software-only M=1 K=128 N=320 work=40 groups=20 dtype=int32 shape=(1, 320) seed=2205 weight=random
