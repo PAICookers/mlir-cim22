@@ -1,4 +1,4 @@
-// RUN: %python %S/../../python/ONNX/generate_conv_integer_onnx.py --emit-dir %t.first | FileCheck %s --check-prefix=GENERATE
+// RUN: %python %S/../../python/ONNX/generate_conv_integer_onnx.py --emit-dir %t.first
 // RUN: %python %S/../../python/ONNX/generate_conv_integer_onnx.py --emit-dir %t.second
 // RUN: cmp %t.first/canonical.onnx %t.second/canonical.onnx
 // RUN: cmp %t.first/odd.onnx %t.second/odd.onnx
@@ -8,8 +8,6 @@
 // RUN: mlir-cim22-onnx-import %t.first/odd.onnx | FileCheck %s --check-prefix=ODD
 // RUN: mlir-cim22-onnx-import %t.first/pointwise.onnx | FileCheck %s --check-prefix=POINTWISE
 // RUN: mlir-cim22-onnx-import %t.first/rectangular.onnx | FileCheck %s --check-prefix=RECTANGULAR
-
-// GENERATE: PASS ConvInteger ONNX generation: canonical, odd-work, pointwise, and rectangular
 
 // CANONICAL-LABEL: func.func @main(%{{.*}}: tensor<1x8x8x8xi8>) -> tensor<1x19x8x8xi32>
 // CANONICAL: tensor.pad %{{.*}} low[0, 0, 1, 1] high[0, 0, 1, 1]

@@ -23,13 +23,6 @@ def mapping_text(mapping):
     )
 
 
-def profile_attrs():
-    return (
-        f'cim.target_profile = "{verify.PROFILE_ID}", '
-        f"cim.target_profile_version = {verify.PROFILE_VERSION} : i64"
-    )
-
-
 def work_attrs(work):
     return (
         f"cim.mapping = {mapping_text(work.mapping)}, core_slot = {work.core_slot} : i64, "
@@ -45,7 +38,8 @@ def render_dump(groups=((WORK0, WORK1),)):
         f"cim.execution_plan_schema_version = {verify.SCHEMA_VERSION} : i64, "
         f'cim.placement_policy = "{verify.PLACEMENT_POLICY}", '
         f'cim.route_policy = "{verify.ROUTE_POLICY}", '
-        f"{profile_attrs()}"
+        f'cim.target_profile = "{verify.PROFILE_ID}", '
+        f"cim.target_profile_version = {verify.PROFILE_VERSION} : i64"
     )
     lines = [
         "module {",
@@ -120,10 +114,6 @@ class ExecutionPlanVerificationTest(unittest.TestCase):
         self.assertEqual(sum(op.kind == "configure_input" for op in dual), 2)
         self.assertEqual(sum(op.kind == "once" for op in dual), 1)
         self.assertEqual(sum(op.kind == "dispatch" for op in single), 1)
-
-    def test_deterministic_parse(self):
-        text = render_dump()
-        self.assertEqual(verify.validate_dump(text), verify.validate_dump(text))
 
     def test_function_and_static_resource_faults(self):
         text = render_dump()

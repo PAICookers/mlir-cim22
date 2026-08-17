@@ -324,12 +324,6 @@ def validate_lines(
     return len(commands), len(weights)
 
 
-def validate_dump(
-    text: str, expected_commands: int | None = None
-) -> tuple[int, int]:
-    return validate_lines(text.splitlines(), expected_commands)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Validate an M2.4b typed section"

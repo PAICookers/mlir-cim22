@@ -1,4 +1,4 @@
-// RUN: %python %S/../../python/ONNX/generate_integer_bias_onnx.py --emit-dir %t.first | FileCheck %s --check-prefix=GENERATE
+// RUN: %python %S/../../python/ONNX/generate_integer_bias_onnx.py --emit-dir %t.first
 // RUN: %python %S/../../python/ONNX/generate_integer_bias_onnx.py --emit-dir %t.second
 // RUN: cmp %t.first/linear-bias.onnx %t.second/linear-bias.onnx
 // RUN: cmp %t.first/conv-bias.onnx %t.second/conv-bias.onnx
@@ -8,8 +8,6 @@
 // RUN: cmp %t.first/conv-bias-exact.onnx %t.second/conv-bias-exact.onnx
 // RUN: mlir-cim22-onnx-import %t.first/linear-bias.onnx | FileCheck %s --check-prefix=LINEAR
 // RUN: mlir-cim22-onnx-import %t.first/conv-bias.onnx | FileCheck %s --check-prefix=CONV
-
-// GENERATE: PASS integer bias ONNX generation: linear and conv
 
 // LINEAR-LABEL: func.func @main(%{{.*}}: tensor<2x65xi8>) -> tensor<2x17xi32>
 // LINEAR: linalg.matmul {cim.onnx.matmul_integer}

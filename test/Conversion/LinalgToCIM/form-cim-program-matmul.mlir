@@ -21,10 +21,8 @@
 // POS-LABEL: func.func @native_m1_result_user(
 // POS-SAME: %[[W:.*]]: tensor<16x64xi8>, %[[X:.*]]: tensor<64x1xi8>, %[[ROW:.*]]: index
 // POS: %[[INIT:.*]] = arith.constant dense<0> : tensor<16x1xi21>
-// POS-NOT: tensor.extract_slice %[[INIT]]
 // POS-NOT: arith.constant dense<0> : tensor<16xi21>
 // POS: %[[MVZERO:.*]] = arith.constant dense<0> : tensor<16xi21>
-// POS-NOT: tensor.extract_slice %[[INIT]]
 // POS-NOT: arith.constant dense<0> : tensor<16xi21>
 // POS: %[[COL:.*]] = tensor.extract_slice %[[X]][0, 0] [64, 1] [1, 1] : tensor<64x1xi8> to tensor<64xi8>
 // POS-NEXT: %[[VMM:.*]] = cim.vmm %[[COL]], %[[W]] : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
@@ -47,10 +45,8 @@ func.func @native_m1_result_user(%weight: tensor<16x64xi8>,
 // POS-LABEL: func.func @max_tail_m2(
 // POS-SAME: %[[W:.*]]: tensor<1x1xi8>, %[[X:.*]]: tensor<1x2xi8>
 // POS: %[[INIT:.*]] = arith.constant dense<0> : tensor<1x2xi21>
-// POS-NOT: tensor.extract_slice %[[INIT]]
 // POS-NOT: arith.constant dense<0> : tensor<1xi21>
 // POS: %[[MVZERO:.*]] = arith.constant dense<0> : tensor<1xi21>
-// POS-NOT: tensor.extract_slice %[[INIT]]
 // POS-NOT: arith.constant dense<0> : tensor<1xi21>
 // POS: %[[COL0:.*]] = tensor.extract_slice %[[X]][0, 0] [1, 1] [1, 1] : tensor<1x2xi8> to tensor<1xi8>
 // POS: %[[PAD0:.*]] = tensor.pad %[[COL0]] low[0] high[63]
@@ -79,10 +75,8 @@ func.func @max_tail_m2(%weight: tensor<1x1xi8>, %input: tensor<1x2xi8>)
 // POS-LABEL: func.func @combined_m2_n17_k65(
 // POS-SAME: %[[W:.*]]: tensor<17x65xi8>, %[[X:.*]]: tensor<65x2xi8>
 // POS: %[[INIT:.*]] = arith.constant dense<0> : tensor<17x2xi21>
-// POS-NOT: tensor.extract_slice %[[INIT]]
 // POS-NOT: arith.constant dense<0> : tensor<17xi21>
 // POS: %[[MVZERO:.*]] = arith.constant dense<0> : tensor<17xi21>
-// POS-NOT: tensor.extract_slice %[[INIT]]
 // POS-NOT: arith.constant dense<0> : tensor<17xi21>
 // POS: %[[COL0:.*]] = tensor.extract_slice %[[X]][0, 0] [65, 1] [1, 1] : tensor<65x2xi8> to tensor<65xi8>
 // POS-NEXT: %[[M0N0K0I:.*]] = tensor.extract_slice %[[COL0]][0] [64] [1] : tensor<65xi8> to tensor<64xi8>

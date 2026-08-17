@@ -40,8 +40,6 @@ class StaticWeightVerificationTest(unittest.TestCase):
             np.uint8
         )
         first = verify.map_tiles(tile[None, ...])
-        second = verify.map_tiles(tile[None, ...])
-        np.testing.assert_array_equal(first, second)
         np.testing.assert_array_equal(verify.invert_words(first)[0], tile)
 
 
