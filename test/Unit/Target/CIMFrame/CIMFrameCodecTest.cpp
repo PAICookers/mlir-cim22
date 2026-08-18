@@ -7,17 +7,24 @@
 //===----------------------------------------------------------------------===//
 
 #include "CIM22/Target/CIMFrameCodec.h"
+#include "CIM22/Dialect/CIM/IR/CIMDialect.h"
 #include "CIM22/Dialect/CIMFrame/IR/CIMFrameDialect.h"
 #include "CIM22/Dialect/CIMFrame/IR/CIMFrameOps.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 
@@ -265,9 +272,42 @@ static bool testInvalidStages(OpBuilder &Builder) {
   return check(failed(encodeCIMFrameInt8Packets(*UnexpectedAttribute)),
                "unexpected protocol attribute is rejected");
 }
-int main() {
+
+static bool emitPacketSummary(StringRef Path, MLIRContext &Context) {
+  auto Module = parseSourceFile<ModuleOp>(Path, ParserConfig(&Context));
+  if (!check(static_cast<bool>(Module), "packet-stage MLIR parses"))
+    return false;
+  auto Flits = encodeCIMFrameInt8Packets(*Module);
+  if (!check(succeeded(Flits), "packet-stage encoding succeeds") ||
+      !check(Flits->size() >= 258, "packet-stage has one transaction"))
+    return false;
+  const size_t Transactions =
+      llvm::count_if(Module->getBody()->getOperations(), [](Operation &Op) {
+        return isa<ControlInt8PacketOp>(Op);
+      });
+  const size_t Last = Flits->size() - 258;
+  std::cout << "transactions=" << Transactions << " flits=" << Flits->size()
+            << std::hex << std::setfill('0') << " first_control=0x"
+            << std::setw(16) << (*Flits)[0] << " first_weight_head=0x"
+            << std::setw(16) << (*Flits)[1] << " first_body=0x" << std::setw(16)
+            << (*Flits)[2] << " last_control=0x" << std::setw(16)
+            << (*Flits)[Last] << " last_weight_head=0x" << std::setw(16)
+            << (*Flits)[Last + 1] << " last_body=0x" << std::setw(16)
+            << Flits->back() << std::dec << '\n';
+  return true;
+}
+
+int main(int Argc, char **Argv) {
+  if (Argc > 2) {
+    std::cerr << "usage: " << Argv[0] << " [packet-stage.mlir]\n";
+    return 1;
+  }
   MLIRContext Context;
-  Context.loadDialect<CIMFrameDialect>();
+  Context.loadDialect<cim::CIMDialect, CIMFrameDialect, arith::ArithDialect,
+                      func::FuncDialect, linalg::LinalgDialect,
+                      tensor::TensorDialect>();
+  if (Argc == 2)
+    return emitPacketSummary(Argv[1], Context) ? 0 : 1;
   OpBuilder Builder(&Context);
   return testControlAndWork(Builder) && testMacroAndRouteBoundaries(Builder) &&
                  testWeightPacket(Builder) && testMixedPairOrder(Builder) &&

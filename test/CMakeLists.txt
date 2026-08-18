@@ -20,16 +20,14 @@ if(NOT MLIRCIM22_PYTHON_TEST_DEPS_RESULT EQUAL 0)
   )
 endif()
 
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR})
+
 add_executable(mlir-cim22-int8-weight-layout-test EXCLUDE_FROM_ALL
   Unit/Support/Int8WeightLayoutTest.cpp
 )
 target_link_libraries(mlir-cim22-int8-weight-layout-test PRIVATE
   MLIRCIM22Support
 )
-set_target_properties(mlir-cim22-int8-weight-layout-test PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR}
-)
-
 add_executable(mlir-cim22-matmulinteger-importer-test EXCLUDE_FROM_ALL
   Unit/Frontend/ONNX/MatMulIntegerImporterTest.cpp
 )
@@ -37,20 +35,16 @@ target_link_libraries(mlir-cim22-matmulinteger-importer-test PRIVATE
   MLIRCIM22LinalgToCIM
   MLIRCIM22ONNXFrontend
 )
-set_target_properties(mlir-cim22-matmulinteger-importer-test PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR}
-)
-
 add_executable(mlir-cim22-cimframe-codec-test EXCLUDE_FROM_ALL
   Unit/Target/CIMFrame/CIMFrameCodecTest.cpp
 )
 target_link_libraries(mlir-cim22-cimframe-codec-test PRIVATE
   MLIRCIM22Target
+  MLIRArithDialect
+  MLIRLinalgDialect
+  MLIRParser
+  MLIRTensorDialect
 )
-set_target_properties(mlir-cim22-cimframe-codec-test PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR}
-)
-
 set(MLIRCIM22_TEST_DEPENDS
   FileCheck
   mlir-cim22-cimframe-codec-test
