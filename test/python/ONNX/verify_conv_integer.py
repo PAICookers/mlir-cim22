@@ -4,41 +4,11 @@ import argparse
 from math import ceil
 from pathlib import Path
 
+import int8_lowering as lowering
 import numpy as np
 import onnx
 from onnx import checker, helper, numpy_helper, shape_inference
 from onnx.reference import ReferenceEvaluator
-
-
-def patch_matrix(
-    input_value: np.ndarray,
-    kernel: tuple[int, int],
-    strides: tuple[int, int],
-    pads: tuple[int, int, int, int],
-    output_shape: tuple[int, int],
-) -> np.ndarray:
-    _, channels, _, _ = input_value.shape
-    pad_top, pad_left, pad_bottom, pad_right = pads
-    padded = np.pad(
-        input_value,
-        ((0, 0), (0, 0), (pad_top, pad_bottom), (pad_left, pad_right)),
-    )
-    output_height, output_width = output_shape
-    patches = np.empty(
-        (channels * kernel[0] * kernel[1], output_height * output_width),
-        dtype=np.int32,
-    )
-    for row in range(output_height):
-        for column in range(output_width):
-            input_row = row * strides[0]
-            input_column = column * strides[1]
-            patches[:, row * output_width + column] = padded[
-                0,
-                :,
-                input_row : input_row + kernel[0],
-                input_column : input_column + kernel[1],
-            ].reshape(-1)
-    return patches
 
 
 def verify(model_path: Path) -> int:
@@ -79,9 +49,9 @@ def verify(model_path: Path) -> int:
         .reshape(1, channels, input_height, input_width)
     )
 
-    patches = patch_matrix(
-        input_value, kernel, strides, pads, (output_height, output_width)
-    )
+    patches = lowering.conv_to_matrix(
+        input_value, kernel, strides, pads
+    ).astype(np.int32)
     patch_size = channels * kernel_height * kernel_width
     lowered_result = (
         weight.reshape(filters, patch_size).astype(np.int32) @ patches

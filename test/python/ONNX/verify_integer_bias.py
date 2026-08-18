@@ -4,34 +4,11 @@ import argparse
 from math import ceil
 from pathlib import Path
 
+import int8_lowering as lowering
 import numpy as np
 import onnx
 from onnx import checker, helper, numpy_helper, shape_inference
 from onnx.reference import ReferenceEvaluator
-
-
-def wrap_i32(values: np.ndarray) -> np.ndarray:
-    return ((values + 2**31) % 2**32 - 2**31).astype(np.int32)
-
-
-def extend_bias_operands(
-    weight: np.ndarray, input_value: np.ndarray, bias: np.ndarray, exact_k: bool
-) -> tuple[np.ndarray, np.ndarray]:
-    bias_column = bias.astype(np.int8).reshape(-1, 1)
-    one_row = np.ones((1, input_value.shape[1]), dtype=np.int8)
-    if exact_k:
-        return (
-            np.concatenate(
-                (weight[:, :-1], bias_column, weight[:, -1:]), axis=1
-            ),
-            np.concatenate(
-                (input_value[:-1], one_row, input_value[-1:]), axis=0
-            ),
-        )
-    return (
-        np.concatenate((weight, bias_column), axis=1),
-        np.concatenate((input_value, one_row), axis=0),
-    )
 
 
 def verify_linear(
@@ -66,16 +43,16 @@ def verify_linear(
     unwrapped_lowered = (
         input_value.astype(np.int64) @ weight.astype(np.int64) + bias
     )
-    lowered_result = wrap_i32(unwrapped_lowered)
+    lowered_result = lowering.wrap_i32(unwrapped_lowered)
     source_result = ReferenceEvaluator(model).run(None, {"input": input_value})[
         0
     ]
     np.testing.assert_array_equal(source_result, lowered_result)
     if foldable:
-        folded_weight, folded_input = extend_bias_operands(
+        folded_weight, folded_input = lowering.fold_bias(
             weight.T, input_value.T, bias, exact_k
         )
-        folded_result = wrap_i32(
+        folded_result = lowering.wrap_i32(
             folded_weight.astype(np.int64) @ folded_input.astype(np.int64)
         ).T
         np.testing.assert_array_equal(folded_result, source_result)
@@ -125,34 +102,29 @@ def verify_conv(
     output_width = (padded.shape[3] - kernel_width) // stride_width + 1
     reduction = channels * kernel_height * kernel_width
     spatial = output_height * output_width
-    patches = np.empty((reduction, spatial), dtype=np.int8)
-    for row in range(output_height):
-        for column in range(output_width):
-            input_row = row * stride_height
-            input_column = column * stride_width
-            patches[:, row * output_width + column] = padded[
-                0,
-                :,
-                input_row : input_row + kernel_height,
-                input_column : input_column + kernel_width,
-            ].reshape(-1)
+    patches = lowering.conv_to_matrix(
+        input_value,
+        (kernel_height, kernel_width),
+        (stride_height, stride_width),
+        (pad_top, pad_left, pad_bottom, pad_right),
+    )
     core = (
         weight.reshape(filters, reduction).astype(np.int64)
         @ patches.astype(np.int64)
     ).reshape(1, filters, output_height, output_width)
-    lowered_result = wrap_i32(core + bias.astype(np.int64))
+    lowered_result = lowering.wrap_i32(core + bias.astype(np.int64))
     source_result = ReferenceEvaluator(model).run(None, {"input": input_value})[
         0
     ]
     np.testing.assert_array_equal(source_result, lowered_result)
     if foldable:
-        folded_weight, folded_input = extend_bias_operands(
+        folded_weight, folded_input = lowering.fold_bias(
             weight.reshape(filters, reduction),
             patches,
             bias.reshape(-1),
             exact_k,
         )
-        folded_result = wrap_i32(
+        folded_result = lowering.wrap_i32(
             folded_weight.astype(np.int64) @ folded_input.astype(np.int64)
         ).reshape(1, filters, output_height, output_width)
         np.testing.assert_array_equal(folded_result, source_result)

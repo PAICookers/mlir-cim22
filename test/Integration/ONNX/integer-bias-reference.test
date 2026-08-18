@@ -1,0 +1,9 @@
+// RUN: %python %S/../../python/ONNX/generate_integer_bias_onnx.py --emit-dir %t.models
+// RUN: mlir-cim22-onnx-import %t.models/linear-bias-fold.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(fold-cim-int8-bias,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section)' > %t.linear-tail
+// RUN: env PYTHONPATH=%S/../../python/CIM22 %python %S/../../python/ONNX/verify_compiled_int8.py %t.linear-tail %t.models/linear-bias-fold.onnx --folded-bias
+// RUN: mlir-cim22-onnx-import %t.models/linear-bias-exact.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(fold-cim-int8-bias,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section)' > %t.linear-exact
+// RUN: env PYTHONPATH=%S/../../python/CIM22 %python %S/../../python/ONNX/verify_compiled_int8.py %t.linear-exact %t.models/linear-bias-exact.onnx --folded-bias
+// RUN: mlir-cim22-onnx-import %t.models/conv-bias-fold.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,fold-cim-int8-bias,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section)' > %t.conv-tail
+// RUN: env PYTHONPATH=%S/../../python/CIM22 %python %S/../../python/ONNX/verify_compiled_int8.py %t.conv-tail %t.models/conv-bias-fold.onnx --folded-bias
+// RUN: mlir-cim22-onnx-import %t.models/conv-bias-exact.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,fold-cim-int8-bias,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section)' > %t.conv-exact
+// RUN: env PYTHONPATH=%S/../../python/CIM22 %python %S/../../python/ONNX/verify_compiled_int8.py %t.conv-exact %t.models/conv-bias-exact.onnx --folded-bias

@@ -163,18 +163,6 @@ def map_tiles(weight_tiles: np.ndarray) -> np.ndarray:
     )
 
 
-def invert_words(words: np.ndarray) -> np.ndarray:
-    values = np.asarray(words, dtype=np.int32).reshape(-1, 256)
-    return np.stack(
-        [
-            reference.decode_int8_weight_words(row.view(np.uint32)).view(
-                np.uint8
-            )
-            for row in values
-        ]
-    )
-
-
 def _parse_dense(line: str, line_number: int) -> tuple[str, np.ndarray] | None:
     match = re.search(
         r"\bcim\.static_weight\s+@([A-Za-z_][A-Za-z0-9_.$-]*)\s*=\s*"
@@ -257,9 +245,10 @@ def _parse_command(line: str, line_number: int) -> Record | None:
     )
 
 
-def validate_lines(
+def parse_records(
     lines, expected_commands: int | None = None
-) -> tuple[int, int]:
+) -> tuple[dict[str, np.ndarray], list[Record]]:
+    """Parse and validate static resources and their command records."""
     weights = {}
     configurations = []
     commands = []
@@ -321,7 +310,7 @@ def validate_lines(
             raise VerificationError(
                 f"command {start + int(mismatch[0])}: word {int(mismatch[1])} mismatch"
             )
-    return len(commands), len(weights)
+    return weights, commands
 
 
 def main() -> None:
@@ -332,8 +321,10 @@ def main() -> None:
     parser.add_argument("--expect-commands", type=int)
     args = parser.parse_args()
     with args.mlir.open() as stream:
-        commands, resources = validate_lines(stream, args.expect_commands)
-    print(f"PASS software-only commands={commands} resources={resources}")
+        weights, commands = parse_records(stream, args.expect_commands)
+    print(
+        f"PASS software-only commands={len(commands)} resources={len(weights)}"
+    )
 
 
 if __name__ == "__main__":

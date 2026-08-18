@@ -1,6 +1,7 @@
 import sys
 import unittest
 
+import int8_reference as reference
 import numpy as np
 import verify_static_weights as verify
 
@@ -40,7 +41,8 @@ class StaticWeightVerificationTest(unittest.TestCase):
             np.uint8
         )
         first = verify.map_tiles(tile[None, ...])
-        np.testing.assert_array_equal(verify.invert_words(first)[0], tile)
+        decoded = reference.decode_int8_weight_words(first[0].view(np.uint32))
+        np.testing.assert_array_equal(decoded.view(np.uint8), tile)
 
 
 if __name__ == "__main__":
