@@ -11,16 +11,14 @@ import int8_reference as reference
 import numpy as np
 
 ATTRS = ("work_id", "m_tile", "n_tile", "k_tile", "group_id")
-VMM_PATTERN = re.compile(r"\bcim\.vmm\b")
 ATTR_PATTERN = re.compile(
     r"\b(work_id|m_tile|n_tile|k_tile|group_id)\s*=\s*(-?\d+)\s*:\s*i64\b"
 )
 RESULT_PATTERN = re.compile(r"->\s*tensor<16xi21>(?![A-Za-z0-9_])")
-OP_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_.])"
-    r"(cim\.vmm|arith\.extsi|arith\.addi|arith\.trunci)"
-    r"(?![A-Za-z0-9_.])"
-)
+OP_MARKERS = {
+    operation: f" = {operation} "
+    for operation in ("cim.vmm", "arith.extsi", "arith.addi", "arith.trunci")
+}
 I21_MIN = -(1 << 20)
 I21_MAX = (1 << 20) - 1
 
@@ -54,20 +52,17 @@ def expected_schedule(m: int, k: int, n: int) -> list[Work]:
     ]
 
 
-def _operation_counts(text: str) -> Counter[str]:
-    counts: Counter[str] = Counter()
-    for line in text.splitlines():
-        if line.lstrip().startswith("//"):
-            continue
-        counts.update(OP_PATTERN.findall(line))
-    return counts
-
-
-def parse_schedule(text: str) -> list[Work]:
+def _parse_schedule_and_counts(text: str) -> tuple[list[Work], Counter[str]]:
     """Parse only one-line canonical cim.vmm operations and their frozen attrs."""
     work = []
+    counts: Counter[str] = Counter()
     for line_number, line in enumerate(text.splitlines(), 1):
-        if line.lstrip().startswith("//") or not VMM_PATTERN.search(line):
+        if line.lstrip().startswith("//"):
+            continue
+        for operation, marker in OP_MARKERS.items():
+            if marker in line:
+                counts[operation] += 1
+        if OP_MARKERS["cim.vmm"] not in line:
             continue
         attributes = dict(ATTR_PATTERN.findall(line))
         if set(attributes) != set(ATTRS):
@@ -79,12 +74,12 @@ def parse_schedule(text: str) -> list[Work]:
                 f"line {line_number}: cim.vmm partial is not tensor<16xi21>"
             )
         work.append(Work(*(int(attributes[attr]) for attr in ATTRS)))
-    return work
+    return work, counts
 
 
 def validate_dump(text: str, m: int, k: int, n: int) -> list[Work]:
     expected = expected_schedule(m, k, n)
-    actual = parse_schedule(text)
+    actual, counts = _parse_schedule_and_counts(text)
     if len(actual) != len(expected):
         raise VerificationError(
             f"VMM count: expected {len(expected)}, actual {len(actual)}"
@@ -120,7 +115,6 @@ def validate_dump(text: str, m: int, k: int, n: int) -> list[Work]:
         raise VerificationError(
             "schedule group contains more than two work items"
         )
-    counts = _operation_counts(text)
     k_tiles = ceil_div(k, 64)
     expected_counts = {
         "cim.vmm": len(expected),
