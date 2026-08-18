@@ -3,8 +3,9 @@
 import csv
 import hashlib
 import json
+import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import int8_reference as reference
 import numpy as np
@@ -12,6 +13,62 @@ import numpy as np
 
 class FixtureError(ValueError):
     pass
+
+
+def validate_manifest(manifest: dict) -> list[dict]:
+    """Validate provenance metadata without touching fixture bytes."""
+    if manifest.get("schema_version") != 1:
+        raise FixtureError("unsupported fixture schema")
+    if manifest.get("evidence_level") != "supplier-fixture-match":
+        raise FixtureError(
+            "fixture evidence level must be supplier-fixture-match"
+        )
+    if not re.fullmatch(
+        r"HWSRC-\d{3}", str(manifest.get("snapshot_source_id"))
+    ):
+        raise FixtureError("snapshot_source_id must be HWSRC-NNN")
+    cases = manifest.get("cases")
+    if not isinstance(cases, list) or len(cases) != 4:
+        raise FixtureError("manifest must contain four cases")
+    case_ids = [case.get("case_id") for case in cases]
+    if len(set(case_ids)) != len(case_ids):
+        raise FixtureError("manifest case_id values must be unique")
+    for case in cases:
+        case_id = case.get("case_id")
+        if not re.fullmatch(
+            r"(?:cim22_tb_0p9|test_data_1_17)_macro[12]", str(case_id)
+        ):
+            raise FixtureError(f"{case_id}: malformed case_id")
+        if not re.fullmatch(r"HWSRC-\d{3}", str(case.get("source_id"))):
+            raise FixtureError(f"{case_id}: malformed source_id")
+        if case.get("supplier_macro") not in (1, 2):
+            raise FixtureError(f"{case_id}: supplier_macro must be 1 or 2")
+        source_root = PurePosixPath(str(case.get("source_root", "")))
+        if source_root.is_absolute() or ".." in source_root.parts:
+            raise FixtureError(f"{case_id}: invalid source_root")
+        files = case.get("files")
+        if not isinstance(files, dict) or set(files) != {
+            "weight",
+            "input",
+            "output",
+        }:
+            raise FixtureError(
+                f"{case_id}: files must contain weight/input/output"
+            )
+        for entry in files.values():
+            local_path = PurePosixPath(str(entry.get("path", "")))
+            source_path = PurePosixPath(str(entry.get("source_path", "")))
+            if local_path.is_absolute() or ".." in local_path.parts:
+                raise FixtureError(f"{case_id}: fixture path escapes root")
+            if source_path.is_absolute() or ".." in source_path.parts:
+                raise FixtureError(f"{case_id}: source path escapes root")
+            if not str(source_path).startswith(f"{source_root}/"):
+                raise FixtureError(
+                    f"{case_id}: source_path is outside source_root"
+                )
+            if not re.fullmatch(r"[0-9a-f]{64}", str(entry.get("sha256"))):
+                raise FixtureError(f"{case_id}: malformed SHA-256")
+    return cases
 
 
 def _checked_path(root: Path, entry: dict) -> Path:
@@ -84,15 +141,7 @@ def _parse_expected(path: Path) -> np.ndarray:
 
 def replay(manifest_path: Path) -> str:
     manifest = json.loads(manifest_path.read_text(encoding="ascii"))
-    if manifest.get("schema_version") != 1:
-        raise FixtureError("unsupported fixture schema")
-    if manifest.get("evidence_level") != "supplier-fixture-match":
-        raise FixtureError(
-            "fixture evidence level must be supplier-fixture-match"
-        )
-    cases = manifest.get("cases")
-    if not isinstance(cases, list) or len(cases) != 4:
-        raise FixtureError("manifest must contain four cases")
+    cases = validate_manifest(manifest)
 
     root = manifest_path.parent
     for case in cases:
