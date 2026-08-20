@@ -7,13 +7,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "CIM22/Conversion/LinalgToCIM/Passes.h"
-#include "CIM22/Host/HostProgram.h"
+#include "CIM22/Conversion/LinalgToCIM/ExecutionPlanVerifier.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/PatternMatch.h"
@@ -30,12 +32,13 @@
 #include <optional>
 
 namespace mlir::cim {
-#define GEN_PASS_DEF_DUMPCIMHOSTPROGRAM
 #define GEN_PASS_DEF_FOLDCIMINT8BIAS
 #define GEN_PASS_DEF_FORMCIMPROGRAM
+#define GEN_PASS_DEF_LOWERCIMTOMOCKCALLS
 #define GEN_PASS_DEF_MATERIALIZECIMEXECUTIONPLAN
 #define GEN_PASS_DEF_MATERIALIZECIMSCHEDULE
 #define GEN_PASS_DEF_NORMALIZECIMCONV
+#define GEN_PASS_DEF_VERIFYCIMEXECUTIONPLAN
 #include "CIM22/Conversion/LinalgToCIM/Passes.h.inc"
 
 namespace {
@@ -50,6 +53,8 @@ struct TileIdentity {
   int64_t n;
   int64_t k;
 };
+
+bool isExecutionPlanOp(Operation *op);
 
 FailureOr<DenseElementsAttr> evaluateDenseTensor(Value value) {
   if (auto constant = value.getDefiningOp<arith::ConstantOp>())
@@ -1156,51 +1161,183 @@ public:
   }
 };
 
-class DumpCIMHostProgram final
-    : public impl::DumpCIMHostProgramBase<DumpCIMHostProgram> {
+class VerifyCIMExecutionPlan final
+    : public impl::VerifyCIMExecutionPlanBase<VerifyCIMExecutionPlan> {
 public:
   using Base::Base;
 
   void runOnOperation() override {
-    FailureOr<cim22::host::HostProgram> program =
-        cim22::host::buildHostProgram(getOperation());
-    if (failed(program)) {
+    if (failed(verifyCIMExecutionPlan(getOperation())))
       signalPassFailure();
-      return;
-    }
+  }
+};
 
-    llvm::raw_ostream &os = llvm::errs();
-    os << "host_program @" << program->function.getValue() << " : "
-       << program->type << '\n';
-    for (auto [ordinal, step] : llvm::enumerate(program->steps)) {
-      if (auto *host = std::get_if<cim22::host::HostStep>(&step)) {
-        os << "host_step " << ordinal << " ops=" << host->operations.size()
-           << '\n';
-        for (Operation *op : host->operations)
-          os << "  host_op " << op->getName() << '\n';
+class LowerCIMToMockCalls final
+    : public impl::LowerCIMToMockCallsBase<LowerCIMToMockCalls> {
+public:
+  using Base::Base;
+
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    MLIRContext *context = module.getContext();
+    auto i64 = IntegerType::get(context, 64);
+    auto inputBuffer = MemRefType::get({64}, IntegerType::get(context, 8));
+    auto weightBuffer = MemRefType::get({16, 64}, IntegerType::get(context, 8));
+    auto readbackBuffer = MemRefType::get({16}, IntegerType::get(context, 32));
+
+    auto ensureDeclaration = [&](StringRef name, TypeRange inputs) {
+      if (module.lookupSymbol<func::FuncOp>(name))
+        return;
+      OpBuilder builder(module.getBodyRegion());
+      builder.setInsertionPointToStart(module.getBody());
+      auto function =
+          func::FuncOp::create(builder, module.getLoc(), name,
+                               FunctionType::get(context, inputs, TypeRange{}));
+      function.setPrivate();
+      function->setAttr("llvm.emit_c_interface", builder.getUnitAttr());
+    };
+    ensureDeclaration("cim22_mock_configure_input", {i64, inputBuffer});
+    ensureDeclaration("cim22_mock_configure_weight", {i64, weightBuffer});
+    ensureDeclaration("cim22_mock_dispatch", {i64, i64, i64});
+    ensureDeclaration("cim22_mock_once", {i64, i64});
+    ensureDeclaration("cim22_mock_readback", {i64, readbackBuffer});
+    ensureDeclaration("cim22_mock_group_barrier", {i64});
+
+    for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+      bool hasPlan = false;
+      function.walk([&](Operation *op) { hasPlan |= isExecutionPlanOp(op); });
+      if (!hasPlan)
         continue;
+      if (failed(verifyCIMExecutionPlan(function)))
+        return signalPassFailure();
+
+      SmallVector<arith::AddIOp> tensorAdds;
+      function.walk([&](arith::AddIOp op) {
+        if (isa<RankedTensorType>(op.getType()))
+          tensorAdds.push_back(op);
+      });
+      for (arith::AddIOp add : tensorAdds) {
+        auto resultType = cast<RankedTensorType>(add.getType());
+        OpBuilder builder(add);
+        Value output = tensor::EmptyOp::create(builder, add.getLoc(),
+                                               resultType.getShape(),
+                                               resultType.getElementType());
+        SmallVector<AffineMap> maps(
+            3, builder.getMultiDimIdentityMap(resultType.getRank()));
+        SmallVector<utils::IteratorType> iterators(
+            resultType.getRank(), utils::IteratorType::parallel);
+        auto generic =
+            linalg::GenericOp::create(builder, add.getLoc(), resultType,
+                                      ValueRange{add.getLhs(), add.getRhs()},
+                                      ValueRange{output}, maps, iterators);
+        Block *body = builder.createBlock(&generic.getRegion());
+        for (Value operand : add->getOperands())
+          body->addArgument(
+              cast<ShapedType>(operand.getType()).getElementType(),
+              add.getLoc());
+        body->addArgument(resultType.getElementType(), add.getLoc());
+        builder.setInsertionPointToStart(body);
+        Value sum = arith::AddIOp::create(
+            builder, add.getLoc(), body->getArgument(0), body->getArgument(1));
+        linalg::YieldOp::create(builder, add.getLoc(), sum);
+        add.getResult().replaceAllUsesWith(generic.getResult(0));
+        add.erase();
       }
 
-      const auto &segment = std::get<cim22::host::CIMSegment>(step);
-      os << "cim_segment " << ordinal << " group=" << segment.groupId
-         << " ops=" << segment.operations.size()
-         << " inputs=" << segment.inputs.size()
-         << " results=" << segment.results.size() << '\n';
-      auto printViews = [&](ArrayRef<cim22::host::LogicalView> views) {
-        for (const cim22::host::LogicalView &view : views) {
-          StringRef direction =
-              view.direction == cim22::host::ViewDirection::HostToCIM
-                  ? "host_to_cim"
-                  : "cim_to_host";
-          os << "  view order=" << view.order << " direction=" << direction
-             << " slot=" << view.logicalSlot << " work=" << view.workId
-             << " type=" << view.type << '\n';
+      SmallVector<Operation *> operations;
+      function.walk([&](Operation *op) {
+        if (isExecutionPlanOp(op))
+          operations.push_back(op);
+      });
+      for (Operation *operation : operations) {
+        OpBuilder builder(operation);
+        auto constant = [&](StringRef name) -> Value {
+          return arith::ConstantIntOp::create(
+              builder, operation->getLoc(),
+              operation->getAttrOfType<IntegerAttr>(name).getInt(), 64);
+        };
+        if (auto input = dyn_cast<ConfigureInputOp>(operation)) {
+          Value buffer = bufferization::ToBufferOp::create(
+              builder, input.getLoc(), inputBuffer, input.getInput(),
+              /*readOnly=*/true);
+          func::CallOp::create(builder, input.getLoc(),
+                               "cim22_mock_configure_input", TypeRange{},
+                               ValueRange{constant("macro_slot"), buffer});
+          input.erase();
+          continue;
         }
-      };
-      printViews(segment.inputs);
-      printViews(segment.results);
-      os << "  barrier " << segment.barrier->getName() << '\n';
+        if (auto weight = dyn_cast<ConfigureWeightOp>(operation)) {
+          StaticWeightOp resource =
+              SymbolTable::lookupNearestSymbolFrom<StaticWeightOp>(
+                  weight, weight.getResourceAttr());
+          if (!resource) {
+            weight.emitOpError("cannot resolve static weight for mock call");
+            return signalPassFailure();
+          }
+          auto tensorType =
+              cast<RankedTensorType>(resource.getValue().getType());
+          Value value = arith::ConstantOp::create(
+              builder, weight.getLoc(), tensorType, resource.getValue());
+          Value buffer = bufferization::ToBufferOp::create(
+              builder, weight.getLoc(), weightBuffer, value,
+              /*readOnly=*/true);
+          func::CallOp::create(builder, weight.getLoc(),
+                               "cim22_mock_configure_weight", TypeRange{},
+                               ValueRange{constant("macro_slot"), buffer});
+          weight.erase();
+          continue;
+        }
+        if (auto dispatch = dyn_cast<DispatchOp>(operation)) {
+          func::CallOp::create(
+              builder, dispatch.getLoc(), "cim22_mock_dispatch", TypeRange{},
+              ValueRange{constant("work_id"), constant("macro_slot"),
+                         constant("group_id")});
+          dispatch.erase();
+          continue;
+        }
+        if (auto once = dyn_cast<OnceOp>(operation)) {
+          func::CallOp::create(
+              builder, once.getLoc(), "cim22_mock_once", TypeRange{},
+              ValueRange{constant("core_slot"), constant("group_id")});
+          once.erase();
+          continue;
+        }
+        if (auto readback = dyn_cast<ReadbackOp>(operation)) {
+          Value buffer = memref::AllocOp::create(builder, readback.getLoc(),
+                                                 readbackBuffer);
+          func::CallOp::create(builder, readback.getLoc(),
+                               "cim22_mock_readback", TypeRange{},
+                               ValueRange{constant("work_id"), buffer});
+          auto tensor32 = RankedTensorType::get({16}, builder.getI32Type());
+          Value value32 = bufferization::ToTensorOp::create(
+              builder, readback.getLoc(), tensor32, buffer,
+              /*restrict=*/true, /*writable=*/true);
+          SmallVector<Operation *> users(readback->getUsers());
+          for (Operation *user : users) {
+            auto extend = dyn_cast<arith::ExtSIOp>(user);
+            if (!extend || extend.getIn() != readback.getResult()) {
+              readback.emitOpError(
+                  "mock lowering supports readback users only through "
+                  "arith.extsi");
+              return signalPassFailure();
+            }
+            extend.getResult().replaceAllUsesWith(value32);
+            extend.erase();
+          }
+          readback.erase();
+          continue;
+        }
+        auto barrier = cast<GroupBarrierOp>(operation);
+        func::CallOp::create(builder, barrier.getLoc(),
+                             "cim22_mock_group_barrier", TypeRange{},
+                             ValueRange{constant("group_id")});
+        barrier.erase();
+      }
     }
+
+    for (StaticWeightOp weight :
+         llvm::make_early_inc_range(module.getOps<StaticWeightOp>()))
+      weight.erase();
   }
 };
 
@@ -1424,7 +1561,7 @@ public:
                                "cim.execution_plan_schema_version = 1 : i64");
             return signalPassFailure();
           }
-          if (failed(cim22::host::buildHostProgram(function)))
+          if (failed(verifyCIMExecutionPlan(function)))
             return signalPassFailure();
         }
         continue;
@@ -1579,7 +1716,7 @@ public:
         for (size_t offset = 0; offset < count; ++offset)
           plan.works[index + offset].vmm.erase();
       }
-      if (failed(cim22::host::buildHostProgram(plan.function)))
+      if (failed(verifyCIMExecutionPlan(plan.function)))
         return signalPassFailure();
     }
   }

@@ -31,9 +31,18 @@ def FoldCIMInt8Bias : Pass<"fold-cim-int8-bias", "::mlir::ModuleOp"> {
   ];
 }
 
-def DumpCIMHostProgram
-    : Pass<"dump-cim-host-program", "::mlir::func::FuncOp"> {
-  let summary = "Dump the validated read-only Host/CIM program projection";
+def VerifyCIMExecutionPlan
+    : Pass<"verify-cim-execution-plan", "::mlir::func::FuncOp"> {
+  let summary = "Verify the ordered CIM execution plan and Host SSA";
+}
+
+def LowerCIMToMockCalls
+    : Pass<"lower-cim-to-mock-calls", "::mlir::ModuleOp"> {
+  let summary = "Lower a verified CIM execution plan to test-only mock calls";
+  let dependentDialects = ["::mlir::arith::ArithDialect",
+                           "::mlir::bufferization::BufferizationDialect",
+                           "::mlir::func::FuncDialect",
+                           "::mlir::memref::MemRefDialect"];
 }
 
 def FormCIMProgram : Pass<"form-cim-program", "::mlir::ModuleOp"> {

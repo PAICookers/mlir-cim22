@@ -1,5 +1,6 @@
 add_mlir_library(MLIRCIM22LinalgToCIM
   Passes.cpp
+  ExecutionPlanVerifier.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include/CIM22/Conversion/LinalgToCIM
@@ -9,13 +10,14 @@ add_mlir_library(MLIRCIM22LinalgToCIM
 
   LINK_LIBS PUBLIC
   MLIRCIM22Dialect
-  MLIRCIM22Host
   MLIRAnalysis
   MLIRArithDialect
+  MLIRBufferizationDialect
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
   MLIRLinalgTransforms
+  MLIRMemRefDialect
   MLIRPass
   MLIRTensorDialect
   MLIRTransforms
