@@ -51,7 +51,7 @@ def CIMFrame_WriteInt8WeightsOp
     FIXME(CTQ-020): Supplier fixture agreement is not board verification.
   }];
   let arguments = (ins DenseI32ArrayAttr:$route, I32Attr:$macro,
-      DenseI32ArrayAttr:$words);
+      AnyI32ElementsAttr:$words);
   let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
 }
@@ -91,7 +91,8 @@ def CIMFrame_CIMInt8WeightPacketOp
     The accepted logical weight-to-word mapping is owned by the layout helper.
     FIXME(CTQ-020): Supplier fixture agreement is not board verification.
   }];
-  let arguments = (ins DenseI32ArrayAttr:$route, DenseI32ArrayAttr:$words);
+  let arguments = (ins DenseI32ArrayAttr:$route,
+      AnyI32ElementsAttr:$words);
   let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
 }

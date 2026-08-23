@@ -37,7 +37,7 @@ struct StaticWeightCommandPlan {
   Location location;
   DenseI32ArrayAttr route;
   IntegerAttr macro;
-  DenseI32ArrayAttr words;
+  DenseIntElementsAttr words;
   DictionaryAttr provenance;
 };
 
@@ -133,7 +133,8 @@ planStaticWeightCommand(cim::ConfigureWeightOp op, func::FuncOp function,
   return StaticWeightCommandPlan{
       op.getLoc(), builder.getDenseI32ArrayAttr(route),
       builder.getI32IntegerAttr(static_cast<int32_t>(macroSlot.getInt())),
-      builder.getDenseI32ArrayAttr(words),
+      DenseIntElementsAttr::get(
+          RankedTensorType::get({256}, builder.getI32Type()), words),
       builder.getDictionaryAttr(provenance)};
 }
 

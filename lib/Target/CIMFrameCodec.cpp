@@ -90,7 +90,8 @@ FailureOr<SmallVector<uint64_t>> encodeCIMFrameInt8Packets(ModuleOp module) {
     if (auto weight = dyn_cast<cimframe::CIMInt8WeightPacketOp>(op)) {
       flits.push_back(kCIMWriteType | encodeRoute(weight.getRoute()) |
                       kCIMWordCount);
-      for (auto [address, word] : llvm::enumerate(weight.getWords())) {
+      for (auto [address, word] :
+           llvm::enumerate(weight.getWords().getValues<int32_t>())) {
         const uint64_t data =
             static_cast<uint64_t>(llvm::bit_cast<uint32_t>(word)) << 8;
         flits.push_back(data | static_cast<uint64_t>(address));

@@ -49,6 +49,14 @@ static DenseI32ArrayAttr routeAttr(OpBuilder &Builder, const Route &Route) {
   return Builder.getDenseI32ArrayAttr(Route);
 }
 
+static DenseIntElementsAttr wordsAttr(OpBuilder &Builder,
+                                      ArrayRef<int32_t> Words) {
+  return DenseIntElementsAttr::get(
+      RankedTensorType::get({static_cast<int64_t>(Words.size())},
+                            Builder.getI32Type()),
+      Words);
+}
+
 static ControlInt8PacketOp addControl(OpBuilder &Builder, ModuleOp Module,
                                       const Route &Route, int32_t Macro) {
   Builder.setInsertionPointToEnd(Module.getBody());
@@ -68,7 +76,7 @@ static void addWeight(OpBuilder &Builder, ModuleOp Module, const Route &Route,
   Builder.setInsertionPointToEnd(Module.getBody());
   CIMInt8WeightPacketOp::create(Builder, Builder.getUnknownLoc(),
                                 routeAttr(Builder, Route),
-                                Builder.getDenseI32ArrayAttr(Words));
+                                wordsAttr(Builder, Words));
 }
 
 static bool testControlAndWork(OpBuilder &Builder) {

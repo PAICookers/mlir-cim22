@@ -228,12 +228,33 @@ def _parse_command(line: str, line_number: int) -> Record | None:
     mapping = _mapping(provenance, "mapping", line_number)
     route = _array(body, "route", 32, 6, line_number)
     macro = _integer(body, "macro", 32, line_number)
-    words_match = re.search(r"\bwords\s*=\s*array<i32:\s*([^>]*)>", body)
+    words_match = re.search(
+        r"\bwords\s*=\s*dense<(?P<data>.*?)>\s*:\s*tensor<(?P<size>\d+)xi32>",
+        body,
+    )
     if not words_match:
         raise VerificationError(f"line {line_number}: missing words")
-    words = np.fromstring(words_match.group(1), sep=",", dtype=np.int64)
+    payload = words_match.group("data").strip()
+    size = int(words_match.group("size"))
+    if payload.startswith('"0x') and payload.endswith('"'):
+        raw = bytes.fromhex(payload[3:-1])
+        if len(raw) != size * 4:
+            raise VerificationError(
+                f"line {line_number}: dense i32 hex payload has wrong size"
+            )
+        words = np.frombuffer(raw, dtype="<i4").astype(np.int64)
+    elif payload.startswith("[") and payload.endswith("]"):
+        words = np.fromstring(payload[1:-1], sep=",", dtype=np.int64)
+    else:
+        try:
+            words = np.full(size, int(payload), dtype=np.int64)
+        except ValueError as error:
+            raise VerificationError(
+                f"line {line_number}: unsupported dense words payload"
+            ) from error
     if (
-        words.size != 256
+        size != 256
+        or words.size != 256
         or np.any(words < -(1 << 31))
         or np.any(words >= (1 << 31))
     ):

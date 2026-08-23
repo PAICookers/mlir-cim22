@@ -17,17 +17,17 @@
 // COMMAND-SAME: cim.provenance = {core_slot = 0 : i64, function = @first, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_slot = 0 : i64, mapping = {{.*}}, n_tile = 0 : i64, resource = @ones, work_id = 0 : i64}
 // COMMAND-SAME: macro = 0 : i32
 // COMMAND-SAME: route = array<i32: 0, 0, 0, 0, 0, 0>
-// COMMAND-SAME: words = array<i32: -1, -1, -1, -1
+// COMMAND-SAME: words = dense<-1> : tensor<256xi32>
 // COMMAND-NEXT: cimframe.write_int8_weights
 // COMMAND-SAME: cim.provenance = {core_slot = 0 : i64, function = @first, group_id = 0 : i64, k_tile = 1 : i64, m_tile = 0 : i64, macro_slot = 1 : i64, mapping = {{.*}}, n_tile = 0 : i64, resource = @ones, work_id = 1 : i64}
 // COMMAND-SAME: macro = 1 : i32
 // COMMAND-SAME: route = array<i32: 0, 0, 0, 0, 0, 0>
-// COMMAND-SAME: words = array<i32: -1, -1, -1, -1
+// COMMAND-SAME: words = dense<-1> : tensor<256xi32>
 // COMMAND-NEXT: cimframe.write_int8_weights
 // COMMAND-SAME: cim.provenance = {core_slot = 19 : i64, function = @second, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 1 : i64, macro_slot = 0 : i64, mapping = {{.*}}, n_tile = 2 : i64, resource = @zero, work_id = 0 : i64}
 // COMMAND-SAME: macro = 0 : i32
 // COMMAND-SAME: route = array<i32: 3, 1, 0, 0, 0, 0>
-// COMMAND-SAME: words = array<i32: 0, 0, 0, 0
+// COMMAND-SAME: words = dense<0> : tensor<256xi32>
 // COMMAND-NEXT: func.func @first
 // COMMAND-SAME: cim.execution_plan_schema_version = 1 : i64
 // COMMAND: cim.configure_weight @ones

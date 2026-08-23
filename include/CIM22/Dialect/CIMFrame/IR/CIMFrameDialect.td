@@ -10,6 +10,7 @@
 #define CIM22_DIALECT_CIMFRAME_IR_CIMFRAMEDIALECT
 
 include "mlir/IR/OpBase.td"
+include "mlir/IR/CommonAttrConstraints.td"
 
 def CIMFrame_Dialect : Dialect {
   let name = "cimframe";

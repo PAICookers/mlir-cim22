@@ -42,9 +42,9 @@ LogicalResult verifyMacro(Operation *op, uint32_t macro) {
   return success();
 }
 
-LogicalResult verifyWords(Operation *op, ArrayRef<int32_t> words) {
-  // The canonical typed profile represents one complete 16x64 weight tile.
-  if (words.size() != 256)
+LogicalResult verifyWords(Operation *op, DenseIntElementsAttr words) {
+  if (!words.getElementType().isSignlessInteger(32) ||
+      words.getNumElements() != 256)
     return op->emitOpError("expects words to contain 256 i32 values");
   return success();
 }
