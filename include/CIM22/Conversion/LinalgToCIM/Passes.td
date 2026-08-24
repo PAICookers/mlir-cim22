@@ -36,15 +36,6 @@ def VerifyCIMExecutionPlan
   let summary = "Verify the ordered CIM execution plan and Host SSA";
 }
 
-def LowerCIMToMockCalls
-    : Pass<"lower-cim-to-mock-calls", "::mlir::ModuleOp"> {
-  let summary = "Lower a verified CIM execution plan to test-only mock calls";
-  let dependentDialects = ["::mlir::arith::ArithDialect",
-                           "::mlir::bufferization::BufferizationDialect",
-                           "::mlir::func::FuncDialect",
-                           "::mlir::memref::MemRefDialect"];
-}
-
 def FormCIMProgram : Pass<"form-cim-program", "::mlir::ModuleOp"> {
   let summary = "Form CIM VMM operations from supported Linalg operations";
   let dependentDialects = ["::mlir::arith::ArithDialect",
