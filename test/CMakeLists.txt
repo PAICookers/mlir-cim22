@@ -45,11 +45,44 @@ target_link_libraries(mlir-cim22-cimframe-codec-test PRIVATE
   MLIRParser
   MLIRTensorDialect
 )
+add_executable(mlir-cim22-cim-executable-test EXCLUDE_FROM_ALL
+  Unit/Target/CIMExecutableTest.cpp
+)
+target_link_libraries(mlir-cim22-cim-executable-test PRIVATE
+  MLIRCIM22Target
+  MLIRArithDialect
+  MLIRLinalgDialect
+  MLIRParser
+  MLIRTensorDialect
+)
+add_executable(mlir-cim22-cim-software-runner-test EXCLUDE_FROM_ALL
+  Unit/Execution/CIMSoftwareRunnerTest.cpp
+)
+target_link_libraries(mlir-cim22-cim-software-runner-test PRIVATE
+  MLIRCIM22Execution
+  MLIRCIM22Target
+)
+target_compile_options(mlir-cim22-cim-software-runner-test PRIVATE -fno-rtti)
+add_executable(mlir-cim22-cim-executable-runner-test EXCLUDE_FROM_ALL
+  Unit/Execution/CIMExecutableRunnerIntegrationTest.cpp
+)
+target_link_libraries(mlir-cim22-cim-executable-runner-test PRIVATE
+  MLIRCIM22Execution
+  MLIRCIM22Target
+  MLIRArithDialect
+  MLIRLinalgDialect
+  MLIRParser
+  MLIRTensorDialect
+)
+target_compile_options(mlir-cim22-cim-executable-runner-test PRIVATE -fno-rtti)
 set(MLIRCIM22_TEST_DEPENDS
   FileCheck
   mlir-cim22-cimframe-codec-test
+  mlir-cim22-cim-executable-test
   mlir-cim22-matmulinteger-importer-test
   mlir-cim22-int8-weight-layout-test
+  mlir-cim22-cim-software-runner-test
+  mlir-cim22-cim-executable-runner-test
   mlir-cim22-onnx-import
   mlir-cim22-opt
   split-file

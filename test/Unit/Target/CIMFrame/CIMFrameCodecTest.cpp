@@ -79,6 +79,32 @@ static void addWeight(OpBuilder &Builder, ModuleOp Module, const Route &Route,
                                 wordsAttr(Builder, Words));
 }
 
+static void addInput(OpBuilder &Builder, ModuleOp Module, const Route &Route,
+                     int32_t Macro, int32_t Row, ArrayRef<int64_t> Words) {
+  Builder.setInsertionPointToEnd(Module.getBody());
+  WriteInputCacheInt8PacketOp::create(
+      Builder, Builder.getUnknownLoc(), routeAttr(Builder, Route),
+      Builder.getI32IntegerAttr(Macro), Builder.getI32IntegerAttr(Row),
+      Builder.getDenseI64ArrayAttr(Words));
+}
+
+static void addReturnRoute(OpBuilder &Builder, ModuleOp Module,
+                           const Route &Route,
+                           const std::array<int32_t, 3> &TestCore) {
+  Builder.setInsertionPointToEnd(Module.getBody());
+  ConfigureTestReturnRoutePacketOp::create(
+      Builder, Builder.getUnknownLoc(), routeAttr(Builder, Route),
+      Builder.getDenseI32ArrayAttr(TestCore));
+}
+
+static void addCacheRead(OpBuilder &Builder, ModuleOp Module,
+                         const Route &Route, int32_t Address) {
+  Builder.setInsertionPointToEnd(Module.getBody());
+  ReadOutputCacheInt8PacketOp::create(Builder, Builder.getUnknownLoc(),
+                                      routeAttr(Builder, Route),
+                                      Builder.getI32IntegerAttr(Address));
+}
+
 static bool testControlAndWork(OpBuilder &Builder) {
   constexpr Route ZeroRoute{};
   auto Module = makeModule(Builder);
@@ -171,6 +197,46 @@ static bool testMixedPairOrder(OpBuilder &Builder) {
                "mixed second control") &&
          check((*Flits)[3] == UINT64_C(0x2000000000000100),
                "mixed weight head follows control");
+}
+
+static bool testInputAndReadbackPackets(OpBuilder &Builder) {
+  constexpr Route ZeroRoute{};
+  constexpr std::array<int32_t, 3> TestCore{1, -2, 3};
+  std::array<int64_t, 16> Words{};
+  for (int64_t Index = 0; Index < 16; ++Index)
+    Words[Index] = Index + 1;
+
+  auto Input = makeModule(Builder);
+  addControl(Builder, *Input, ZeroRoute, 0);
+  addInput(Builder, *Input, ZeroRoute, 0, 2, Words);
+  auto InputFlits = encodeCIMFrameInt8Packets(*Input);
+  if (!check(succeeded(InputFlits), "input Cache packet encoding succeeds") ||
+      !check(InputFlits->size() == 18,
+             "control plus Cache head and 16 body flits") ||
+      !check((*InputFlits)[0] == UINT64_C(0x8000000000000000),
+             "input control precedes Cache write") ||
+      !check((*InputFlits)[1] == UINT64_C(0x1000000000028010),
+             "input Cache head encodes row 2 and 16 body flits") ||
+      !check((*InputFlits)[2] == UINT64_C(1) &&
+                 (*InputFlits)[17] == UINT64_C(16),
+             "input Cache body preserves 64-bit words"))
+    return false;
+
+  auto Readback = makeModule(Builder);
+  addReturnRoute(Builder, *Readback, ZeroRoute, TestCore);
+  addControl(Builder, *Readback, ZeroRoute, 1);
+  addCacheRead(Builder, *Readback, ZeroRoute, 7);
+  auto ReadbackFlits = encodeCIMFrameInt8Packets(*Readback);
+  return check(succeeded(ReadbackFlits),
+               "return-route/readback packet encoding succeeds") &&
+         check(ReadbackFlits->size() == 3,
+               "return-route/readback emits three single flits") &&
+         check((*ReadbackFlits)[0] == UINT64_C(0xa000000000001883),
+               "1010 encodes test host return route") &&
+         check((*ReadbackFlits)[1] == UINT64_C(0x8000000000000001),
+               "readback control selects Macro 1") &&
+         check((*ReadbackFlits)[2] == UINT64_C(0x500000000081c000),
+               "0101 encodes output Cache address 7");
 }
 
 static bool testInvalidStages(OpBuilder &Builder) {
@@ -277,8 +343,31 @@ static bool testInvalidStages(OpBuilder &Builder) {
   auto Control = addControl(Builder, *UnexpectedAttribute, ZeroRoute, 0);
   Control->setAttr("type", Builder.getI32IntegerAttr(8));
   addWeight(Builder, *UnexpectedAttribute, ZeroRoute, Words);
-  return check(failed(encodeCIMFrameInt8Packets(*UnexpectedAttribute)),
-               "unexpected protocol attribute is rejected");
+  if (!check(failed(encodeCIMFrameInt8Packets(*UnexpectedAttribute)),
+             "unexpected protocol attribute is rejected"))
+    return false;
+
+  std::array<int64_t, 15> ShortInput{};
+  auto BadInput = makeModule(Builder);
+  addControl(Builder, *BadInput, ZeroRoute, 0);
+  addInput(Builder, *BadInput, ZeroRoute, 0, 0, ShortInput);
+  if (!check(failed(encodeCIMFrameInt8Packets(*BadInput)),
+             "short input Cache row is rejected"))
+    return false;
+
+  auto BadRead = makeModule(Builder);
+  addReturnRoute(Builder, *BadRead, ZeroRoute, {0, 0, 0});
+  addControl(Builder, *BadRead, ZeroRoute, 0);
+  addCacheRead(Builder, *BadRead, ZeroRoute, 8);
+  if (!check(failed(encodeCIMFrameInt8Packets(*BadRead)),
+             "output Cache address 8 is rejected"))
+    return false;
+
+  auto IncompleteRead = makeModule(Builder);
+  addReturnRoute(Builder, *IncompleteRead, ZeroRoute, {0, 0, 0});
+  addControl(Builder, *IncompleteRead, ZeroRoute, 0);
+  return check(failed(encodeCIMFrameInt8Packets(*IncompleteRead)),
+               "incomplete return-route sequence is rejected");
 }
 
 static bool emitPacketSummary(StringRef Path, MLIRContext &Context) {
@@ -319,6 +408,7 @@ int main(int Argc, char **Argv) {
   OpBuilder Builder(&Context);
   return testControlAndWork(Builder) && testMacroAndRouteBoundaries(Builder) &&
                  testWeightPacket(Builder) && testMixedPairOrder(Builder) &&
+                 testInputAndReadbackPackets(Builder) &&
                  testInvalidStages(Builder)
              ? 0
              : 1;

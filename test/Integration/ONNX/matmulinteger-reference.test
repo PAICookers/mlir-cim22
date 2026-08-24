@@ -5,6 +5,7 @@
 // RUN: FileCheck %s --check-prefix=REDUCTION < %t.schedule
 // RUN: mlir-cim22-opt %t.imported --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan)' > %t.plan
 // RUN: %python %S/../../python/CIM22/verify_execution_plan.py %t.plan | FileCheck %s --check-prefix=PLAN
+// RUN: FileCheck %s --check-prefix=READBACK < %t.plan
 // RUN: mlir-cim22-opt %t.plan --pass-pipeline='builtin.module(materialize-cim-static-weight-section)' > %t.static
 // RUN: %python %S/../../python/CIM22/verify_static_weights.py %t.static --expect-commands 40 | FileCheck %s --check-prefix=WEIGHT
 // RUN: env PYTHONPATH=%S/../../python/CIM22 %python %S/../../python/ONNX/verify_compiled_int8.py %t.static %S/../../Inputs/ONNX/int8_matmul_m1_k128_n320.onnx
@@ -19,5 +20,7 @@
 // REDUCTION-NEXT: %[[EXT1:[^ ]+]] = arith.extsi %[[PARTIAL1]] : tensor<16xi21> to tensor<16xi32>
 // REDUCTION-NEXT: %{{[^ ]+}} = arith.addi %[[EXT0]], %[[EXT1]] : tensor<16xi32>
 // PLAN: PASS software-only profile=cim22-4x5-v1 schema=1 groups=20 works=40 configs=80
+// READBACK: output_cache_address = 0 : i64
+// READBACK: output_cache_address = 7 : i64
 // WEIGHT: PASS software-only commands=40 resources=40
 // FLIT: transactions=40 flits=10320 first_control=0x8000000000000000 first_weight_head=0x2000000000000100 first_body=0x000000ebfdbcae00 last_control=0x80c1000000000001 last_weight_head=0x20c1000000000100 last_body=0x000000b1948623ff

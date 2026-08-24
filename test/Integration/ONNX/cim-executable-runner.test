@@ -1,0 +1,5 @@
+// RUN: mlir-cim22-onnx-import %S/../../Inputs/ONNX/int8_matmul_m1_k128_n320.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(verify-cim-execution-plan))' > %t.plan
+// RUN: mlir-cim22-opt %t.plan --pass-pipeline='builtin.module(materialize-cim-static-weight-section,lower-cimframe-commands-to-packets,verify-cimframe)' > %t.packet
+// RUN: mlir-cim22-cim-executable-runner-test %t.packet | FileCheck %s
+
+// CHECK: PASS CIM runner integration profile=cim22-4x5-v1 groups=20 works=40 readbacks=40 trace_events=242 output_addresses=0,7

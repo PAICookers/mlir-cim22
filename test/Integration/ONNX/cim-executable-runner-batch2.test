@@ -1,0 +1,6 @@
+// RUN: %python %S/../../python/ONNX/generate_integer_bias_onnx.py --emit-dir %t.models
+// RUN: mlir-cim22-onnx-import %t.models/linear-bias.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(fold-cim-int8-bias,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,func.func(verify-cim-execution-plan))' > %t.plan
+// RUN: mlir-cim22-opt %t.plan --pass-pipeline='builtin.module(materialize-cim-static-weight-section,lower-cimframe-commands-to-packets,verify-cimframe)' > %t.packet
+// RUN: mlir-cim22-cim-executable-runner-test %t.packet batch2 | FileCheck %s
+
+// CHECK: PASS CIM runner integration profile=cim22-4x5-v1 groups=4 works=8 readbacks=8 trace_events=50 output_addresses=0,1

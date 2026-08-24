@@ -114,9 +114,11 @@ static bool testAsymmetricRoundTrip() {
   const CIMWords Expected = mapReference(WeightBytes);
   const CIMWords First = mlir::cim22::mapInt8WeightTileToCIMWords(WeightBytes);
   const CIMWords Second = mlir::cim22::mapInt8WeightTileToCIMWords(WeightBytes);
+  const WeightTile Inverse = mlir::cim22::unmapCIMWordsToInt8WeightTile(First);
   return check(First == Expected, "WL-P04 independent reference") &&
          check(invertReference(First) == WeightBytes,
                "WL-P04 independent inverse") &&
+         check(Inverse == WeightBytes, "WL-P04 production inverse") &&
          check(Second == First, "WL-P04 deterministic mapping");
 }
 
