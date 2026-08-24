@@ -12,21 +12,41 @@
 #include "CIM22/Dialect/CIMFrame/Transforms/Passes.h"
 #include "CIM22/Target/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/InitAllPasses.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
 int main(int argc, char **argv) {
   mlir::cim::registerPasses();
   mlir::cimframe::registerPasses();
   mlir::cim22::target::registerPasses();
+  mlir::registerAllPasses();
 
   mlir::DialectRegistry registry;
-  registry.insert<mlir::arith::ArithDialect, mlir::cim::CIMDialect,
+  registry.insert<mlir::arith::ArithDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::cf::ControlFlowDialect, mlir::cim::CIMDialect,
                   mlir::cimframe::CIMFrameDialect, mlir::func::FuncDialect,
-                  mlir::linalg::LinalgDialect, mlir::tensor::TensorDialect>();
+                  mlir::linalg::LinalgDialect, mlir::LLVM::LLVMDialect,
+                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect,
+                  mlir::tensor::TensorDialect>();
+  mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
+      registry);
+  mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, "mlir-cim22 optimizer driver\n", registry));
 }

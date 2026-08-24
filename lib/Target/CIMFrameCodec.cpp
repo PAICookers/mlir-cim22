@@ -23,9 +23,14 @@ constexpr unsigned kTypeShift = 60;
 constexpr std::array<unsigned, 6> kRouteShifts{54, 48, 42, 36, 30, 24};
 constexpr uint64_t kControlInt8Type = uint64_t{0x8} << kTypeShift;
 constexpr uint64_t kWorkOnceType = uint64_t{0x9} << kTypeShift;
+constexpr uint64_t kInputInt8Type = uint64_t{0x1} << kTypeShift;
+constexpr uint64_t kReturnRouteType = uint64_t{0xa} << kTypeShift;
+constexpr uint64_t kCacheReadInt8Type = uint64_t{0x5} << kTypeShift;
 constexpr uint64_t kCIMWriteType = uint64_t{0x2} << kTypeShift;
 constexpr uint64_t kOnce = 1;
 constexpr uint64_t kCIMWordCount = 256;
+constexpr uint64_t kConfigBodyCount = 16;
+constexpr uint64_t kRequestBit = uint64_t{1} << 23;
 
 uint64_t encodeSignedMagnitude6(int32_t value) {
   const uint64_t magnitude = static_cast<uint64_t>(value < 0 ? -value : value);
@@ -41,7 +46,10 @@ uint64_t encodeRoute(ArrayRef<int32_t> route) {
 
 bool isPacket(Operation &op) {
   return isa<cimframe::ControlInt8PacketOp, cimframe::WorkOncePacketOp,
-             cimframe::CIMInt8WeightPacketOp>(op);
+             cimframe::CIMInt8WeightPacketOp,
+             cimframe::WriteInputCacheInt8PacketOp,
+             cimframe::ConfigureTestReturnRoutePacketOp,
+             cimframe::ReadOutputCacheInt8PacketOp>(op);
 }
 
 bool isOnecastRoute(ArrayRef<int32_t> route) {
@@ -85,6 +93,31 @@ FailureOr<SmallVector<uint64_t>> encodeCIMFrameInt8Packets(ModuleOp module) {
     }
     if (auto work = dyn_cast<cimframe::WorkOncePacketOp>(op)) {
       flits.push_back(kWorkOnceType | encodeRoute(work.getRoute()) | kOnce);
+      continue;
+    }
+    if (auto input = dyn_cast<cimframe::WriteInputCacheInt8PacketOp>(op)) {
+      const uint64_t cacheAddress =
+          uint64_t{0x8} | static_cast<uint64_t>(input.getCacheRow());
+      flits.push_back(kInputInt8Type | encodeRoute(input.getRoute()) |
+                      (cacheAddress << 14) | kConfigBodyCount);
+      for (int64_t word : input.getWords())
+        flits.push_back(static_cast<uint64_t>(word));
+      continue;
+    }
+    if (auto returnRoute =
+            dyn_cast<cimframe::ConfigureTestReturnRoutePacketOp>(op)) {
+      auto testCore = returnRoute.getTestCore();
+      flits.push_back(
+          kReturnRouteType | encodeRoute(returnRoute.getRoute()) |
+          (static_cast<uint64_t>(encodeSignedMagnitude6(testCore[0])) << 12) |
+          (static_cast<uint64_t>(encodeSignedMagnitude6(testCore[1])) << 6) |
+          encodeSignedMagnitude6(testCore[2]));
+      continue;
+    }
+    if (auto read = dyn_cast<cimframe::ReadOutputCacheInt8PacketOp>(op)) {
+      flits.push_back(kCacheReadInt8Type | encodeRoute(read.getRoute()) |
+                      kRequestBit |
+                      (static_cast<uint64_t>(read.getCacheAddress()) << 14));
       continue;
     }
     if (auto weight = dyn_cast<cimframe::CIMInt8WeightPacketOp>(op)) {

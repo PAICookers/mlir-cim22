@@ -36,4 +36,21 @@ mapInt8WeightTileToCIMWords(const std::array<uint8_t, 16 * 64> &WeightBytes) {
   return Words;
 }
 
+std::array<uint8_t, 16 * 64>
+unmapCIMWordsToInt8WeightTile(const std::array<uint32_t, 256> &Words) {
+  std::array<uint8_t, 16 * 64> WeightBytes{};
+  for (size_t Q = 0; Q < 32; ++Q) {
+    for (size_t R = 0; R < 8; ++R) {
+      const uint32_t Word = Words[8 * Q + R];
+      for (size_t Lane = 0; Lane < 16; ++Lane) {
+        WeightBytes[Lane * 64 + (63 - Q)] |=
+            static_cast<uint8_t>(((Word >> (2 * Lane)) & 1U) << R);
+        WeightBytes[Lane * 64 + (31 - Q)] |=
+            static_cast<uint8_t>(((Word >> (2 * Lane + 1)) & 1U) << R);
+      }
+    }
+  }
+  return WeightBytes;
+}
+
 } // namespace mlir::cim22

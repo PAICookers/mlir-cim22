@@ -8,9 +8,18 @@ target_link_libraries(mlir-cim22-opt PRIVATE
   MLIRCIM22CIMFrameTransforms
   MLIRCIM22Target
   MLIRArithDialect
+  MLIRArithTransforms
+  MLIRBufferizationDialect
+  MLIRControlFlowDialect
   MLIRFuncDialect
+  MLIRFuncTransforms
   MLIRLinalgDialect
+  MLIRLLVMDialect
+  MLIRMemRefDialect
+  MLIRRegisterAllPasses
+  MLIRSCFDialect
   MLIRTensorDialect
+  MLIRTensorTransforms
   MLIROptLib
 )
 

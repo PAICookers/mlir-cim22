@@ -97,4 +97,44 @@ def CIMFrame_CIMInt8WeightPacketOp
   let hasVerifier = 1;
 }
 
+def CIMFrame_WriteInputCacheInt8PacketOp
+    : CIMFrame_Op<"write_input_cache_int8_packet", [HasParent<"ModuleOp">]> {
+  let summary = "Represent one INT8 input Cache configuration packet";
+  let description = [{
+    A complete semantic Cache configuration packet for one input Cache row.
+    The canonical INT8 profile uses 16 64-bit body flits for rows 0 through 7.
+    The operation contains semantic words only; transport byte order is not
+    part of this operation.
+  }];
+  let arguments = (ins DenseI32ArrayAttr:$route, I32Attr:$macro,
+      I32Attr:$cache_row, DenseI64ArrayAttr:$words);
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+def CIMFrame_ConfigureTestReturnRoutePacketOp
+    : CIMFrame_RoutedOp<"configure_test_return_route_packet"> {
+  let summary = "Represent one single-flit test return-route configuration";
+  let description = [{
+    A single-flit `1010` test return-route configuration. The three return
+    distances describe the test host relative to the target core.
+  }];
+  let arguments = (ins DenseI32ArrayAttr:$route, DenseI32ArrayAttr:$test_core);
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+def CIMFrame_ReadOutputCacheInt8PacketOp
+    : CIMFrame_RoutedOp<"read_output_cache_int8_packet"> {
+  let summary = "Represent one single-flit INT8 output Cache read request";
+  let description = [{
+    A single-flit `0101` output Cache read request. The Macro is selected by
+    the immediately preceding control packet and is intentionally absent from
+    this operation.
+  }];
+  let arguments = (ins DenseI32ArrayAttr:$route, I32Attr:$cache_address);
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
 #endif // CIM22_DIALECT_CIMFRAME_IR_CIMFRAMEOPS
