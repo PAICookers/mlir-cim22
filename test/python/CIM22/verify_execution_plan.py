@@ -192,11 +192,11 @@ def _static_symbols(ops: tuple[Op, ...]) -> set[str]:
             raise VerificationError(
                 f"line {op.line_number}: static weight must be tensor<16x64xi8>"
             )
-        if "cim.mapping" in op.body or any(
+        if "cim.mapping" in op.body or "cim.segment_id" in op.body or any(
             _integer_optional(op.body, name) is not None for name in COMMON
         ):
             raise VerificationError(
-                f"line {op.line_number}: static weight has work provenance"
+                f"line {op.line_number}: static weight has work identity"
             )
         symbols.add(symbol)
     if not symbols:
@@ -245,6 +245,11 @@ def validate_dump(text: str) -> tuple[Op, ...]:
     effectful = tuple(op for op in ops if op.kind != "static_weight")
     if not effectful:
         raise VerificationError("missing function execution-plan operations")
+    for op in effectful:
+        if _integer(op.body, "cim.segment_id", op.line_number) != 0:
+            raise VerificationError(
+                f"line {op.line_number}: executable plan requires segment 0"
+            )
 
     groups: dict[int, list[Op]] = {}
     group_runs = []
@@ -296,7 +301,7 @@ def validate_dump(text: str) -> tuple[Op, ...]:
             work = _work(op)
             if work.work_id not in by_work or work != by_work[work.work_id]:
                 raise VerificationError(
-                    f"group {group_id}: configuration provenance mismatch"
+                    f"group {group_id}: configuration identity mismatch"
                 )
             if op.kind == "configure_input" and "tensor<64xi8>" not in op.line:
                 raise VerificationError(
@@ -356,7 +361,7 @@ def validate_dump(text: str) -> tuple[Op, ...]:
                 )
             if work.work_id not in by_work or work != by_work[work.work_id]:
                 raise VerificationError(
-                    f"line {op.line_number}: readback provenance mismatch"
+                    f"line {op.line_number}: readback identity mismatch"
                 )
 
         barrier = [op for op in group_ops if op.kind == "group_barrier"]
@@ -381,7 +386,7 @@ def validate_dump(text: str) -> tuple[Op, ...]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Validate canonical M2.5 execution-plan order and provenance"
+        description="Validate canonical M2.5 execution-plan order and identity"
     )
     parser.add_argument("mlir", type=Path)
     args = parser.parse_args()

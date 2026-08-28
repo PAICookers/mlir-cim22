@@ -19,6 +19,17 @@ def CIM_Dialect : Dialect {
     The CIM dialect models logical compute operations independently of CIM22
     placement, physical data layout, NoC frames, and runtime behavior.
   }];
+  let extraClassDeclaration = [{
+    static StringRef getMatMulIntegerAttrName() {
+      return "cim.onnx.matmul_integer";
+    }
+    static StringRef getConvIntegerAttrName() {
+      return "cim.onnx.conv_integer";
+    }
+    static StringRef getSegmentIdAttrName() { return "cim.segment_id"; }
+    static StringRef getMatTileAttrName() { return "cim.m_tile"; }
+    static StringRef getPlanBindingAttrName() { return "cim.plan_binding"; }
+  }];
 }
 
 class CIM_Op<string mnemonic, list<Trait> traits = []>

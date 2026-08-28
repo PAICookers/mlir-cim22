@@ -8,7 +8,7 @@ from typing import NamedTuple
 import int8_reference as reference
 import numpy as np
 
-PROVENANCE_FIELDS = {
+PLAN_BINDING_FIELDS = {
     "function",
     "resource",
     "m_tile",
@@ -144,7 +144,7 @@ def _top_level_names(body: str) -> set[str]:
         match = re.match(r"\s*([A-Za-z_][A-Za-z0-9_.]*)\s*=", part)
         if not match:
             raise VerificationError(
-                f"malformed provenance field: {part.strip()}"
+                f"malformed plan binding field: {part.strip()}"
             )
         names.add(match.group(1))
     return names
@@ -199,6 +199,10 @@ def _parse_configure(
     if not match:
         return None
     body = _balanced(line, match.start(), line_number)
+    if _integer(body, "cim.segment_id", 64, line_number) != 0:
+        raise VerificationError(
+            f"line {line_number}: expected cim.segment_id 0"
+        )
     work = tuple(_integer(body, name, 64, line_number) for name in WORK_FIELDS)
     mapping = _mapping(body, "cim.mapping", line_number)
     return Record(
@@ -211,21 +215,21 @@ def _parse_command(line: str, line_number: int) -> Record | None:
     if not match:
         return None
     body = _balanced(line, match.start(), line_number)
-    marker = re.search(r"\bcim\.provenance\s*=", body)
+    marker = re.search(r"\bcim\.plan_binding\s*=", body)
     if not marker:
-        raise VerificationError(f"line {line_number}: missing cim.provenance")
-    provenance = _balanced(body, marker.start(), line_number)
-    names = _top_level_names(provenance)
-    if names != PROVENANCE_FIELDS:
+        raise VerificationError(f"line {line_number}: missing cim.plan_binding")
+    plan_binding = _balanced(body, marker.start(), line_number)
+    names = _top_level_names(plan_binding)
+    if names != PLAN_BINDING_FIELDS:
         raise VerificationError(
-            f"line {line_number}: provenance fields mismatch: {sorted(names)}"
+            f"line {line_number}: plan binding fields mismatch: {sorted(names)}"
         )
-    function = _reference(provenance, "function", line_number)
-    resource = _reference(provenance, "resource", line_number)
+    function = _reference(plan_binding, "function", line_number)
+    resource = _reference(plan_binding, "resource", line_number)
     work = tuple(
-        _integer(provenance, name, 64, line_number) for name in WORK_FIELDS
+        _integer(plan_binding, name, 64, line_number) for name in WORK_FIELDS
     )
-    mapping = _mapping(provenance, "mapping", line_number)
+    mapping = _mapping(plan_binding, "mapping", line_number)
     route = _array(body, "route", 32, 6, line_number)
     macro = _integer(body, "macro", 32, line_number)
     words_match = re.search(
@@ -313,7 +317,7 @@ def parse_records(
     ):
         if command[:-1] != configure[:-1]:
             raise VerificationError(
-                f"command {index}: provenance/route/Macro mismatch"
+                f"command {index}: plan binding/route/Macro mismatch"
             )
         if command.resource not in weights:
             raise VerificationError(

@@ -1,4 +1,4 @@
-// RUN: mlir-cim22-onnx-import %S/../../Inputs/ONNX/int8_matmulinteger_model.onnx | mlir-cim22-opt -form-cim-program -materialize-cim-schedule > %t
+// RUN: mlir-cim22-onnx-import %S/../../Inputs/ONNX/int8_matmulinteger_model.onnx | mlir-cim22-opt -partition-cim-program -form-cim-program -materialize-cim-schedule > %t
 // RUN: %python %S/../../python/CIM22/verify_schedule.py %t --m 32 --k 512 --n 1024 --onnx %S/../../Inputs/ONNX/int8_matmulinteger_model.onnx | FileCheck %s
 
 // CHECK: PASS software-only M=32 K=512 N=1024 work=16384 groups=8192 dtype=int32 shape=(32, 1024) seed=2205 weight=onnx

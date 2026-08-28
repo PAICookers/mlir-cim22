@@ -209,6 +209,7 @@ static bool checkNormalizedModule(mlir::ModuleOp Module,
 static bool checkLowering(mlir::ModuleOp Module, int64_t Batch,
                           int64_t Reduction, int64_t Output) {
   mlir::PassManager PassManager(Module.getContext());
+  PassManager.addPass(mlir::cim::createPartitionCIMProgram());
   PassManager.addPass(mlir::cim::createFormCIMProgram());
   if (mlir::failed(PassManager.run(Module)))
     return check(false,

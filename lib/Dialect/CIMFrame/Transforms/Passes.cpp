@@ -8,6 +8,7 @@
 
 #include "CIM22/Dialect/CIMFrame/Transforms/Passes.h"
 
+#include "CIM22/Dialect/CIM/IR/CIMDialect.h"
 #include "CIM22/Dialect/CIM/IR/CIMOps.h"
 #include "CIM22/Dialect/CIMFrame/IR/CIMFrameDialect.h"
 #include "CIM22/Support/Int8WeightLayout.h"
@@ -29,7 +30,7 @@ namespace mlir::cimframe {
 #include "CIM22/Dialect/CIMFrame/Transforms/Passes.h.inc"
 
 namespace {
-constexpr llvm::StringLiteral kProvenanceAttrs[] = {
+constexpr llvm::StringLiteral kPlanBindingAttrs[] = {
     "m_tile",   "n_tile",    "k_tile",     "work_id",
     "group_id", "core_slot", "macro_slot", "cim.mapping"};
 
@@ -38,7 +39,7 @@ struct StaticWeightCommandPlan {
   DenseI32ArrayAttr route;
   IntegerAttr macro;
   DenseIntElementsAttr words;
-  DictionaryAttr provenance;
+  DictionaryAttr planBinding;
 };
 
 LogicalResult verifyExactFunctionContract(func::FuncOp function) {
@@ -76,7 +77,8 @@ planStaticWeightCommand(cim::ConfigureWeightOp op, func::FuncOp function,
                         OpBuilder &builder) {
   for (NamedAttribute attr : op->getAttrs()) {
     StringRef name = attr.getName().strref();
-    if (name != "resource" && !llvm::is_contained(kProvenanceAttrs, name)) {
+    if (name != "resource" && name != cim::CIMDialect::getSegmentIdAttrName() &&
+        !llvm::is_contained(kPlanBindingAttrs, name)) {
       op.emitOpError("materialize-cim-static-weight-section rejects unexpected "
                      "configure_weight attribute '")
           << name << "'";
@@ -95,7 +97,7 @@ planStaticWeightCommand(cim::ConfigureWeightOp op, func::FuncOp function,
 
   SmallVector<IntegerAttr> integers;
   integers.reserve(7);
-  for (StringRef name : ArrayRef(kProvenanceAttrs).drop_back())
+  for (StringRef name : ArrayRef(kPlanBindingAttrs).drop_back())
     integers.push_back(op->getAttrOfType<IntegerAttr>(name));
   IntegerAttr macroSlot = integers.back();
 
@@ -120,22 +122,22 @@ planStaticWeightCommand(cim::ConfigureWeightOp op, func::FuncOp function,
   llvm::transform(rawWords, std::back_inserter(words),
                   [](uint32_t word) { return llvm::bit_cast<int32_t>(word); });
 
-  SmallVector<NamedAttribute> provenance;
-  provenance.push_back(builder.getNamedAttr(
+  SmallVector<NamedAttribute> planBinding;
+  planBinding.push_back(builder.getNamedAttr(
       "function",
       FlatSymbolRefAttr::get(function.getContext(), function.getSymName())));
-  provenance.push_back(builder.getNamedAttr("resource", resource));
+  planBinding.push_back(builder.getNamedAttr("resource", resource));
   for (auto [name, value] :
-       llvm::zip(ArrayRef(kProvenanceAttrs).drop_back(), integers))
-    provenance.push_back(builder.getNamedAttr(name, value));
-  provenance.push_back(builder.getNamedAttr("mapping", mapping));
+       llvm::zip(ArrayRef(kPlanBindingAttrs).drop_back(), integers))
+    planBinding.push_back(builder.getNamedAttr(name, value));
+  planBinding.push_back(builder.getNamedAttr("mapping", mapping));
 
   return StaticWeightCommandPlan{
       op.getLoc(), builder.getDenseI32ArrayAttr(route),
       builder.getI32IntegerAttr(static_cast<int32_t>(macroSlot.getInt())),
       DenseIntElementsAttr::get(
           RankedTensorType::get({256}, builder.getI32Type()), words),
-      builder.getDictionaryAttr(provenance)};
+      builder.getDictionaryAttr(planBinding)};
 }
 
 class MaterializeCIMStaticWeightSection final
@@ -185,7 +187,8 @@ public:
     for (const StaticWeightCommandPlan &plan : plans) {
       WriteInt8WeightsOp command = WriteInt8WeightsOp::create(
           builder, plan.location, plan.route, plan.macro, plan.words);
-      command->setAttr("cim.provenance", plan.provenance);
+      command->setAttr(cim::CIMDialect::getPlanBindingAttrName(),
+                       plan.planBinding);
     }
   }
 };
@@ -217,9 +220,10 @@ public:
         rewriter, op.getLoc(), adaptor.getRoute(), adaptor.getMacro());
     CIMInt8WeightPacketOp weight = CIMInt8WeightPacketOp::create(
         rewriter, op.getLoc(), adaptor.getRoute(), adaptor.getWords());
-    if (Attribute provenance = op->getAttr("cim.provenance")) {
-      control->setAttr("cim.provenance", provenance);
-      weight->setAttr("cim.provenance", provenance);
+    if (Attribute planBinding =
+            op->getAttr(cim::CIMDialect::getPlanBindingAttrName())) {
+      control->setAttr(cim::CIMDialect::getPlanBindingAttrName(), planBinding);
+      weight->setAttr(cim::CIMDialect::getPlanBindingAttrName(), planBinding);
     }
     rewriter.eraseOp(op);
     return success();

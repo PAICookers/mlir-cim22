@@ -1,9 +1,9 @@
 // RUN: cmake -E sha256sum %S/../../Inputs/ONNX/int8_matmul_m1_k128_n320.onnx | FileCheck %s --check-prefix=FIXTURE
 // RUN: mlir-cim22-onnx-import %S/../../Inputs/ONNX/int8_matmul_m1_k128_n320.onnx > %t.imported
-// RUN: mlir-cim22-opt %t.imported --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule))' > %t.schedule
+// RUN: mlir-cim22-opt %t.imported --pass-pipeline='builtin.module(partition-cim-program,form-cim-program,func.func(materialize-cim-schedule))' > %t.schedule
 // RUN: %python %S/../../python/CIM22/verify_schedule.py %t.schedule --m 1 --k 128 --n 320 --onnx %S/../../Inputs/ONNX/int8_matmul_m1_k128_n320.onnx | FileCheck %s --check-prefix=SCHEDULE
 // RUN: FileCheck %s --check-prefix=REDUCTION < %t.schedule
-// RUN: mlir-cim22-opt %t.imported --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan)' > %t.plan
+// RUN: mlir-cim22-opt %t.imported --pass-pipeline='builtin.module(partition-cim-program,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan)' > %t.plan
 // RUN: %python %S/../../python/CIM22/verify_execution_plan.py %t.plan | FileCheck %s --check-prefix=PLAN
 // RUN: FileCheck %s --check-prefix=READBACK < %t.plan
 // RUN: mlir-cim22-opt %t.plan --pass-pipeline='builtin.module(materialize-cim-static-weight-section)' > %t.static

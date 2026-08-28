@@ -14,6 +14,10 @@
 
 namespace mlir::cim {
 
+/// Verifies cross-operation invariants of an already MLIR-verified plan.
+///
+/// Callers must run the ordinary operation verifier first. This routine owns
+/// only plan-wide ordering, identity, and Host-boundary checks.
 LogicalResult verifyCIMExecutionPlan(func::FuncOp function);
 
 } // namespace mlir::cim

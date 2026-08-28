@@ -8,6 +8,7 @@
 
 #include "CIM22/Conversion/LinalgToCIM/Passes.h"
 #include "CIM22/Conversion/LinalgToCIM/ExecutionPlanVerifier.h"
+#include "CIM22/Dialect/CIM/IR/CIMDialect.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -35,15 +36,13 @@ namespace mlir::cim {
 #define GEN_PASS_DEF_MATERIALIZECIMEXECUTIONPLAN
 #define GEN_PASS_DEF_MATERIALIZECIMSCHEDULE
 #define GEN_PASS_DEF_NORMALIZECIMCONV
+#define GEN_PASS_DEF_PARTITIONCIMPROGRAM
 #define GEN_PASS_DEF_VERIFYCIMEXECUTIONPLAN
 #include "CIM22/Conversion/LinalgToCIM/Passes.h.inc"
 
 namespace {
-constexpr llvm::StringLiteral kMatMulIntegerMarker = "cim.onnx.matmul_integer";
-constexpr llvm::StringLiteral kConvIntegerMarker = "cim.onnx.conv_integer";
-constexpr llvm::StringLiteral kMatTileMarker = "__cim_m_tile";
-constexpr llvm::StringLiteral kTileAttrs[] = {"m_tile", "n_tile", "k_tile"};
-constexpr llvm::StringLiteral kScheduleAttrs[] = {"work_id", "group_id"};
+const llvm::StringRef kTileAttrs[] = {"m_tile", "n_tile", "k_tile"};
+const llvm::StringRef kScheduleAttrs[] = {"work_id", "group_id"};
 
 struct TileIdentity {
   int64_t m;
@@ -134,23 +133,26 @@ FailureOr<DenseElementsAttr> evaluateDenseTensor(Value value) {
 }
 
 int64_t getMatTile(Operation *op) {
-  if (auto attribute = op->getAttrOfType<IntegerAttr>(kMatTileMarker))
+  if (auto attribute =
+          op->getAttrOfType<IntegerAttr>(CIMDialect::getMatTileAttrName()))
     return attribute.getInt();
   return 0;
 }
 
 VMMOp createIdentifiedVMM(OpBuilder &builder, Location location,
                           Type resultType, Value input, Value weight,
-                          int64_t mTile, int64_t nTile, int64_t kTile) {
+                          int64_t segmentId, int64_t mTile, int64_t nTile,
+                          int64_t kTile) {
   auto vmm = VMMOp::create(builder, location, resultType, input, weight);
+  vmm->setAttr(CIMDialect::getSegmentIdAttrName(),
+               builder.getI64IntegerAttr(segmentId));
   vmm->setAttr("m_tile", builder.getI64IntegerAttr(mTile));
   vmm->setAttr("n_tile", builder.getI64IntegerAttr(nTile));
   vmm->setAttr("k_tile", builder.getI64IntegerAttr(kTile));
   return vmm;
 }
 
-unsigned countPresent(Operation *op,
-                      ArrayRef<llvm::StringLiteral> attributeNames) {
+unsigned countPresent(Operation *op, ArrayRef<llvm::StringRef> attributeNames) {
   return llvm::count_if(attributeNames,
                         [op](StringRef name) { return op->hasAttr(name); });
 }
@@ -272,8 +274,8 @@ bool hasCanonicalMatmulIndexingMaps(linalg::MatmulOp op) {
 bool isConvertible(linalg::MatvecOp op) {
   auto inputs = op.getDpsInputs();
   auto inits = op.getDpsInits();
-  if (op->hasAttr(kMatMulIntegerMarker) || inputs.size() != 2 ||
-      inits.size() != 1 || op->getNumResults() != 1)
+  if (op->hasAttr(CIMDialect::getMatMulIntegerAttrName()) ||
+      inputs.size() != 2 || inits.size() != 1 || op->getNumResults() != 1)
     return false;
 
   auto weightType = dyn_cast<RankedTensorType>(inputs[0].getType());
@@ -299,8 +301,8 @@ bool isConvertible(linalg::MatvecOp op) {
 bool isConvertible(linalg::MatmulOp op) {
   auto inputs = op.getDpsInputs();
   auto inits = op.getDpsInits();
-  if (op->hasAttr(kMatMulIntegerMarker) || inputs.size() != 2 ||
-      inits.size() != 1 || op->getNumResults() != 1)
+  if (op->hasAttr(CIMDialect::getMatMulIntegerAttrName()) ||
+      inputs.size() != 2 || inits.size() != 1 || op->getNumResults() != 1)
     return false;
 
   auto weightType = dyn_cast<RankedTensorType>(inputs[0].getType());
@@ -332,7 +334,7 @@ enum class MatMulIntegerStatus { valid, invalid, partialRangeOverflow };
 using IntegerRange = std::pair<int64_t, int64_t>;
 
 bool hasMatMulIntegerMarker(Operation *op) {
-  return op->hasAttr(kMatMulIntegerMarker);
+  return op->hasAttr(CIMDialect::getMatMulIntegerAttrName());
 }
 
 SmallVector<IntegerRange> getMatMulIntegerInputRanges(Value input,
@@ -443,10 +445,10 @@ MatMulIntegerStatus getMatMulIntegerStatus(linalg::MatvecOp op) {
                         ? dyn_cast<RankedTensorType>(inputs[0].getType())
                         : RankedTensorType{};
   if (!hasMatMulIntegerMarker(op) ||
-      !isa<UnitAttr>(op->getAttr(kMatMulIntegerMarker)) || inputs.size() != 2 ||
-      inits.size() != 1 || op->getNumResults() != 1 || !weightType ||
-      weightType.getRank() != 2 || weightType.getDimSize(0) <= 0 ||
-      weightType.getDimSize(1) <= 0)
+      !isa<UnitAttr>(op->getAttr(CIMDialect::getMatMulIntegerAttrName())) ||
+      inputs.size() != 2 || inits.size() != 1 || op->getNumResults() != 1 ||
+      !weightType || weightType.getRank() != 2 ||
+      weightType.getDimSize(0) <= 0 || weightType.getDimSize(1) <= 0)
     return MatMulIntegerStatus::invalid;
   int64_t outputSize = weightType.getDimSize(0);
   int64_t reductionSize = weightType.getDimSize(1);
@@ -471,11 +473,11 @@ MatMulIntegerStatus getMatMulIntegerStatus(linalg::MatmulOp op) {
                        ? dyn_cast<RankedTensorType>(inputs[1].getType())
                        : RankedTensorType{};
   if (!hasMatMulIntegerMarker(op) ||
-      !isa<UnitAttr>(op->getAttr(kMatMulIntegerMarker)) || inputs.size() != 2 ||
-      inits.size() != 1 || op->getNumResults() != 1 || !weightType ||
-      weightType.getRank() != 2 || !inputType || inputType.getRank() != 2 ||
-      weightType.getDimSize(0) <= 0 || weightType.getDimSize(1) <= 0 ||
-      inputType.getDimSize(1) <= 0)
+      !isa<UnitAttr>(op->getAttr(CIMDialect::getMatMulIntegerAttrName())) ||
+      inputs.size() != 2 || inits.size() != 1 || op->getNumResults() != 1 ||
+      !weightType || weightType.getRank() != 2 || !inputType ||
+      inputType.getRank() != 2 || weightType.getDimSize(0) <= 0 ||
+      weightType.getDimSize(1) <= 0 || inputType.getDimSize(1) <= 0)
     return MatMulIntegerStatus::invalid;
   int64_t outputSize = weightType.getDimSize(0);
   int64_t reductionSize = weightType.getDimSize(1);
@@ -490,6 +492,25 @@ MatMulIntegerStatus getMatMulIntegerStatus(linalg::MatmulOp op) {
       !hasCanonicalMatmulIndexingMaps(op))
     return MatMulIntegerStatus::invalid;
   return proveMatMulIntegerRanges(inputs[0], inputs[1]);
+}
+
+bool isOffloadableRoot(Operation *op) {
+  if (auto matvec = dyn_cast<linalg::MatvecOp>(op))
+    return hasMatMulIntegerMarker(op)
+               ? getMatMulIntegerStatus(matvec) == MatMulIntegerStatus::valid
+               : isConvertible(matvec);
+  if (auto matmul = dyn_cast<linalg::MatmulOp>(op))
+    return hasMatMulIntegerMarker(op)
+               ? getMatMulIntegerStatus(matmul) == MatMulIntegerStatus::valid
+               : isConvertible(matmul);
+  return false;
+}
+
+bool isPartitionedRoot(Operation *op) {
+  auto segmentId =
+      op->getAttrOfType<IntegerAttr>(CIMDialect::getSegmentIdAttrName());
+  return segmentId && segmentId.getType().isSignlessInteger(64) &&
+         segmentId.getInt() >= 0 && isOffloadableRoot(op);
 }
 
 LogicalResult rejectMatMulInteger(Operation *op, MatMulIntegerStatus status) {
@@ -509,10 +530,13 @@ public:
   LogicalResult
   matchAndRewrite(linalg::MatvecOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (!isConvertible(op))
+    if (!isPartitionedRoot(op) || !isConvertible(op))
       return rewriter.notifyMatchFailure(op, "not an exact CIM VMM candidate");
 
     auto inputs = adaptor.getInputs();
+    int64_t segmentId =
+        op->getAttrOfType<IntegerAttr>(CIMDialect::getSegmentIdAttrName())
+            .getInt();
     auto weightType = cast<RankedTensorType>(inputs[0].getType());
     int64_t outputSize = weightType.getDimSize(0);
     int64_t reductionSize = weightType.getDimSize(1);
@@ -599,8 +623,10 @@ public:
                                              /*nofold=*/false);
         }
 
-        Value partial = VMMOp::create(rewriter, location, partialType,
-                                      inputTile, weightTile);
+        Value partial = createIdentifiedVMM(
+            rewriter, location, partialType, inputTile, weightTile, segmentId,
+            getMatTile(op), outputOffset / kOutputTileSize,
+            static_cast<int64_t>(reductionTile));
         if (tileCount == 1) {
           sum = partial;
           continue;
@@ -644,6 +670,8 @@ public:
   LogicalResult
   matchAndRewrite(linalg::MatmulOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (!isPartitionedRoot(op))
+      return rewriter.notifyMatchFailure(op, "not a partitioned CIM root");
     bool integerProfile = hasMatMulIntegerMarker(op);
     if (integerProfile) {
       MatMulIntegerStatus status = getMatMulIntegerStatus(op);
@@ -656,6 +684,8 @@ public:
 
     Location location = op.getLoc();
     auto inputs = adaptor.getInputs();
+    IntegerAttr segmentId =
+        op->getAttrOfType<IntegerAttr>(CIMDialect::getSegmentIdAttrName());
     auto weightType = cast<RankedTensorType>(inputs[0].getType());
     auto inputType = cast<RankedTensorType>(inputs[1].getType());
     int64_t outputSize = weightType.getDimSize(0);
@@ -689,9 +719,12 @@ public:
       auto matvec = linalg::MatvecOp::create(
           rewriter, location, TypeRange{columnResultType},
           ValueRange{inputs[0], inputColumn.getResult()}, ValueRange{zero});
+      matvec->setAttr(CIMDialect::getSegmentIdAttrName(), segmentId);
+      matvec->setAttr(CIMDialect::getMatTileAttrName(),
+                      rewriter.getI64IntegerAttr(column));
       if (integerProfile) {
-        matvec->setAttr(kMatMulIntegerMarker, rewriter.getUnitAttr());
-        matvec->setAttr(kMatTileMarker, rewriter.getI64IntegerAttr(column));
+        matvec->setAttr(CIMDialect::getMatMulIntegerAttrName(),
+                        rewriter.getUnitAttr());
       }
       expandedColumns.push_back(
           tensor::ExpandShapeOp::create(rewriter, location, expandedResultType,
@@ -716,7 +749,7 @@ public:
   LogicalResult
   matchAndRewrite(linalg::MatvecOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (!hasMatMulIntegerMarker(op))
+    if (!isPartitionedRoot(op) || !hasMatMulIntegerMarker(op))
       return rewriter.notifyMatchFailure(op,
                                          "not an ONNX MatMulInteger matvec");
 
@@ -726,6 +759,9 @@ public:
 
     Location location = op.getLoc();
     auto inputs = adaptor.getInputs();
+    int64_t segmentId =
+        op->getAttrOfType<IntegerAttr>(CIMDialect::getSegmentIdAttrName())
+            .getInt();
     auto weightType = cast<RankedTensorType>(inputs[0].getType());
     int64_t matTile = getMatTile(op);
     auto opResultType = cast<RankedTensorType>(op->getResult(0).getType());
@@ -803,8 +839,8 @@ public:
         }
 
         Value partial = createIdentifiedVMM(
-            rewriter, location, partialType, inputTile, weightTile, matTile,
-            outputOffset / kOutputTileSize,
+            rewriter, location, partialType, inputTile, weightTile, segmentId,
+            matTile, outputOffset / kOutputTileSize,
             reductionOffset / kReductionTileSize);
         Value extended =
             arith::ExtSIOp::create(rewriter, location, resultTileType, partial);
@@ -839,7 +875,7 @@ LogicalResult normalizeCIMConv(linalg::Conv2DNchwFchwOp op,
     emitError(location) << "invalid marked ConvInteger: " << message;
     return failure();
   };
-  if (!isa<UnitAttr>(op->getAttr(kConvIntegerMarker)))
+  if (!isa<UnitAttr>(op->getAttr(CIMDialect::getConvIntegerAttrName())))
     return reject("expects a unit cim.onnx.conv_integer marker");
 
   auto inputs = op.getDpsInputs();
@@ -918,7 +954,8 @@ LogicalResult normalizeCIMConv(linalg::Conv2DNchwFchwOp op,
       rewriter, location, TypeRange{result2DType},
       ValueRange{contractionInputs[0], col2D.getResult()},
       ValueRange{init2D.getResult()});
-  matmul->setAttr(kMatMulIntegerMarker, rewriter.getUnitAttr());
+  matmul->setAttr(CIMDialect::getMatMulIntegerAttrName(),
+                  rewriter.getUnitAttr());
   auto expanded =
       tensor::ExpandShapeOp::create(rewriter, location, batchedResultType,
                                     matmul.getResult(0), collapseBatch);
@@ -1107,7 +1144,8 @@ public:
     auto newMatmul = linalg::MatmulOp::create(
         rewriter, location, TypeRange{matmul.getResult(0).getType()},
         ValueRange{newWeight, newInput}, matmul.getDpsInits());
-    newMatmul->setAttr(kMatMulIntegerMarker, rewriter.getUnitAttr());
+    newMatmul->setAttr(CIMDialect::getMatMulIntegerAttrName(),
+                       rewriter.getUnitAttr());
 
     rewriter.replaceOp(matmul, newMatmul.getResults());
     rewriter.replaceOp(add, inputs[0]);
@@ -1129,7 +1167,7 @@ public:
   void runOnOperation() override {
     SmallVector<linalg::Conv2DNchwFchwOp> candidates;
     getOperation()->walk([&](linalg::Conv2DNchwFchwOp op) {
-      if (op->hasAttr(kConvIntegerMarker))
+      if (op->hasAttr(CIMDialect::getConvIntegerAttrName()))
         candidates.push_back(op);
     });
     PatternRewriter rewriter(&getContext());
@@ -1169,6 +1207,25 @@ public:
   }
 };
 
+class PartitionCIMProgramPass final
+    : public impl::PartitionCIMProgramBase<PartitionCIMProgramPass> {
+public:
+  using Base::Base;
+
+  void runOnOperation() override {
+    Builder builder(&getContext());
+    for (func::FuncOp function : getOperation().getOps<func::FuncOp>()) {
+      int64_t segmentId = 0;
+      function.walk([&](Operation *op) {
+        if (!isOffloadableRoot(op))
+          return;
+        op->setAttr(CIMDialect::getSegmentIdAttrName(),
+                    builder.getI64IntegerAttr(segmentId++));
+      });
+    }
+  }
+};
+
 class FormCIMProgram final : public impl::FormCIMProgramBase<FormCIMProgram> {
 public:
   using Base::Base;
@@ -1178,10 +1235,10 @@ public:
     target.addLegalDialect<CIMDialect>();
     target.addLegalDialect<tensor::TensorDialect>();
     target.addDynamicallyLegalOp<linalg::MatvecOp>([](linalg::MatvecOp op) {
-      return !isConvertible(op) && !hasMatMulIntegerMarker(op);
+      return !op->hasAttr(CIMDialect::getSegmentIdAttrName());
     });
     target.addDynamicallyLegalOp<linalg::MatmulOp>([](linalg::MatmulOp op) {
-      return !isConvertible(op) && !hasMatMulIntegerMarker(op);
+      return !op->hasAttr(CIMDialect::getSegmentIdAttrName());
     });
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
@@ -1201,9 +1258,9 @@ public:
 
   void runOnOperation() override {
     func::FuncOp function = getOperation();
-    SmallVector<VMMOp> vmms;
-    function.walk([&](VMMOp op) { vmms.push_back(op); });
-    if (vmms.empty())
+    SmallVector<VMMOp> allVMMs;
+    function.walk([&](VMMOp op) { allVMMs.push_back(op); });
+    if (allVMMs.empty())
       return;
 
     if (!function.getBody().hasOneBlock()) {
@@ -1212,138 +1269,167 @@ public:
       return signalPassFailure();
     }
     Block *body = &function.getBody().front();
-    if (llvm::any_of(vmms,
+    if (llvm::any_of(allVMMs,
                      [body](VMMOp op) { return op->getBlock() != body; })) {
       function.emitError(
           "materialize-cim-schedule cannot represent nested control flow");
       return signalPassFailure();
     }
 
-    SmallVector<TileIdentity> identities;
-    identities.reserve(vmms.size());
-    int64_t maxM = 0;
-    int64_t maxN = 0;
-    int64_t maxK = 0;
-    bool anyScheduled = false;
-    bool allScheduled = true;
-    for (VMMOp vmm : vmms) {
-      auto identity = readTileIdentity(vmm);
-      if (!identity)
+    SmallVector<SmallVector<VMMOp>> segments;
+    for (VMMOp vmm : allVMMs) {
+      auto segmentId =
+          readNonNegativeI64(vmm, CIMDialect::getSegmentIdAttrName());
+      if (!segmentId)
         return signalPassFailure();
-      identities.push_back(*identity);
-      maxM = std::max(maxM, identity->m);
-      maxN = std::max(maxN, identity->n);
-      maxK = std::max(maxK, identity->k);
-
-      unsigned scheduleCount = countPresent(vmm, kScheduleAttrs);
-      if (scheduleCount != 0 && scheduleCount != std::size(kScheduleAttrs)) {
-        vmm.emitOpError("materialize-cim-schedule requires complete work_id "
-                        "and group_id attributes");
-        return signalPassFailure();
-      }
-      anyScheduled |= scheduleCount != 0;
-      allScheduled &= scheduleCount != 0;
-    }
-    if (anyScheduled != allScheduled) {
-      function.emitError("materialize-cim-schedule rejects mixed scheduled "
-                         "and unscheduled cim.vmm operations");
-      return signalPassFailure();
-    }
-
-    int64_t mTiles = 0;
-    int64_t nTiles = 0;
-    int64_t kTiles = 0;
-    if (llvm::AddOverflow(maxM, int64_t{1}, mTiles) ||
-        llvm::AddOverflow(maxN, int64_t{1}, nTiles) ||
-        llvm::AddOverflow(maxK, int64_t{1}, kTiles)) {
-      function.emitError("materialize-cim-schedule tile extent overflows i64");
-      return signalPassFailure();
-    }
-    int64_t mnTiles = 0;
-    int64_t expectedWorkCount = 0;
-    if (llvm::MulOverflow(mTiles, nTiles, mnTiles) ||
-        llvm::MulOverflow(mnTiles, kTiles, expectedWorkCount)) {
-      function.emitError("materialize-cim-schedule tile rectangle overflows "
-                         "i64");
-      return signalPassFailure();
-    }
-
-    llvm::DenseSet<int64_t> seenWork;
-    seenWork.reserve(vmms.size());
-    for (auto [index, identity] : llvm::enumerate(identities)) {
-      int64_t workId =
-          ((identity.m * nTiles) + identity.n) * kTiles + identity.k;
-      if (!seenWork.insert(workId).second) {
-        vmms[index].emitOpError(
-            "materialize-cim-schedule rejects duplicate tile identity");
-        return signalPassFailure();
-      }
-    }
-
-    if (expectedWorkCount != static_cast<int64_t>(vmms.size())) {
-      function.emitError("materialize-cim-schedule requires a complete "
-                         "rectangular tile identity space");
-      return signalPassFailure();
-    }
-
-    for (auto [index, identity] : llvm::enumerate(identities)) {
-      int64_t workId =
-          ((identity.m * nTiles) + identity.n) * kTiles + identity.k;
-      if (workId != static_cast<int64_t>(index)) {
-        vmms[index].emitOpError("materialize-cim-schedule requires contiguous "
-                                "M-major/N-major/K-minor tile order");
-        return signalPassFailure();
-      }
-    }
-
-    for (size_t index = 0; index + 1 < vmms.size(); index += 2) {
-      if (dependsOn(vmms[index], vmms[index + 1]) ||
-          dependsOn(vmms[index + 1], vmms[index])) {
-        vmms[index + 1].emitOpError(
-            "materialize-cim-schedule cannot pair SSA-dependent VMM work");
-        return signalPassFailure();
-      }
-    }
-
-    Builder builder(function.getContext());
-    for (auto [index, vmm] : llvm::enumerate(vmms)) {
-      int64_t workId = static_cast<int64_t>(index);
-      // TODO(CTQ-031): Keep software-only groups two-wide until cross-core
-      // waves are known.
-      int64_t groupId = workId / 2;
-      if (allScheduled) {
-        struct ExpectedAttribute {
-          StringRef name;
-          int64_t value;
-        };
-        ExpectedAttribute expected[] = {{"work_id", workId},
-                                        {"group_id", groupId}};
-        for (const ExpectedAttribute &attribute : expected) {
-          auto actual = readNonNegativeI64(vmm, attribute.name);
-          if (!actual)
-            return signalPassFailure();
-          if (*actual != attribute.value) {
-            vmm.emitOpError("materialize-cim-schedule expects '")
-                << attribute.name << "' = " << attribute.value << ", but got "
-                << *actual;
-            return signalPassFailure();
-          }
+      if (segments.empty() ||
+          *segmentId != static_cast<int64_t>(segments.size() - 1)) {
+        if (*segmentId != static_cast<int64_t>(segments.size())) {
+          vmm.emitOpError("materialize-cim-schedule requires dense, "
+                          "contiguous cim.segment_id ordering");
+          return signalPassFailure();
         }
-        continue;
+        segments.emplace_back();
       }
-      vmm->setAttr("work_id", builder.getI64IntegerAttr(workId));
-      vmm->setAttr("group_id", builder.getI64IntegerAttr(groupId));
+      segments.back().push_back(vmm);
+    }
+
+    for (SmallVector<VMMOp> &vmms : segments) {
+      SmallVector<TileIdentity> identities;
+      identities.reserve(vmms.size());
+      int64_t maxM = 0;
+      int64_t maxN = 0;
+      int64_t maxK = 0;
+      bool anyScheduled = false;
+      bool allScheduled = true;
+      for (VMMOp vmm : vmms) {
+        auto identity = readTileIdentity(vmm);
+        if (!identity)
+          return signalPassFailure();
+        identities.push_back(*identity);
+        maxM = std::max(maxM, identity->m);
+        maxN = std::max(maxN, identity->n);
+        maxK = std::max(maxK, identity->k);
+
+        unsigned scheduleCount = countPresent(vmm, kScheduleAttrs);
+        if (scheduleCount != 0 && scheduleCount != std::size(kScheduleAttrs)) {
+          vmm.emitOpError("materialize-cim-schedule requires complete work_id "
+                          "and group_id attributes");
+          return signalPassFailure();
+        }
+        anyScheduled |= scheduleCount != 0;
+        allScheduled &= scheduleCount != 0;
+      }
+      if (anyScheduled != allScheduled) {
+        function.emitError("materialize-cim-schedule rejects mixed scheduled "
+                           "and unscheduled cim.vmm operations");
+        return signalPassFailure();
+      }
+
+      int64_t mTiles = 0;
+      int64_t nTiles = 0;
+      int64_t kTiles = 0;
+      if (llvm::AddOverflow(maxM, int64_t{1}, mTiles) ||
+          llvm::AddOverflow(maxN, int64_t{1}, nTiles) ||
+          llvm::AddOverflow(maxK, int64_t{1}, kTiles)) {
+        function.emitError(
+            "materialize-cim-schedule tile extent overflows i64");
+        return signalPassFailure();
+      }
+      int64_t mnTiles = 0;
+      int64_t expectedWorkCount = 0;
+      if (llvm::MulOverflow(mTiles, nTiles, mnTiles) ||
+          llvm::MulOverflow(mnTiles, kTiles, expectedWorkCount)) {
+        function.emitError("materialize-cim-schedule tile rectangle overflows "
+                           "i64");
+        return signalPassFailure();
+      }
+
+      llvm::DenseSet<int64_t> seenWork;
+      seenWork.reserve(vmms.size());
+      for (auto [index, identity] : llvm::enumerate(identities)) {
+        int64_t workId =
+            ((identity.m * nTiles) + identity.n) * kTiles + identity.k;
+        if (!seenWork.insert(workId).second) {
+          vmms[index].emitOpError(
+              "materialize-cim-schedule rejects duplicate tile identity");
+          return signalPassFailure();
+        }
+      }
+
+      if (expectedWorkCount != static_cast<int64_t>(vmms.size())) {
+        function.emitError("materialize-cim-schedule requires a complete "
+                           "rectangular tile identity space");
+        return signalPassFailure();
+      }
+
+      for (auto [index, identity] : llvm::enumerate(identities)) {
+        int64_t workId =
+            ((identity.m * nTiles) + identity.n) * kTiles + identity.k;
+        if (workId != static_cast<int64_t>(index)) {
+          vmms[index].emitOpError(
+              "materialize-cim-schedule requires contiguous "
+              "M-major/N-major/K-minor tile order");
+          return signalPassFailure();
+        }
+      }
+
+      for (size_t index = 0; index + 1 < vmms.size(); index += 2) {
+        if (dependsOn(vmms[index], vmms[index + 1]) ||
+            dependsOn(vmms[index + 1], vmms[index])) {
+          vmms[index + 1].emitOpError(
+              "materialize-cim-schedule cannot pair SSA-dependent VMM work");
+          return signalPassFailure();
+        }
+      }
+
+      Builder builder(function.getContext());
+      for (auto [index, vmm] : llvm::enumerate(vmms)) {
+        int64_t workId = static_cast<int64_t>(index);
+        // TODO(CTQ-031): Keep software-only groups two-wide until cross-core
+        // waves are known.
+        int64_t groupId = workId / 2;
+        if (allScheduled) {
+          struct ExpectedAttribute {
+            StringRef name;
+            int64_t value;
+          };
+          ExpectedAttribute expected[] = {{"work_id", workId},
+                                          {"group_id", groupId}};
+          for (const ExpectedAttribute &attribute : expected) {
+            auto actual = readNonNegativeI64(vmm, attribute.name);
+            if (!actual)
+              return signalPassFailure();
+            if (*actual != attribute.value) {
+              vmm.emitOpError("materialize-cim-schedule expects '")
+                  << attribute.name << "' = " << attribute.value << ", but got "
+                  << *actual;
+              return signalPassFailure();
+            }
+          }
+          continue;
+        }
+        vmm->setAttr("work_id", builder.getI64IntegerAttr(workId));
+        vmm->setAttr("group_id", builder.getI64IntegerAttr(groupId));
+      }
     }
   }
 };
 
-constexpr llvm::StringLiteral kExecutionPlanProvenanceAttrs[] = {
-    "m_tile",   "n_tile",    "k_tile",     "work_id",
-    "group_id", "core_slot", "macro_slot", "cim.mapping"};
+const llvm::StringRef kExecutionPlanIdentityAttrs[] = {
+    CIMDialect::getSegmentIdAttrName(),
+    "m_tile",
+    "n_tile",
+    "k_tile",
+    "work_id",
+    "group_id",
+    "core_slot",
+    "macro_slot",
+    "cim.mapping"};
 constexpr int64_t kOutputCacheRows = 8;
 
-void copyExecutionPlanProvenance(Operation *from, Operation *to) {
-  for (StringRef name : kExecutionPlanProvenanceAttrs)
+void copyExecutionPlanIdentity(Operation *from, Operation *to) {
+  for (StringRef name : kExecutionPlanIdentityAttrs)
     to->setAttr(name, from->getAttr(name));
 }
 
@@ -1363,6 +1449,7 @@ public:
     struct WorkPlan {
       VMMOp vmm;
       DenseIntElementsAttr weight;
+      int64_t segmentId;
       int64_t workId;
       int64_t groupId;
       int64_t coreSlot;
@@ -1381,18 +1468,8 @@ public:
       function.walk(
           [&](Operation *op) { hasExecutionPlan |= isExecutionPlanOp(op); });
       if (vmms.empty()) {
-        if (hasExecutionPlan) {
-          auto schema = function->getAttrOfType<IntegerAttr>(
-              "cim.execution_plan_schema_version");
-          if (!schema || !schema.getType().isSignlessInteger(64) ||
-              schema.getInt() != 1) {
-            function.emitError("materialize-cim-execution-plan expects "
-                               "cim.execution_plan_schema_version = 1 : i64");
-            return signalPassFailure();
-          }
-          if (failed(verifyCIMExecutionPlan(function)))
-            return signalPassFailure();
-        }
+        if (hasExecutionPlan && failed(verifyCIMExecutionPlan(function)))
+          return signalPassFailure();
         continue;
       }
       if (hasExecutionPlan) {
@@ -1414,26 +1491,40 @@ public:
 
       FunctionPlan plan{function, {}};
       plan.works.reserve(vmms.size());
-      for (auto [index, vmm] : llvm::enumerate(vmms)) {
-        if (countPresent(vmm, kExecutionPlanProvenanceAttrs) !=
-            std::size(kExecutionPlanProvenanceAttrs)) {
+      int64_t currentSegment = -1;
+      int64_t expectedWork = 0;
+      for (VMMOp vmm : vmms) {
+        if (countPresent(vmm, kExecutionPlanIdentityAttrs) !=
+            std::size(kExecutionPlanIdentityAttrs)) {
           vmm.emitOpError(
               "materialize-cim-execution-plan requires complete mapped "
-              "work provenance");
+              "work identity");
           return signalPassFailure();
         }
+        auto segmentId =
+            readNonNegativeI64(vmm, CIMDialect::getSegmentIdAttrName());
         auto workId = readNonNegativeI64(vmm, "work_id");
         auto groupId = readNonNegativeI64(vmm, "group_id");
         auto coreSlot = readNonNegativeI64(vmm, "core_slot");
         auto macroSlot = readNonNegativeI64(vmm, "macro_slot");
-        if (!workId || !groupId || !coreSlot || !macroSlot)
+        if (!segmentId || !workId || !groupId || !coreSlot || !macroSlot)
           return signalPassFailure();
-        if (*workId != static_cast<int64_t>(index) || *groupId != *workId / 2 ||
-            *macroSlot < 0 || *macroSlot > 1) {
+        if (*segmentId != currentSegment) {
+          if (*segmentId != currentSegment + 1) {
+            vmm.emitOpError("materialize-cim-execution-plan requires dense, "
+                            "contiguous cim.segment_id ordering");
+            return signalPassFailure();
+          }
+          currentSegment = *segmentId;
+          expectedWork = 0;
+        }
+        if (*workId != expectedWork || *groupId != *workId / 2 ||
+            *macroSlot > 1) {
           vmm.emitOpError(
               "materialize-cim-execution-plan rejects invalid work placement");
           return signalPassFailure();
         }
+        ++expectedWork;
         FailureOr<DenseElementsAttr> weight =
             evaluateDenseTensor(vmm.getWeight());
         if (failed(weight) ||
@@ -1449,14 +1540,17 @@ public:
                           "elements");
           return signalPassFailure();
         }
-        plan.works.push_back(
-            {vmm, intWeight, *workId, *groupId, *coreSlot, *macroSlot});
+        plan.works.push_back({vmm, intWeight, *segmentId, *workId, *groupId,
+                              *coreSlot, *macroSlot});
       }
 
-      for (size_t index = 0; index < plan.works.size(); index += 2) {
+      for (size_t index = 0; index < plan.works.size();) {
         WorkPlan &first = plan.works[index];
-        if (index + 1 == plan.works.size())
+        if (index + 1 == plan.works.size() ||
+            plan.works[index + 1].segmentId != first.segmentId) {
+          ++index;
           continue;
+        }
         WorkPlan &second = plan.works[index + 1];
         if (first.groupId != second.groupId ||
             first.coreSlot != second.coreSlot || first.macroSlot != 0 ||
@@ -1468,6 +1562,66 @@ public:
               "pair per two-work group");
           return signalPassFailure();
         }
+        index += 2;
+      }
+
+      for (size_t begin = 0; begin < plan.works.size();) {
+        size_t end = begin + 1;
+        while (end < plan.works.size() &&
+               plan.works[end].segmentId == plan.works[begin].segmentId)
+          ++end;
+
+        llvm::DenseSet<Operation *> segmentWork;
+        for (size_t index = begin; index < end; ++index)
+          segmentWork.insert(plan.works[index].vmm);
+
+        llvm::SetVector<Operation *> preparation;
+        BackwardSliceOptions sliceOptions;
+        sliceOptions.inclusive = true;
+        sliceOptions.omitUsesFromAbove = false;
+        for (size_t index = begin; index < end; ++index) {
+          Operation *definition =
+              plan.works[index].vmm.getInput().getDefiningOp();
+          if (!definition)
+            continue;
+          preparation.insert(definition);
+          llvm::SetVector<Operation *> slice;
+          if (failed(getBackwardSlice(definition, &slice, sliceOptions))) {
+            definition->emitError("materialize-cim-execution-plan cannot "
+                                  "analyze segment input preparation");
+            return signalPassFailure();
+          }
+          preparation.insert(slice.begin(), slice.end());
+        }
+        // Configure inputs must be materialized before this segment starts;
+        // hoist their pure preparation when the source IR placed it later.
+        if (llvm::any_of(preparation, [&](Operation *op) {
+              return segmentWork.contains(op);
+            })) {
+          plan.works[begin].vmm.emitOpError(
+              "materialize-cim-execution-plan rejects an input that depends "
+              "on work in the same segment");
+          return signalPassFailure();
+        }
+        Operation *segmentStart = plan.works[begin].vmm;
+        SmallVector<Operation *> toMove;
+        for (Operation *op : preparation) {
+          if (op->getBlock() != segmentStart->getBlock() ||
+              !segmentStart->isBeforeInBlock(op))
+            continue;
+          if (!isMemoryEffectFree(op)) {
+            op->emitError("materialize-cim-execution-plan cannot move "
+                          "side-effecting segment input preparation");
+            return signalPassFailure();
+          }
+          toMove.push_back(op);
+        }
+        llvm::sort(toMove, [](Operation *lhs, Operation *rhs) {
+          return lhs->isBeforeInBlock(rhs);
+        });
+        for (Operation *op : toMove)
+          op->moveBefore(segmentStart);
+        begin = end;
       }
       plans.push_back(std::move(plan));
     }
@@ -1479,8 +1633,8 @@ public:
       resources.reserve(plan.works.size());
       for (WorkPlan &work : plan.works) {
         std::string name =
-            (Twine("__cim_weight_") + plan.function.getSymName() + "_w" +
-             Twine(work.workId))
+            (Twine("__cim_weight_") + plan.function.getSymName() + "_s" +
+             Twine(work.segmentId) + "_w" + Twine(work.workId))
                 .str();
         StaticWeightOp::create(moduleBuilder, work.vmm.getLoc(), name,
                                work.weight);
@@ -1489,8 +1643,12 @@ public:
 
       plan.function->setAttr("cim.execution_plan_schema_version",
                              moduleBuilder.getI64IntegerAttr(1));
-      for (size_t index = 0; index < plan.works.size(); index += 2) {
-        size_t count = std::min<size_t>(2, plan.works.size() - index);
+      for (size_t index = 0; index < plan.works.size();) {
+        size_t count =
+            index + 1 < plan.works.size() && plan.works[index + 1].segmentId ==
+                                                 plan.works[index].segmentId
+                ? 2
+                : 1;
         WorkPlan &last = plan.works[index + count - 1];
         SmallVector<Operation *> earlyUsers;
         if (count == 2) {
@@ -1507,18 +1665,20 @@ public:
           WorkPlan &work = plan.works[index + offset];
           auto input = ConfigureInputOp::create(builder, work.vmm.getLoc(),
                                                 work.vmm.getInput());
-          copyExecutionPlanProvenance(work.vmm, input);
+          copyExecutionPlanIdentity(work.vmm, input);
           auto weight = ConfigureWeightOp::create(builder, work.vmm.getLoc(),
                                                   resources[index + offset]);
-          copyExecutionPlanProvenance(work.vmm, weight);
+          copyExecutionPlanIdentity(work.vmm, weight);
         }
         for (size_t offset = 0; offset < count; ++offset) {
           WorkPlan &work = plan.works[index + offset];
           auto dispatch = DispatchOp::create(builder, work.vmm.getLoc());
-          copyExecutionPlanProvenance(work.vmm, dispatch);
+          copyExecutionPlanIdentity(work.vmm, dispatch);
         }
         WorkPlan &first = plan.works[index];
         auto once = OnceOp::create(builder, first.vmm.getLoc());
+        once->setAttr(CIMDialect::getSegmentIdAttrName(),
+                      first.vmm->getAttr(CIMDialect::getSegmentIdAttrName()));
         once->setAttr("group_id", first.vmm->getAttr("group_id"));
         once->setAttr("core_slot", first.vmm->getAttr("core_slot"));
         once->setAttr("cim.mapping", first.vmm->getAttr("cim.mapping"));
@@ -1526,7 +1686,7 @@ public:
           WorkPlan &work = plan.works[index + offset];
           auto readback = ReadbackOp::create(builder, work.vmm.getLoc(),
                                              work.vmm.getResult().getType());
-          copyExecutionPlanProvenance(work.vmm, readback);
+          copyExecutionPlanIdentity(work.vmm, readback);
           auto nTile = readNonNegativeI64(work.vmm, "n_tile");
           if (!nTile) {
             work.vmm.emitOpError(
@@ -1557,6 +1717,9 @@ public:
           readbacks.push_back(readback);
         }
         auto barrier = GroupBarrierOp::create(builder, first.vmm.getLoc());
+        barrier->setAttr(
+            CIMDialect::getSegmentIdAttrName(),
+            first.vmm->getAttr(CIMDialect::getSegmentIdAttrName()));
         barrier->setAttr("group_id", first.vmm->getAttr("group_id"));
 
         Operation *anchor = barrier;
@@ -1571,6 +1734,7 @@ public:
         }
         for (size_t offset = 0; offset < count; ++offset)
           plan.works[index + offset].vmm.erase();
+        index += count;
       }
       if (failed(verifyCIMExecutionPlan(plan.function)))
         return signalPassFailure();

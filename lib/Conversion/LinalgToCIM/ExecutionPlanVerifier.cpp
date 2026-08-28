@@ -8,46 +8,58 @@
 
 #include "CIM22/Conversion/LinalgToCIM/ExecutionPlanVerifier.h"
 
+#include "CIM22/Dialect/CIM/IR/CIMDialect.h"
 #include "CIM22/Dialect/CIM/IR/CIMOps.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/STLExtras.h"
 
 namespace mlir::cim {
 namespace {
-constexpr llvm::StringLiteral kWorkAttrs[] = {
-    "m_tile",   "n_tile",    "k_tile",     "work_id",
-    "group_id", "core_slot", "macro_slot", "cim.mapping"};
-constexpr llvm::StringLiteral kGroupAttrs[] = {"group_id", "core_slot",
-                                               "cim.mapping"};
+const llvm::StringRef kWorkIdentityAttrs[] = {
+    CIMDialect::getSegmentIdAttrName(),
+    "m_tile",
+    "n_tile",
+    "k_tile",
+    "work_id",
+    "group_id",
+    "core_slot",
+    "macro_slot",
+    "cim.mapping"};
+const llvm::StringRef kGroupIdentityAttrs[] = {
+    CIMDialect::getSegmentIdAttrName(), "group_id", "core_slot", "cim.mapping"};
+const llvm::StringRef kBarrierIdentityAttrs[] = {
+    CIMDialect::getSegmentIdAttrName(), "group_id"};
 
 bool isExecutionPlanOp(Operation *op) {
   return isa<ConfigureInputOp, ConfigureWeightOp, DispatchOp, OnceOp,
              ReadbackOp, GroupBarrierOp>(op);
 }
 
-FailureOr<int64_t> readI64(Operation *op, StringRef name) {
-  auto value = op->getAttrOfType<IntegerAttr>(name);
-  if (!value || !value.getType().isSignlessInteger(64) || value.getInt() < 0) {
-    op->emitError("CIM execution plan expects non-negative i64 '")
-        << name << "'";
-    return failure();
-  }
-  return value.getInt();
+int64_t getI64(Operation *op, StringRef name) {
+  return cast<IntegerAttr>(op->getAttr(name)).getInt();
 }
 
 LogicalResult requireSameWork(Operation *expected, Operation *actual) {
-  for (StringRef name : kWorkAttrs)
+  for (StringRef name : kWorkIdentityAttrs)
     if (expected->getAttr(name) != actual->getAttr(name))
       return actual->emitError("CIM execution plan expects '")
-             << name << "' to match work provenance";
+             << name << "' to match work identity";
   return success();
 }
 
 LogicalResult requireSameGroup(Operation *expected, Operation *actual) {
-  for (StringRef name : kGroupAttrs)
+  for (StringRef name : kGroupIdentityAttrs)
     if (expected->getAttr(name) != actual->getAttr(name))
       return actual->emitError("CIM execution plan expects '")
-             << name << "' to match group provenance";
+             << name << "' to match group identity";
+  return success();
+}
+
+LogicalResult requireSameBarrier(Operation *expected, Operation *actual) {
+  for (StringRef name : kBarrierIdentityAttrs)
+    if (expected->getAttr(name) != actual->getAttr(name))
+      return actual->emitError("CIM execution plan expects '")
+             << name << "' to match group identity";
   return success();
 }
 
@@ -69,7 +81,8 @@ LogicalResult validateHostOperation(Operation *op) {
   return success();
 }
 
-LogicalResult validateInputOwner(ConfigureInputOp input) {
+LogicalResult validateInputOwner(ConfigureInputOp input,
+                                 Operation *segmentStart) {
   Value owner = input.getInput();
   Block *block = input->getBlock();
   if (auto argument = dyn_cast<BlockArgument>(owner))
@@ -78,9 +91,11 @@ LogicalResult validateInputOwner(ConfigureInputOp input) {
                : input.emitError("CIM execution-plan input owner is foreign");
   Operation *definition = owner.getDefiningOp();
   if (!definition || definition->getBlock() != block ||
-      !definition->isBeforeInBlock(input))
+      !definition->isBeforeInBlock(segmentStart))
     return input.emitError(
-        "CIM execution-plan input must be defined before its segment");
+               "CIM execution-plan input must be available before segment ")
+           << getI64(segmentStart, CIMDialect::getSegmentIdAttrName())
+           << " starts";
   return success();
 }
 
@@ -104,7 +119,7 @@ LogicalResult rejectExpected(func::FuncOp function,
         "out-of-order CIM operation; expected ")
         << expected;
   else
-    function.emitError("CIM execution plan found an incomplete segment; "
+    function.emitError("CIM execution plan found an incomplete group; "
                        "expected ")
         << expected;
   return failure();
@@ -112,6 +127,16 @@ LogicalResult rejectExpected(func::FuncOp function,
 } // namespace
 
 LogicalResult verifyCIMExecutionPlan(func::FuncOp function) {
+  bool hasExecutionPlan = false;
+  function.walk(
+      [&](Operation *op) { hasExecutionPlan |= isExecutionPlanOp(op); });
+  if (!hasExecutionPlan) {
+    if (function->hasAttr("cim.execution_plan_schema_version"))
+      return function.emitError(
+          "CIM execution plan rejects a schema without plan operations");
+    return success();
+  }
+
   if (function.isExternal() || !function.getBody().hasOneBlock())
     return function.emitError(
         "CIM execution plan requires one defined straight-line block");
@@ -129,8 +154,11 @@ LogicalResult verifyCIMExecutionPlan(func::FuncOp function) {
     operations.push_back(&op);
 
   size_t cursor = 0;
+  int64_t currentSegment = -1;
   int64_t expectedGroup = 0;
   int64_t expectedWork = 0;
+  Operation *segmentStart = nullptr;
+  bool segmentClosed = false;
   while (cursor < operations.size()) {
     if (!isExecutionPlanOp(operations[cursor])) {
       if (failed(validateHostOperation(operations[cursor])))
@@ -142,6 +170,24 @@ LogicalResult verifyCIMExecutionPlan(func::FuncOp function) {
       return rejectExpected(function, operations, cursor,
                             "cim.configure_input");
 
+    int64_t segmentId =
+        getI64(operations[cursor], CIMDialect::getSegmentIdAttrName());
+    if (segmentId != currentSegment) {
+      if (segmentId != currentSegment + 1)
+        return operations[cursor]->emitError(
+                   "CIM execution plan expects cim.segment_id = ")
+               << currentSegment + 1 << ", but got " << segmentId;
+      currentSegment = segmentId;
+      expectedGroup = 0;
+      expectedWork = 0;
+      segmentStart = operations[cursor];
+      segmentClosed = false;
+    } else if (segmentClosed) {
+      return operations[cursor]->emitError(
+          "CIM execution plan permits a single-Macro group only as the final "
+          "group of its segment");
+    }
+
     SmallVector<ConfigureInputOp> inputs;
     while (cursor < operations.size() &&
            isa<ConfigureInputOp>(operations[cursor]) && inputs.size() < 2) {
@@ -152,17 +198,17 @@ LogicalResult verifyCIMExecutionPlan(func::FuncOp function) {
                               "cim.configure_weight");
       Operation *weight = operations[cursor++];
       if (failed(requireSameWork(input, weight)) ||
-          failed(validateInputOwner(input)))
+          failed(validateInputOwner(input, segmentStart)))
         return failure();
-      FailureOr<int64_t> group = readI64(input, "group_id");
-      FailureOr<int64_t> work = readI64(input, "work_id");
-      FailureOr<int64_t> macro = readI64(input, "macro_slot");
-      if (failed(group) || failed(work) || failed(macro))
-        return failure();
-      if (*group != expectedGroup || *work != expectedWork ||
-          *macro != static_cast<int64_t>(inputs.size()))
+      int64_t group = getI64(input, "group_id");
+      int64_t work = getI64(input, "work_id");
+      int64_t macro = getI64(input, "macro_slot");
+      if (group != expectedGroup || work != expectedWork ||
+          macro != static_cast<int64_t>(inputs.size()))
         return input.emitError(
-            "CIM execution plan requires dense group/work/Macro ordering");
+                   "CIM execution plan expects segment/group/work/Macro = ")
+               << currentSegment << "/" << expectedGroup << "/" << expectedWork
+               << "/" << inputs.size();
       if (!inputs.empty() && failed(requireSameGroup(inputs.front(), input)))
         return failure();
       inputs.push_back(input);
@@ -177,10 +223,6 @@ LogicalResult verifyCIMExecutionPlan(func::FuncOp function) {
     if (cursor >= operations.size() || !isa<OnceOp>(operations[cursor]))
       return rejectExpected(function, operations, cursor, "cim.once");
     auto once = cast<OnceOp>(operations[cursor++]);
-    FailureOr<int64_t> onceGroup = readI64(once, "group_id");
-    if (failed(onceGroup) || *onceGroup != expectedGroup)
-      return once.emitError(
-          "CIM execution plan once does not match its segment group");
     if (failed(requireSameGroup(inputs.front(), once)))
       return failure();
 
@@ -196,24 +238,15 @@ LogicalResult verifyCIMExecutionPlan(func::FuncOp function) {
     if (cursor >= operations.size() || !isa<GroupBarrierOp>(operations[cursor]))
       return rejectExpected(function, operations, cursor, "cim.group_barrier");
     auto barrier = cast<GroupBarrierOp>(operations[cursor++]);
-    FailureOr<int64_t> barrierGroup = readI64(barrier, "group_id");
-    if (failed(barrierGroup) || *barrierGroup != expectedGroup)
-      return barrier.emitError(
-          "CIM execution plan barrier does not match its segment group");
+    if (failed(requireSameBarrier(inputs.front(), barrier)))
+      return failure();
     for (ReadbackOp readback : readbacks)
       if (failed(validateReadbackUsers(readback, barrier)))
         return failure();
 
-    if (inputs.size() == 1 &&
-        llvm::any_of(ArrayRef<Operation *>(operations).drop_front(cursor),
-                     isExecutionPlanOp))
-      return function.emitError("CIM execution plan permits a single-Macro "
-                                "group only as the final segment");
+    segmentClosed = inputs.size() == 1;
     ++expectedGroup;
   }
-  if (expectedGroup == 0)
-    return function.emitError(
-        "CIM execution plan requires at least one CIM segment");
   return success();
 }
 

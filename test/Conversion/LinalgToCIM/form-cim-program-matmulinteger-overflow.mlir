@@ -1,6 +1,7 @@
-// RUN: not mlir-cim22-opt %s -form-cim-program 2>&1 | FileCheck %s
+// RUN: mlir-cim22-opt %s -partition-cim-program -form-cim-program | FileCheck %s
 
-// CHECK: ONNX MatMulInteger violates the signed i21 partial contract: partial is outside signed i21
+// CHECK: linalg.matmul {cim.onnx.matmul_integer}
+// CHECK-NOT: cim.vmm
 
 func.func @partial_overflow(%input: tensor<64x1xi8>) -> tensor<1x1xi32> {
   %weight = arith.constant dense<-128> : tensor<1x64xi8>

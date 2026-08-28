@@ -1,15 +1,15 @@
 // RUN: split-file %s %t
-// RUN: mlir-cim22-opt %t/canonical.mlir -form-cim-program > %t/once.mlir
-// RUN: mlir-cim22-opt %t/once.mlir -form-cim-program > %t/twice.mlir
+// RUN: mlir-cim22-opt %t/canonical.mlir -partition-cim-program -form-cim-program > %t/once.mlir
+// RUN: mlir-cim22-opt %t/once.mlir -partition-cim-program -form-cim-program > %t/twice.mlir
 // RUN: diff %t/once.mlir %t/twice.mlir
 // RUN: FileCheck %s --check-prefix=CHECK < %t/once.mlir
-// RUN: mlir-cim22-opt %t/noncanonical.mlir -form-cim-program --mlir-print-op-generic --mlir-print-local-scope | FileCheck %s --check-prefix=GENERIC
+// RUN: mlir-cim22-opt %t/noncanonical.mlir -partition-cim-program -form-cim-program --mlir-print-op-generic --mlir-print-local-scope | FileCheck %s --check-prefix=GENERIC
 
 //--- canonical.mlir
 
 // CHECK-LABEL: func.func @exact_candidate(
 // CHECK-SAME: %[[WEIGHT:.*]]: tensor<16x64xi8>, %[[INPUT:.*]]: tensor<64xi8>
-// CHECK: %[[RESULT:.*]] = cim.vmm %[[INPUT]], %[[WEIGHT]] : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+// CHECK: %[[RESULT:.*]] = cim.vmm %[[INPUT]], %[[WEIGHT]] {cim.segment_id = 0 : i64{{.*}}} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
 // CHECK-NOT: linalg.matvec
 // CHECK: return %[[RESULT]] : tensor<16xi21>
 func.func @exact_candidate(%weight: tensor<16x64xi8>, %input: tensor<64xi8>)
@@ -23,8 +23,8 @@ func.func @exact_candidate(%weight: tensor<16x64xi8>, %input: tensor<64xi8>)
 
 // CHECK-LABEL: func.func @multiple_candidates(
 // CHECK-SAME: %[[WEIGHT0:.*]]: tensor<16x64xi8>, %[[INPUT0:.*]]: tensor<64xi8>, %[[WEIGHT1:.*]]: tensor<16x64xi8>, %[[INPUT1:.*]]: tensor<64xi8>
-// CHECK: %[[RESULT0:.*]] = cim.vmm %[[INPUT0]], %[[WEIGHT0]] : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
-// CHECK-NEXT: %[[RESULT1:.*]] = cim.vmm %[[INPUT1]], %[[WEIGHT1]] : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+// CHECK: %[[RESULT0:.*]] = cim.vmm %[[INPUT0]], %[[WEIGHT0]] {cim.segment_id = 0 : i64{{.*}}} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+// CHECK-NEXT: %[[RESULT1:.*]] = cim.vmm %[[INPUT1]], %[[WEIGHT1]] {cim.segment_id = 1 : i64{{.*}}} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
 // CHECK-NOT: linalg.matvec
 // CHECK: return %[[RESULT0]], %[[RESULT1]] : tensor<16xi21>, tensor<16xi21>
 func.func @multiple_candidates(
@@ -46,7 +46,7 @@ func.func @multiple_candidates(
 // CHECK-LABEL: func.func @mixed_initializers(
 // CHECK-SAME: %[[WEIGHT:.*]]: tensor<16x64xi8>, %[[INPUT:.*]]: tensor<64xi8>
 // CHECK: %[[ONE:.*]] = arith.constant dense<1> : tensor<16xi21>
-// CHECK: %[[CONVERTED:.*]] = cim.vmm %[[INPUT]], %[[WEIGHT]] : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+// CHECK: %[[CONVERTED:.*]] = cim.vmm %[[INPUT]], %[[WEIGHT]] {cim.segment_id = 0 : i64{{.*}}} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
 // CHECK-NEXT: %[[KEPT:.*]] = linalg.matvec ins(%[[WEIGHT]], %[[INPUT]] : tensor<16x64xi8>, tensor<64xi8>) outs(%[[ONE]] : tensor<16xi21>) -> tensor<16xi21>
 // CHECK: return %[[CONVERTED]], %[[KEPT]] : tensor<16xi21>, tensor<16xi21>
 func.func @mixed_initializers(%weight: tensor<16x64xi8>,

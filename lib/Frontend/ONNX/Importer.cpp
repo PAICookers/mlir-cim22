@@ -8,6 +8,8 @@
 
 #include "CIM22/Frontend/ONNX/Importer.h"
 
+#include "CIM22/Dialect/CIM/IR/CIMDialect.h"
+
 #include "onnx/onnx_pb.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -29,9 +31,6 @@
 
 namespace mlir::cim {
 namespace {
-constexpr StringLiteral kMatMulIntegerMarker = "cim.onnx.matmul_integer";
-constexpr StringLiteral kConvIntegerMarker = "cim.onnx.conv_integer";
-
 struct MatMulIntegerModel {
   int64_t batch;
   int64_t reduction;
@@ -659,7 +658,8 @@ importMatMulInteger(MLIRContext &context, const onnx::ModelProto &model) {
       builder, location, TypeRange{normalizedResultType},
       ValueRange{weight.getResult(), normalizedInput.getResult().front()},
       ValueRange{zero.getResult()});
-  matmul->setAttr(kMatMulIntegerMarker, builder.getUnitAttr());
+  matmul->setAttr(CIMDialect::getMatMulIntegerAttrName(),
+                  builder.getUnitAttr());
   auto outputEmpty = tensor::EmptyOp::create(
       builder, location, ArrayRef<int64_t>{imported->batch, imported->output},
       i32);
@@ -748,7 +748,7 @@ importConvInteger(MLIRContext &context, const onnx::ModelProto &model) {
       builder, location, TypeRange{resultType},
       ValueRange{paddedInput, weight.getResult()},
       ValueRange{zeroResult.getResult()}, strides, dilations);
-  conv->setAttr(kConvIntegerMarker, builder.getUnitAttr());
+  conv->setAttr(CIMDialect::getConvIntegerAttrName(), builder.getUnitAttr());
   Value result =
       appendIntegerBias(builder, location, conv.getResult(0), resultType,
                         ArrayRef<int64_t>{imported->filters},

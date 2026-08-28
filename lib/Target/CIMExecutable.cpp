@@ -8,7 +8,9 @@
 
 #include "CIM22/Target/CIMExecutable.h"
 
+#include "CIM22/Conversion/LinalgToCIM/CIMSegments.h"
 #include "CIM22/Conversion/LinalgToCIM/ExecutionPlanVerifier.h"
+#include "CIM22/Dialect/CIM/IR/CIMDialect.h"
 #include "CIM22/Dialect/CIM/IR/CIMOps.h"
 #include "CIM22/Dialect/CIMFrame/IR/CIMFrameDialect.h"
 #include "CIM22/Dialect/CIMFrame/IR/CIMFrameOps.h"
@@ -137,12 +139,13 @@ FailureOr<CIMWork *> findWork(CIMGroup &group, int64_t workId) {
 
 FailureOr<StaticWeightSection>
 buildStaticWeight(cimframe::CIMInt8WeightPacketOp packet) {
-  auto provenance = packet->getAttrOfType<DictionaryAttr>("cim.provenance");
-  if (!provenance)
+  auto planBinding = packet->getAttrOfType<DictionaryAttr>(
+      cim::CIMDialect::getPlanBindingAttrName());
+  if (!planBinding)
     return packet.emitError(
-        "CIM executable requires cim.provenance on weight packet");
+        "CIM executable requires cim.plan_binding on weight packet");
   auto get = [&](StringRef name) -> FailureOr<int64_t> {
-    auto value = provenance.getAs<IntegerAttr>(name);
+    auto value = planBinding.getAs<IntegerAttr>(name);
     if (!value || !value.getType().isSignlessInteger(64) || value.getInt() < 0)
       return failure();
     return value.getInt();
@@ -151,11 +154,11 @@ buildStaticWeight(cimframe::CIMInt8WeightPacketOp packet) {
   auto work = get("work_id");
   auto core = get("core_slot");
   auto macro = get("macro_slot");
-  auto resource = provenance.getAs<FlatSymbolRefAttr>("resource");
+  auto resource = planBinding.getAs<FlatSymbolRefAttr>("resource");
   if (failed(group) || failed(work) || failed(core) || failed(macro) ||
       !resource)
     return packet.emitError(
-        "CIM executable requires complete weight provenance");
+        "CIM executable requires complete weight plan binding");
   std::vector<int32_t> words(packet.getWords().getValues<int32_t>().begin(),
                              packet.getWords().getValues<int32_t>().end());
   std::array<uint32_t, 256> rawWords{};
@@ -176,7 +179,7 @@ buildStaticWeight(cimframe::CIMInt8WeightPacketOp packet) {
 
 FailureOr<std::unique_ptr<CIMExecutable>>
 compileCIMExecutable(ModuleOp module) {
-  if (failed(verify(module)) || failed(cimframe::verifyCIMFrameModule(module)))
+  if (failed(verify(module)))
     return failure();
 
   SmallVector<func::FuncOp> plans;
@@ -190,6 +193,15 @@ compileCIMExecutable(ModuleOp module) {
   }
   func::FuncOp function = plans.front();
   if (failed(cim::verifyCIMExecutionPlan(function)))
+    return failure();
+  SmallVector<cim::CIMSegmentInfo> segments = cim::analyzeCIMSegments(function);
+  if (segments.size() != 1) {
+    function.emitError("compile-cim-executable expects exactly one CIM "
+                       "segment, but got ")
+        << segments.size();
+    return failure();
+  }
+  if (failed(cimframe::verifyCIMFrameModule(module)))
     return failure();
 
   auto profile = function->getAttrOfType<StringAttr>("cim.target_profile");
@@ -220,11 +232,11 @@ compileCIMExecutable(ModuleOp module) {
       for (auto [index, value] : llvm::enumerate(control.getRoute()))
         packet.route[index] = value;
       packet.macroSlot = control.getMacro();
-      if (auto provenance =
-              control->getAttrOfType<DictionaryAttr>("cim.provenance")) {
-        if (auto group = provenance.getAs<IntegerAttr>("group_id"))
+      if (auto planBinding = control->getAttrOfType<DictionaryAttr>(
+              cim::CIMDialect::getPlanBindingAttrName())) {
+        if (auto group = planBinding.getAs<IntegerAttr>("group_id"))
           packet.groupId = group.getInt();
-        if (auto work = provenance.getAs<IntegerAttr>("work_id"))
+        if (auto work = planBinding.getAs<IntegerAttr>("work_id"))
           packet.workId = work.getInt();
       }
       packets.push_back(packet);

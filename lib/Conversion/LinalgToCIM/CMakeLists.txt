@@ -1,4 +1,5 @@
 add_mlir_library(MLIRCIM22LinalgToCIM
+  CIMSegments.cpp
   Passes.cpp
   ExecutionPlanVerifier.cpp
 

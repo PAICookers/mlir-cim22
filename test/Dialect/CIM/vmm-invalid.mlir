@@ -86,7 +86,7 @@ func.func @operand_arity(%input: tensor<64xi8>) {
 // VMM-N10: tile identity is all-or-none.
 func.func @partial_tile_identity(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
   // expected-error@+1 {{requires m_tile, n_tile, and k_tile together}}
-  %0 = cim.vmm %input, %weight {m_tile = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  %0 = cim.vmm %input, %weight {cim.segment_id = 0 : i64, m_tile = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
   return
 }
 
@@ -95,7 +95,7 @@ func.func @partial_tile_identity(%input: tensor<64xi8>, %weight: tensor<16x64xi8
 // VMM-N11: schedule attributes are all-or-none.
 func.func @partial_schedule(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
   // expected-error@+1 {{requires work_id and group_id together}}
-  %0 = cim.vmm %input, %weight {m_tile = 0 : i64, n_tile = 0 : i64, k_tile = 0 : i64, work_id = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  %0 = cim.vmm %input, %weight {cim.segment_id = 0 : i64, m_tile = 0 : i64, n_tile = 0 : i64, k_tile = 0 : i64, work_id = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
   return
 }
 
@@ -104,7 +104,7 @@ func.func @partial_schedule(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
 // VMM-N12: a schedule requires logical tile identity.
 func.func @schedule_without_tile(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
   // expected-error@+1 {{requires tile identity before schedule attributes}}
-  %0 = cim.vmm %input, %weight {work_id = 0 : i64, group_id = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  %0 = cim.vmm %input, %weight {cim.segment_id = 0 : i64, work_id = 0 : i64, group_id = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
   return
 }
 
@@ -113,7 +113,7 @@ func.func @schedule_without_tile(%input: tensor<64xi8>, %weight: tensor<16x64xi8
 // VMM-N13: logical identifiers are non-negative.
 func.func @negative_tile(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
   // expected-error@+1 {{expects 'k_tile' to be non-negative}}
-  %0 = cim.vmm %input, %weight {m_tile = 0 : i64, n_tile = 0 : i64, k_tile = -1 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  %0 = cim.vmm %input, %weight {cim.segment_id = 0 : i64, m_tile = 0 : i64, n_tile = 0 : i64, k_tile = -1 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
   return
 }
 
@@ -121,7 +121,7 @@ func.func @negative_tile(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
 
 func.func @negative_schedule(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
   // expected-error@+1 {{expects 'group_id' to be non-negative}}
-  %0 = cim.vmm %input, %weight {m_tile = 0 : i64, n_tile = 0 : i64, k_tile = 0 : i64, work_id = 0 : i64, group_id = -1 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  %0 = cim.vmm %input, %weight {cim.segment_id = 0 : i64, m_tile = 0 : i64, n_tile = 0 : i64, k_tile = 0 : i64, work_id = 0 : i64, group_id = -1 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
   return
 }
 
@@ -130,7 +130,7 @@ func.func @negative_schedule(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
 // VMM-N14: identity and schedule attributes use i64.
 func.func @wrong_tile_attribute_type(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
   // expected-error@+1 {{expects 'm_tile' to be an i64 attribute}}
-  %0 = cim.vmm %input, %weight {m_tile = 0 : i32, n_tile = 0 : i64, k_tile = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  %0 = cim.vmm %input, %weight {cim.segment_id = 0 : i64, m_tile = 0 : i32, n_tile = 0 : i64, k_tile = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
   return
 }
 
@@ -138,7 +138,7 @@ func.func @wrong_tile_attribute_type(%input: tensor<64xi8>, %weight: tensor<16x6
 
 func.func @wrong_schedule_attribute_type(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
   // expected-error@+1 {{expects 'work_id' to be an i64 attribute}}
-  %0 = cim.vmm %input, %weight {m_tile = 0 : i64, n_tile = 0 : i64, k_tile = 0 : i64, work_id = 0 : i32, group_id = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  %0 = cim.vmm %input, %weight {cim.segment_id = 0 : i64, m_tile = 0 : i64, n_tile = 0 : i64, k_tile = 0 : i64, work_id = 0 : i32, group_id = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
   return
 }
 
@@ -147,7 +147,7 @@ func.func @wrong_schedule_attribute_type(%input: tensor<64xi8>, %weight: tensor<
 // VMM-N15: target mapping attributes are all-or-none and schedule-owned.
 func.func @partial_mapping(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
   // expected-error@+1 {{requires core_slot, macro_slot, and cim.mapping together}}
-  %0 = cim.vmm %input, %weight {m_tile = 0 : i64, n_tile = 0 : i64, k_tile = 0 : i64, work_id = 0 : i64, group_id = 0 : i64, core_slot = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  %0 = cim.vmm %input, %weight {cim.segment_id = 0 : i64, m_tile = 0 : i64, n_tile = 0 : i64, k_tile = 0 : i64, work_id = 0 : i64, group_id = 0 : i64, core_slot = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
   return
 }
 
@@ -155,7 +155,7 @@ func.func @partial_mapping(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
 
 func.func @mapping_without_schedule(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
   // expected-error@+1 {{requires logical schedule before target mapping}}
-  %0 = cim.vmm %input, %weight {m_tile = 0 : i64, n_tile = 0 : i64, k_tile = 0 : i64, core_slot = 0 : i64, macro_slot = 0 : i64, cim.mapping = {}} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  %0 = cim.vmm %input, %weight {cim.segment_id = 0 : i64, m_tile = 0 : i64, n_tile = 0 : i64, k_tile = 0 : i64, core_slot = 0 : i64, macro_slot = 0 : i64, cim.mapping = {}} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
   return
 }
 
@@ -163,6 +163,6 @@ func.func @mapping_without_schedule(%input: tensor<64xi8>, %weight: tensor<16x64
 
 func.func @wrong_mapping_type(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
   // expected-error@+1 {{expects 'cim.mapping' to be a dictionary attribute}}
-  %0 = cim.vmm %input, %weight {m_tile = 0 : i64, n_tile = 0 : i64, k_tile = 0 : i64, work_id = 0 : i64, group_id = 0 : i64, core_slot = 0 : i64, macro_slot = 0 : i64, cim.mapping = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+  %0 = cim.vmm %input, %weight {cim.segment_id = 0 : i64, m_tile = 0 : i64, n_tile = 0 : i64, k_tile = 0 : i64, work_id = 0 : i64, group_id = 0 : i64, core_slot = 0 : i64, macro_slot = 0 : i64, cim.mapping = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
   return
 }

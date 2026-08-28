@@ -8,6 +8,8 @@
 
 #include "CIM22/Dialect/CIM/IR/CIMOps.h"
 
+#include "CIM22/Dialect/CIM/IR/CIMDialect.h"
+
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/LogicalResult.h"
@@ -17,21 +19,28 @@ using namespace mlir;
 using namespace mlir::cim;
 
 namespace {
-constexpr llvm::StringLiteral kTileAttrs[] = {"m_tile", "n_tile", "k_tile"};
-constexpr llvm::StringLiteral kScheduleAttrs[] = {"work_id", "group_id"};
-constexpr llvm::StringLiteral kMappingAttrs[] = {"core_slot", "macro_slot",
-                                                 "cim.mapping"};
-constexpr llvm::StringLiteral kExecutionPlanAttrs[] = {
-    "m_tile",   "n_tile",    "k_tile",     "work_id",
-    "group_id", "core_slot", "macro_slot", "cim.mapping"};
+const llvm::StringRef kTileAttrs[] = {"m_tile", "n_tile", "k_tile"};
+const llvm::StringRef kScheduleAttrs[] = {"work_id", "group_id"};
+const llvm::StringRef kMappingAttrs[] = {"core_slot", "macro_slot",
+                                         "cim.mapping"};
+const llvm::StringRef kExecutionPlanIdentityAttrs[] = {
+    CIMDialect::getSegmentIdAttrName(),
+    "m_tile",
+    "n_tile",
+    "k_tile",
+    "work_id",
+    "group_id",
+    "core_slot",
+    "macro_slot",
+    "cim.mapping"};
 
-unsigned countPresent(Operation *op, ArrayRef<llvm::StringLiteral> names) {
+unsigned countPresent(Operation *op, ArrayRef<llvm::StringRef> names) {
   return llvm::count_if(names,
                         [op](StringRef name) { return op->hasAttr(name); });
 }
 
 LogicalResult verifyNonNegative(Operation *op,
-                                ArrayRef<llvm::StringLiteral> names) {
+                                ArrayRef<llvm::StringRef> names) {
   for (StringRef name : names) {
     Attribute attribute = op->getAttr(name);
     if (!attribute)
@@ -60,11 +69,12 @@ LogicalResult verifyMapping(Operation *op) {
   return success();
 }
 
-LogicalResult verifyFullExecutionPlanProvenance(Operation *op) {
-  if (countPresent(op, kExecutionPlanAttrs) != std::size(kExecutionPlanAttrs))
-    return op->emitOpError("requires complete execution-plan provenance");
+LogicalResult verifyFullExecutionPlanIdentity(Operation *op) {
+  if (countPresent(op, kExecutionPlanIdentityAttrs) !=
+      std::size(kExecutionPlanIdentityAttrs))
+    return op->emitOpError("requires complete execution-plan identity");
   if (failed(verifyNonNegative(
-          op, ArrayRef<llvm::StringLiteral>(kExecutionPlanAttrs).drop_back())))
+          op, ArrayRef(kExecutionPlanIdentityAttrs).drop_back())))
     return failure();
   auto macro = op->getAttrOfType<IntegerAttr>("macro_slot");
   if (!macro || macro.getInt() < 0 || macro.getInt() > 1)
@@ -73,6 +83,11 @@ LogicalResult verifyFullExecutionPlanProvenance(Operation *op) {
 }
 
 LogicalResult verifyGroupOperation(Operation *op, bool withMapping) {
+  auto segment =
+      op->getAttrOfType<IntegerAttr>(CIMDialect::getSegmentIdAttrName());
+  if (!segment || !segment.getType().isSignlessInteger(64) ||
+      segment.getInt() < 0)
+    return op->emitOpError("expects non-negative i64 cim.segment_id");
   auto group = op->getAttrOfType<IntegerAttr>("group_id");
   if (!group || !group.getType().isSignlessInteger(64) || group.getInt() < 0)
     return op->emitOpError("expects non-negative i64 group_id");
@@ -80,14 +95,16 @@ LogicalResult verifyGroupOperation(Operation *op, bool withMapping) {
     return countPresent(op, {"m_tile", "n_tile", "k_tile", "work_id",
                              "core_slot", "macro_slot", "cim.mapping"}) == 0
                ? success()
-               : op->emitOpError("must carry only group_id provenance");
+               : op->emitOpError(
+                     "must carry only cim.segment_id and group_id identity");
   auto core = op->getAttrOfType<IntegerAttr>("core_slot");
   if (!core || !core.getType().isSignlessInteger(64) || core.getInt() < 0)
     return op->emitOpError("expects non-negative i64 core_slot");
   if (countPresent(
           op, {"m_tile", "n_tile", "k_tile", "work_id", "macro_slot"}) != 0)
     return op->emitOpError(
-        "must carry only group_id, core_slot, and cim.mapping provenance");
+        "must carry only cim.segment_id, group_id, core_slot, and cim.mapping "
+        "identity");
   return verifyMapping(op);
 }
 } // namespace
@@ -106,6 +123,10 @@ LogicalResult VMMOp::verify() {
   if (resultType.getShape() != llvm::ArrayRef<int64_t>{16})
     return emitOpError("expects result shape [16], but got ") << resultType;
 
+  if (failed(verifyNonNegative(getOperation(),
+                               {CIMDialect::getSegmentIdAttrName()})))
+    return failure();
+
   unsigned tileAttrCount = countPresent(getOperation(), kTileAttrs);
   if (tileAttrCount != 0 && tileAttrCount != std::size(kTileAttrs))
     return emitOpError("requires m_tile, n_tile, and k_tile together");
@@ -117,6 +138,9 @@ LogicalResult VMMOp::verify() {
     return emitOpError("requires work_id and group_id together");
   if (scheduleAttrCount != 0 && tileAttrCount == 0)
     return emitOpError("requires tile identity before schedule attributes");
+  if (scheduleAttrCount != 0 &&
+      !getOperation()->hasAttr(CIMDialect::getSegmentIdAttrName()))
+    return emitOpError("requires cim.segment_id before schedule attributes");
   if (failed(verifyNonNegative(getOperation(), kScheduleAttrs)))
     return failure();
 
@@ -126,9 +150,8 @@ LogicalResult VMMOp::verify() {
         "requires core_slot, macro_slot, and cim.mapping together");
   if (mappingAttrCount != 0 && scheduleAttrCount == 0)
     return emitOpError("requires logical schedule before target mapping");
-  if (failed(verifyNonNegative(
-          getOperation(),
-          ArrayRef<llvm::StringLiteral>(kMappingAttrs).take_front(2))))
+  if (failed(verifyNonNegative(getOperation(),
+                               ArrayRef(kMappingAttrs).take_front(2))))
     return failure();
   if (Attribute mapping = getOperation()->getAttr("cim.mapping");
       mapping && !isa<DictionaryAttr>(mapping))
@@ -141,8 +164,8 @@ LogicalResult StaticWeightOp::verify() {
   if (!type || type.getShape() != llvm::ArrayRef<int64_t>{16, 64} ||
       !type.getElementType().isSignlessInteger(8))
     return emitOpError("expects value type tensor<16x64xi8>");
-  if (countPresent(getOperation(), kExecutionPlanAttrs) != 0)
-    return emitOpError("must not carry per-work execution-plan provenance");
+  if (countPresent(getOperation(), kExecutionPlanIdentityAttrs) != 0)
+    return emitOpError("must not carry per-work execution-plan identity");
   return success();
 }
 
@@ -151,11 +174,11 @@ LogicalResult ConfigureInputOp::verify() {
   if (type.getShape() != llvm::ArrayRef<int64_t>{64} ||
       !type.getElementType().isSignlessInteger(8))
     return emitOpError("expects input type tensor<64xi8>");
-  return verifyFullExecutionPlanProvenance(getOperation());
+  return verifyFullExecutionPlanIdentity(getOperation());
 }
 
 LogicalResult ConfigureWeightOp::verify() {
-  if (failed(verifyFullExecutionPlanProvenance(getOperation())))
+  if (failed(verifyFullExecutionPlanIdentity(getOperation())))
     return failure();
   auto weight = SymbolTable::lookupNearestSymbolFrom<StaticWeightOp>(
       getOperation(), getResourceAttr());
@@ -165,7 +188,7 @@ LogicalResult ConfigureWeightOp::verify() {
 }
 
 LogicalResult DispatchOp::verify() {
-  return verifyFullExecutionPlanProvenance(getOperation());
+  return verifyFullExecutionPlanIdentity(getOperation());
 }
 
 LogicalResult OnceOp::verify() {
@@ -177,7 +200,7 @@ LogicalResult ReadbackOp::verify() {
   if (type.getShape() != llvm::ArrayRef<int64_t>{16} ||
       !type.getElementType().isSignlessInteger(21))
     return emitOpError("expects result type tensor<16xi21>");
-  return verifyFullExecutionPlanProvenance(getOperation());
+  return verifyFullExecutionPlanIdentity(getOperation());
 }
 
 LogicalResult GroupBarrierOp::verify() {

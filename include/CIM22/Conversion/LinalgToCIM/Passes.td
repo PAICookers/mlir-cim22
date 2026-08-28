@@ -36,6 +36,12 @@ def VerifyCIMExecutionPlan
   let summary = "Verify the ordered CIM execution plan and Host SSA";
 }
 
+def PartitionCIMProgram
+    : Pass<"partition-cim-program", "::mlir::ModuleOp"> {
+  let summary = "Assign one CIM segment to each offloadable Linalg root";
+  let dependentDialects = ["::mlir::linalg::LinalgDialect"];
+}
+
 def FormCIMProgram : Pass<"form-cim-program", "::mlir::ModuleOp"> {
   let summary = "Form CIM VMM operations from supported Linalg operations";
   let dependentDialects = ["::mlir::arith::ArithDialect",

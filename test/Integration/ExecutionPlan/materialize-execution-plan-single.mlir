@@ -1,4 +1,4 @@
-// RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan)' > %t
+// RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(partition-cim-program,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan)' > %t
 // RUN: %python %S/../../python/CIM22/verify_execution_plan.py %t | FileCheck %s --check-prefix=VERIFY
 // RUN: FileCheck %s --check-prefix=HOST < %t
 
@@ -9,7 +9,7 @@
 // HOST-NEXT: cim.dispatch {{.*}}macro_slot = 0 : i64{{.*}}work_id = 0 : i64
 // HOST-NEXT: cim.once
 // HOST-NEXT: %[[READ:.*]] = cim.readback {{.*}}macro_slot = 0 : i64{{.*}}work_id = 0 : i64{{.*}} : tensor<16xi21>
-// HOST-NEXT: cim.group_barrier {group_id = 0 : i64}
+// HOST-NEXT: cim.group_barrier {cim.segment_id = 0 : i64, group_id = 0 : i64}
 // HOST: arith.extsi %[[READ]] : tensor<16xi21> to tensor<16xi32>
 // HOST-NOT: arith.addi
 // HOST: return {{.*}} : tensor<16x1xi32>

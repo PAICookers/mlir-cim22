@@ -1,4 +1,4 @@
-// RUN: mlir-cim22-opt %s -form-cim-program > %t.out
+// RUN: mlir-cim22-opt %s -partition-cim-program -form-cim-program > %t.out
 // RUN: test "$(grep -c 'cim.vmm' %t.out)" -eq 8
 // RUN: test "$(grep -c 'arith.extsi' %t.out)" -eq 8
 // RUN: test "$(grep -c 'arith.addi' %t.out)" -eq 4

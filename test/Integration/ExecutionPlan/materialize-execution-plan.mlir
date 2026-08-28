@@ -1,5 +1,5 @@
-// RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan)' > %t.once
-// RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan)' > %t.twice
+// RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(partition-cim-program,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan)' > %t.once
+// RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(partition-cim-program,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan)' > %t.twice
 // RUN: diff %t.once %t.twice
 // RUN: %python %S/../../python/CIM22/verify_execution_plan.py %t.once | FileCheck %s --check-prefix=VERIFY
 // RUN: FileCheck %s --check-prefix=HOST < %t.once

@@ -1,16 +1,16 @@
 // RUN: %python %S/../../python/ONNX/generate_conv_integer_onnx.py --emit-dir %t.models
-// RUN: mlir-cim22-onnx-import %t.models/canonical.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t.canonical.first
-// RUN: mlir-cim22-onnx-import %t.models/canonical.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t.canonical.second
+// RUN: mlir-cim22-onnx-import %t.models/canonical.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,partition-cim-program,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t.canonical.first
+// RUN: mlir-cim22-onnx-import %t.models/canonical.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,partition-cim-program,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t.canonical.second
 // RUN: diff %t.canonical.first %t.canonical.second
 // RUN: grep -c 'cim.vmm' %t.canonical.first | FileCheck %s --check-prefix=CANONICAL-COUNT
 // RUN: FileCheck %s --check-prefix=CANONICAL < %t.canonical.first
-// RUN: mlir-cim22-onnx-import %t.models/odd.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t.odd
+// RUN: mlir-cim22-onnx-import %t.models/odd.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,partition-cim-program,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t.odd
 // RUN: grep -c 'cim.vmm' %t.odd | FileCheck %s --check-prefix=ODD-COUNT
 // RUN: FileCheck %s --check-prefix=ODD < %t.odd
-// RUN: mlir-cim22-onnx-import %t.models/pointwise.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t.pointwise
+// RUN: mlir-cim22-onnx-import %t.models/pointwise.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,partition-cim-program,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t.pointwise
 // RUN: grep -c 'cim.vmm' %t.pointwise | FileCheck %s --check-prefix=POINTWISE-COUNT
 // RUN: FileCheck %s --check-prefix=POINTWISE < %t.pointwise
-// RUN: mlir-cim22-onnx-import %t.models/rectangular.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t.rectangular
+// RUN: mlir-cim22-onnx-import %t.models/rectangular.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,partition-cim-program,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule))' > %t.rectangular
 // RUN: grep -c 'cim.vmm' %t.rectangular | FileCheck %s --check-prefix=RECTANGULAR-COUNT
 // RUN: FileCheck %s --check-prefix=RECTANGULAR < %t.rectangular
 

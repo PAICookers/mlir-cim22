@@ -25,7 +25,8 @@ def mapping_text(mapping):
 
 def work_attrs(work):
     return (
-        f"cim.mapping = {mapping_text(work.mapping)}, core_slot = {work.core_slot} : i64, "
+        f"cim.mapping = {mapping_text(work.mapping)}, cim.segment_id = 0 : i64, "
+        f"core_slot = {work.core_slot} : i64, "
         f"group_id = {work.group_id} : i64, k_tile = {work.k_tile} : i64, "
         f"m_tile = {work.m_tile} : i64, macro_slot = {work.macro_slot} : i64, "
         f"n_tile = {work.n_tile} : i64, "
@@ -69,6 +70,7 @@ def render_dump(groups=((WORK0, WORK1),)):
         first = group[0]
         once_attrs = (
             f"cim.mapping = {mapping_text(first.mapping)}, "
+            "cim.segment_id = 0 : i64, "
             f"core_slot = {first.core_slot} : i64, "
             f"group_id = {first.group_id} : i64"
         )
@@ -80,7 +82,9 @@ def render_dump(groups=((WORK0, WORK1),)):
                 ": () -> tensor<16xi21>"
             )
             readbacks.append(result)
-        barrier_attrs = f"group_id = {first.group_id} : i64"
+        barrier_attrs = (
+            f"cim.segment_id = 0 : i64, group_id = {first.group_id} : i64"
+        )
         lines.append(
             f'    "cim.group_barrier"() {{{barrier_attrs}}} : () -> ()'
         )
@@ -184,7 +188,7 @@ class ExecutionPlanVerificationTest(unittest.TestCase):
         faults = (
             (missing_work, "missing work_id"),
             (invalid_macro, "invalid macro_slot 2"),
-            (mismatched_mapping, "configuration provenance mismatch"),
+            (mismatched_mapping, "configuration identity mismatch"),
             (same_macro, "Macro selectors do not match scheduled work"),
             (missing_config, "each Macro needs separate"),
             (wrong_single_macro, "Macro selectors do not match scheduled work"),

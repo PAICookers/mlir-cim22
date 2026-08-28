@@ -1,4 +1,4 @@
-// RUN: mlir-cim22-opt %s -form-cim-program --mlir-print-op-generic --mlir-print-local-scope > %t.out
+// RUN: mlir-cim22-opt %s -partition-cim-program -form-cim-program --mlir-print-op-generic --mlir-print-local-scope > %t.out
 // RUN: FileCheck %s --check-prefix=NEG < %t.out
 // RUN: not grep -q '"cim.vmm"' %t.out
 
