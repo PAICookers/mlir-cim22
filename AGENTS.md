@@ -13,3 +13,17 @@
   hardware/compiler note, and `tasks/lessons.md` in the same phase. Do not
   retain stale conclusions.
 - Do not declare a phase complete until code, tests, and records agree.
+
+### Code Documentation
+
+- Add concise, language-appropriate comments or docstrings for key code
+  sections, functions, objects, types, and modules when they explain the main
+  function, non-obvious behavior, important constraints, or notable risks.
+- Explain intent, assumptions, and reasons rather than restating code that is
+  already clear. Keep documentation accurate when behavior changes.
+- Use `TODO`, `FIXME`, `XXX`, and similar markers in the target language's and
+  project's established comment style. Each marker must state the concrete
+  follow-up, defect, or risk; never leave a bare label.
+- When modifying an existing source file, improve missing or stale
+  documentation in the touched area when it materially helps maintenance. Do
+  not create unrelated comment-only churn.
