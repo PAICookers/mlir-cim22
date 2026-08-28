@@ -111,7 +111,7 @@ static bool testConstruction(MLIRContext &context) {
   auto executable = compileCIMExecutable(*module);
   if (!check(succeeded(executable), "CIM executable construction succeeds"))
     return false;
-  const auto &value = **executable;
+  const auto &value = *executable;
   return check(value.getTargetProfile() == "cim22-4x5-v1",
                "target profile is preserved") &&
          check(value.getTargetProfileVersion() == 1,
@@ -125,13 +125,11 @@ static bool testConstruction(MLIRContext &context) {
                    value.getStaticWeights()[0].words.size() == 256,
                "static weight section is materialized") &&
          check(value.getDynamicInputs().size() == 1 &&
-                   value.getDynamicInputs()[0].cacheRows == 8 &&
-                   value.getDynamicInputs()[0].wordsPerRow == 16,
-               "dynamic input binding keeps Cache layout") &&
+                   value.getDynamicInputs()[0].inputSlot == 0,
+               "dynamic input binding keeps input slot") &&
          check(value.getReadbacks().size() == 1 &&
-                   value.getReadbacks()[0].outputCacheAddress == 7 &&
-                   value.getReadbacks()[0].responseDataFlits == 6,
-               "readback binding keeps output Cache contract") &&
+                   value.getReadbacks()[0].outputCacheAddress == 7,
+               "readback binding keeps output Cache address") &&
          check(value.getPackets().size() == 7,
                "semantic packets preserve input and readback order") &&
          check(value.getFlits().size() == 258,

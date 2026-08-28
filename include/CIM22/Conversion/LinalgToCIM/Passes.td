@@ -24,8 +24,6 @@ def FoldCIMInt8Bias : Pass<"fold-cim-int8-bias", "::mlir::ModuleOp"> {
                            "::mlir::linalg::LinalgDialect",
                            "::mlir::tensor::TensorDialect"];
   let options = [
-    Option<"enable", "enable", "bool", /*default=*/"true",
-           "Enable signed INT8 bias folding">,
     Option<"allowExtraKTile", "allow-extra-k-tile", "bool",
            /*default=*/"true", "Allow exact-K folding to add one K tile">
   ];

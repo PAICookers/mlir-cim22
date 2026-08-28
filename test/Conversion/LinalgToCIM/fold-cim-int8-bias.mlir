@@ -3,7 +3,6 @@
 // RUN: diff %t.once %t.twice
 // RUN: FileCheck %s --check-prefix=DEFAULT < %t.once
 // RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(fold-cim-int8-bias{allow-extra-k-tile=false})' | FileCheck %s --check-prefix=NOEXTRA
-// RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(fold-cim-int8-bias{enable=false})' | FileCheck %s --check-prefix=DISABLED
 
 // DEFAULT-LABEL: func.func @linear_tail
 // DEFAULT: arith.constant dense<1> : tensor<1x1xi8>
@@ -143,16 +142,3 @@ func.func @linear_wide(%input: tensor<1x2xi8>) -> tensor<1x1xi32> {
 // NOEXTRA-NOT: linalg.broadcast
 // NOEXTRA-NOT: linalg.add
 // NOEXTRA: return
-
-// DISABLED-LABEL: func.func @linear_tail
-// DISABLED: linalg.broadcast
-// DISABLED: linalg.add
-// DISABLED: return
-// DISABLED-LABEL: func.func @linear_exact
-// DISABLED: linalg.broadcast
-// DISABLED: linalg.add
-// DISABLED: return
-// DISABLED-LABEL: func.func @conv_tail
-// DISABLED: linalg.broadcast
-// DISABLED: linalg.add
-// DISABLED: return

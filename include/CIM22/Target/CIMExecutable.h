@@ -7,11 +7,9 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
 
-#include <memory>
-
 namespace mlir::cim22::target {
 
-mlir::FailureOr<std::unique_ptr<::cim22::execution::CIMExecutable>>
+mlir::FailureOr<::cim22::execution::CIMExecutable>
 compileCIMExecutable(mlir::ModuleOp verifiedModule);
 
 } // namespace mlir::cim22::target

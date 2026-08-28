@@ -13,7 +13,6 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <array>
-#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -56,8 +55,6 @@ struct DynamicInputBinding {
   int64_t workId = -1;
   int64_t macroSlot = -1;
   int64_t inputSlot = -1;
-  int64_t cacheRows = 8;
-  int64_t wordsPerRow = 16;
 };
 
 struct ReadbackBinding {
@@ -67,8 +64,6 @@ struct ReadbackBinding {
   int64_t outputCacheAddress = -1;
   std::array<int32_t, 6> route{};
   std::array<int32_t, 3> testCore{};
-  int64_t resultCount = 16;
-  int64_t responseDataFlits = 6;
 };
 
 struct CIMWork {
@@ -86,8 +81,7 @@ struct CIMGroup {
 class CIMExecutable final {
 public:
   CIMExecutable(std::string targetProfile, int64_t targetProfileVersion,
-                int64_t executionPlanVersion,
-                std::vector<CIMGroup> groups,
+                int64_t executionPlanVersion, std::vector<CIMGroup> groups,
                 std::vector<StaticWeightSection> weights,
                 std::vector<CIMFramePacket> packets,
                 std::vector<DynamicInputBinding> inputs,

@@ -616,11 +616,6 @@ importMatMulInteger(MLIRContext &context, const onnx::ModelProto &model) {
   if (failed(imported))
     return failure();
 
-  context.getOrLoadDialect<arith::ArithDialect>();
-  context.getOrLoadDialect<func::FuncDialect>();
-  context.getOrLoadDialect<linalg::LinalgDialect>();
-  context.getOrLoadDialect<tensor::TensorDialect>();
-
   Location location = UnknownLoc::get(&context);
   auto i8 = IntegerType::get(&context, 8);
   auto i32 = IntegerType::get(&context, 32);
@@ -671,9 +666,6 @@ importMatMulInteger(MLIRContext &context, const onnx::ModelProto &model) {
                         onnxResultType, ArrayRef<int64_t>{imported->output},
                         imported->biasValues, ArrayRef<int64_t>{0});
   func::ReturnOp::create(builder, location, result);
-  if (failed(verify(*module)))
-    return reject<OwningOpRef<ModuleOp>>(
-        context, "constructed MLIR module failed verification");
   return module;
 }
 
@@ -683,11 +675,6 @@ importConvInteger(MLIRContext &context, const onnx::ModelProto &model) {
       validateConvIntegerModel(context, model);
   if (failed(imported))
     return failure();
-
-  context.getOrLoadDialect<arith::ArithDialect>();
-  context.getOrLoadDialect<func::FuncDialect>();
-  context.getOrLoadDialect<linalg::LinalgDialect>();
-  context.getOrLoadDialect<tensor::TensorDialect>();
 
   Location location = UnknownLoc::get(&context);
   OpBuilder builder(&context);
@@ -754,9 +741,6 @@ importConvInteger(MLIRContext &context, const onnx::ModelProto &model) {
                         ArrayRef<int64_t>{imported->filters},
                         imported->biasValues, ArrayRef<int64_t>{0, 2, 3});
   func::ReturnOp::create(builder, location, result);
-  if (failed(verify(*module)))
-    return reject<OwningOpRef<ModuleOp>>(
-        context, "constructed MLIR module failed verification");
   return module;
 }
 
@@ -768,13 +752,27 @@ importQuantizedONNX(MLIRContext &context, const onnx::ModelProto &model) {
     return reject<OwningOpRef<ModuleOp>>(
         context, "unsupported output-rooted operator profile");
 
+  context.getOrLoadDialect<arith::ArithDialect>();
+  context.getOrLoadDialect<func::FuncDialect>();
+  context.getOrLoadDialect<linalg::LinalgDialect>();
+  context.getOrLoadDialect<tensor::TensorDialect>();
+
   const onnx::NodeProto &core = graph.node(0);
+  FailureOr<OwningOpRef<ModuleOp>> imported = failure();
   if (core.domain().empty() && core.op_type() == "MatMulInteger")
-    return importMatMulInteger(context, model);
-  if (core.domain().empty() && core.op_type() == "ConvInteger")
-    return importConvInteger(context, model);
-  return reject<OwningOpRef<ModuleOp>>(
-      context, "unsupported output-rooted operator profile");
+    imported = importMatMulInteger(context, model);
+  else if (core.domain().empty() && core.op_type() == "ConvInteger")
+    imported = importConvInteger(context, model);
+  else
+    return reject<OwningOpRef<ModuleOp>>(
+        context, "unsupported output-rooted operator profile");
+
+  if (failed(imported))
+    return failure();
+  if (failed(verify(**imported)))
+    return reject<OwningOpRef<ModuleOp>>(
+        context, "constructed MLIR module failed verification");
+  return imported;
 }
 
 } // namespace mlir::cim

@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "CIM22/Conversion/LinalgToCIM/Passes.h"
+#include "CIM22/Conversion/LinalgToCIM/CIMSegments.h"
 #include "CIM22/Conversion/LinalgToCIM/ExecutionPlanVerifier.h"
 #include "CIM22/Dialect/CIM/IR/CIMDialect.h"
 
@@ -18,14 +19,12 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/IR/SymbolTable.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/MathExtras.h"
-#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <optional>
@@ -49,8 +48,6 @@ struct TileIdentity {
   int64_t n;
   int64_t k;
 };
-
-bool isExecutionPlanOp(Operation *op);
 
 FailureOr<DenseElementsAttr> evaluateDenseTensor(Value value) {
   if (auto constant = value.getDefiningOp<arith::ConstantOp>())
@@ -1187,8 +1184,6 @@ public:
   using Base::Base;
 
   void runOnOperation() override {
-    if (!enable)
-      return;
     RewritePatternSet patterns(&getContext());
     patterns.add<FoldCIMInt8BiasPattern>(&getContext(), allowExtraKTile);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
@@ -1431,11 +1426,6 @@ constexpr int64_t kOutputCacheRows = 8;
 void copyExecutionPlanIdentity(Operation *from, Operation *to) {
   for (StringRef name : kExecutionPlanIdentityAttrs)
     to->setAttr(name, from->getAttr(name));
-}
-
-bool isExecutionPlanOp(Operation *op) {
-  return isa<ConfigureInputOp, ConfigureWeightOp, DispatchOp, OnceOp,
-             ReadbackOp, GroupBarrierOp>(op);
 }
 
 class MaterializeCIMExecutionPlan final

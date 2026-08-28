@@ -7,11 +7,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "CIM22/Conversion/LinalgToCIM/ExecutionPlanVerifier.h"
+#include "CIM22/Conversion/LinalgToCIM/CIMSegments.h"
 
 #include "CIM22/Dialect/CIM/IR/CIMDialect.h"
 #include "CIM22/Dialect/CIM/IR/CIMOps.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
-#include "llvm/ADT/STLExtras.h"
 
 namespace mlir::cim {
 namespace {
@@ -29,11 +29,6 @@ const llvm::StringRef kGroupIdentityAttrs[] = {
     CIMDialect::getSegmentIdAttrName(), "group_id", "core_slot", "cim.mapping"};
 const llvm::StringRef kBarrierIdentityAttrs[] = {
     CIMDialect::getSegmentIdAttrName(), "group_id"};
-
-bool isExecutionPlanOp(Operation *op) {
-  return isa<ConfigureInputOp, ConfigureWeightOp, DispatchOp, OnceOp,
-             ReadbackOp, GroupBarrierOp>(op);
-}
 
 int64_t getI64(Operation *op, StringRef name) {
   return cast<IntegerAttr>(op->getAttr(name)).getInt();

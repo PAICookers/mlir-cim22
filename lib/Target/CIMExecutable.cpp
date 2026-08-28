@@ -17,16 +17,13 @@
 #include "CIM22/Support/Int8WeightLayout.h"
 #include "CIM22/Target/CIMFrameCodec.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
 
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/bit.h"
 
 #include <array>
 #include <cstdint>
-#include <limits>
 
 namespace mlir::cim22::target {
 using ::cim22::execution::CIMExecutable;
@@ -177,8 +174,7 @@ buildStaticWeight(cimframe::CIMInt8WeightPacketOp packet) {
 }
 } // namespace
 
-FailureOr<std::unique_ptr<CIMExecutable>>
-compileCIMExecutable(ModuleOp module) {
+FailureOr<CIMExecutable> compileCIMExecutable(ModuleOp module) {
   if (failed(verify(module)))
     return failure();
 
@@ -342,8 +338,7 @@ compileCIMExecutable(ModuleOp module) {
           return input.emitError("CIM executable requires input_slot >= 0");
         inputSlot = attr.getInt();
       }
-      inputs.push_back(
-          DynamicInputBinding{*group, *work, *macro, inputSlot, 8, 16});
+      inputs.push_back(DynamicInputBinding{*group, *work, *macro, inputSlot});
       packets.push_back(CIMFramePacket{CIMPacketKind::InputCacheWrite});
       packets.back().route = *route;
       packets.back().groupId = *group;
@@ -376,8 +371,8 @@ compileCIMExecutable(ModuleOp module) {
         readback.emitError("CIM executable readback references unknown work");
         return failure();
       }
-      readbacks.push_back(ReadbackBinding{*group, *work, *macro, *address,
-                                          *route, *testCore, 16, 6});
+      readbacks.push_back(
+          ReadbackBinding{*group, *work, *macro, *address, *route, *testCore});
       packets.push_back(CIMFramePacket{CIMPacketKind::ReturnRoute});
       packets.back().route = *route;
       packets.back().groupId = *group;
@@ -422,11 +417,11 @@ compileCIMExecutable(ModuleOp module) {
         return failure();
       }
 
-  return std::make_unique<CIMExecutable>(
-      profile.getValue().str(), profileVersion.getInt(), schema.getInt(),
-      std::move(groups), std::move(weights), std::move(packets),
-      std::move(inputs), std::move(readbacks),
-      std::vector<uint64_t>(flits.begin(), flits.end()));
+  return CIMExecutable(profile.getValue().str(), profileVersion.getInt(),
+                       schema.getInt(), std::move(groups), std::move(weights),
+                       std::move(packets), std::move(inputs),
+                       std::move(readbacks),
+                       std::vector<uint64_t>(flits.begin(), flits.end()));
 }
 
 } // namespace mlir::cim22::target

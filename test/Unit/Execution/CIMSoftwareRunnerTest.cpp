@@ -72,9 +72,8 @@ CIMExecutable makeExecutable(FixtureFault fault = FixtureFault::None) {
       }
       weights.push_back(std::move(weight));
 
-      inputs.push_back({groupId, workId, macro, workId, 8, 16});
-      readbacks.push_back(
-          {groupId, workId, macro, macro == 0 ? 0 : 7, {}, {}, 16, 6});
+      inputs.push_back({groupId, workId, macro, workId});
+      readbacks.push_back({groupId, workId, macro, macro == 0 ? 0 : 7, {}, {}});
 
       if (fault != FixtureFault::MissingInput || macro != 1 || groupId != 1)
         addPacket(packets, CIMPacketKind::InputCacheWrite, groupId, workId,

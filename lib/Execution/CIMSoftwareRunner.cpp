@@ -9,7 +9,6 @@
 #include <array>
 #include <cstddef>
 #include <numeric>
-#include <string>
 
 namespace cim22::execution {
 namespace {
@@ -27,8 +26,6 @@ struct MacroState {
   std::array<int8_t, kCIMWeightElements> weight{};
   std::array<std::array<int32_t, kCIMOutputElements>, kCIMCacheRows>
       outputCache{};
-  bool hasInput = false;
-  bool hasWeight = false;
 };
 
 size_t macroIndex(int64_t core, int64_t macro) {
@@ -152,9 +149,7 @@ llvm::Error validateBindings(const CIMExecutable &executable,
   for (const ReadbackBinding &binding : executable.getReadbacks())
     if (binding.macroSlot < 0 || binding.macroSlot >= kCIMMacroCount ||
         binding.outputCacheAddress < 0 ||
-        binding.outputCacheAddress >= kCIMCacheRows ||
-        binding.resultCount != static_cast<int64_t>(kCIMOutputElements) ||
-        binding.responseDataFlits != 6)
+        binding.outputCacheAddress >= kCIMCacheRows)
       return runnerError("CIM readback binding is outside the INT8 profile");
   return llvm::Error::success();
 }
@@ -223,8 +218,6 @@ llvm::Error CIMSoftwareRunner::run(const CIMExecutable &executable,
       std::copy(inputs.values[inputPosition].values.begin(),
                 inputs.values[inputPosition].values.end(), macro.input.begin());
       macro.weight = weight->values;
-      macro.hasInput = true;
-      macro.hasWeight = true;
       emitTrace(trace, sequence, CIMTraceEventKind::ConfigureInput,
                 group.groupId, work.workId, work.macroSlot);
       emitTrace(trace, sequence, CIMTraceEventKind::ConfigureWeight,

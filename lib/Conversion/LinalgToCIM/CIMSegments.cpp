@@ -14,12 +14,10 @@
 #include "llvm/ADT/SetVector.h"
 
 namespace mlir::cim {
-namespace {
 bool isExecutionPlanOp(Operation *op) {
   return isa<ConfigureInputOp, ConfigureWeightOp, DispatchOp, OnceOp,
              ReadbackOp, GroupBarrierOp>(op);
 }
-} // namespace
 
 SmallVector<CIMSegmentInfo> analyzeCIMSegments(func::FuncOp function) {
   SmallVector<CIMSegmentInfo> segments;
@@ -43,9 +41,8 @@ SmallVector<CIMSegmentInfo> analyzeCIMSegments(func::FuncOp function) {
             .getInt();
     if (segments.empty() || segments.back().segmentId != segmentId) {
       finishSegment();
-      segments.push_back(CIMSegmentInfo{segmentId, {}, {}, {}});
+      segments.push_back(CIMSegmentInfo{segmentId, {}, {}});
     }
-    segments.back().operations.push_back(&op);
     if (auto input = dyn_cast<ConfigureInputOp>(op))
       inputs.insert(input.getInput());
     if (auto readback = dyn_cast<ReadbackOp>(op))

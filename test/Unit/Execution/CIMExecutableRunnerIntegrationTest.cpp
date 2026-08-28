@@ -89,7 +89,7 @@ int main(int argc, char **argv) {
     std::cerr << "FAIL: CIM executable construction\n";
     return 1;
   }
-  const CIMExecutable &value = **executable;
+  const CIMExecutable &value = *executable;
   const size_t expectedGroups = batch2 ? 4 : 20;
   const size_t expectedWorks = batch2 ? 8 : 40;
   if (value.getGroups().size() != expectedGroups ||
