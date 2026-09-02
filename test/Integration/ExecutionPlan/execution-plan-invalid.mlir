@@ -17,7 +17,7 @@ module {
 module {
   func.func @missing_identity(%input: tensor<64xi8>) {
     // expected-error@+1 {{requires complete execution-plan identity}}
-    cim.configure_input %input {cim.segment_id = 0 : i64, work_id = 0 : i64} : tensor<64xi8>
+    cim.configure_input %input {cim.transaction_idx = 0 : i64, work_id = 0 : i64} : tensor<64xi8>
     return
   }
 }
@@ -27,7 +27,7 @@ module {
 module {
   func.func @copy_route(%input: tensor<64xi8>) {
     // expected-error@+1 {{expects onecast route with zero Copy fields}}
-    cim.configure_input %input {cim.segment_id = 0 : i64, cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 1, 0, 0>, source = array<i64: 0, 0>}, core_slot = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_slot = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64} : tensor<64xi8>
+    cim.configure_input %input {cim.transaction_idx = 0 : i64, cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 1, 0, 0>, source = array<i64: 0, 0>}, core_idx = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_idx = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64} : tensor<64xi8>
     return
   }
 }
@@ -36,8 +36,8 @@ module {
 
 module {
   func.func @macro_once() {
-    // expected-error@+1 {{must carry only cim.segment_id, group_id, core_slot, and cim.mapping identity}}
-    cim.once {cim.segment_id = 0 : i64, cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}, core_slot = 0 : i64, group_id = 0 : i64, macro_slot = 0 : i64}
+    // expected-error@+1 {{must carry only group_id, core_idx, and cim.mapping identity}}
+    cim.once {cim.transaction_idx = 0 : i64, cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}, core_idx = 0 : i64, group_id = 0 : i64, macro_idx = 0 : i64}
     return
   }
 }
@@ -46,8 +46,8 @@ module {
 
 module {
   func.func @work_once() {
-    // expected-error@+1 {{must carry only cim.segment_id, group_id, core_slot, and cim.mapping identity}}
-    cim.once {cim.segment_id = 0 : i64, cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}, core_slot = 0 : i64, group_id = 0 : i64, work_id = 0 : i64}
+    // expected-error@+1 {{must carry only group_id, core_idx, and cim.mapping identity}}
+    cim.once {cim.transaction_idx = 0 : i64, cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}, core_idx = 0 : i64, group_id = 0 : i64, work_id = 0 : i64}
     return
   }
 }
@@ -57,7 +57,7 @@ module {
 module {
   func.func @wrong_readback() {
     // expected-error@+1 {{must be ranked tensor of 21-bit signless integer values}}
-    %0 = cim.readback {cim.segment_id = 0 : i64, cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}, core_slot = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_slot = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64} : tensor<16xi32>
+    %0 = cim.readback {cim.transaction_idx = 0 : i64, cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}, core_idx = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_idx = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64} : tensor<16xi32>
     return
   }
 }
@@ -67,7 +67,7 @@ module {
 module {
   func.func @missing_weight() {
     // expected-error@+1 {{expects resource to reference cim.static_weight}}
-    cim.configure_weight @missing {cim.segment_id = 0 : i64, cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}, core_slot = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_slot = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64}
+    cim.configure_weight @missing {cim.transaction_idx = 0 : i64, cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}, core_idx = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_idx = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64}
     return
   }
 }
@@ -77,7 +77,7 @@ module {
 module {
   func.func @negative_barrier() {
     // expected-error@+1 {{expects non-negative i64 group_id}}
-    cim.group_barrier {cim.segment_id = 0 : i64, group_id = -1 : i64}
+    cim.group_barrier {cim.transaction_idx = 0 : i64, group_id = -1 : i64}
     return
   }
 }
@@ -86,8 +86,8 @@ module {
 
 module {
   func.func @work_barrier() {
-    // expected-error@+1 {{must carry only cim.segment_id and group_id identity}}
-    cim.group_barrier {cim.segment_id = 0 : i64, group_id = 0 : i64, work_id = 0 : i64}
+    // expected-error@+1 {{must carry only group_id identity}}
+    cim.group_barrier {cim.transaction_idx = 0 : i64, group_id = 0 : i64, work_id = 0 : i64}
     return
   }
 }

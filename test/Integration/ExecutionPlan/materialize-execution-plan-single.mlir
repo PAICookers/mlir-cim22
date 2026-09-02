@@ -4,13 +4,13 @@
 
 // VERIFY: PASS software-only profile=cim22-4x5-v1 schema=1 groups=1 works=1 configs=2
 
-// HOST: cim.configure_input {{.*}}macro_slot = 0 : i64{{.*}}work_id = 0 : i64
-// HOST-NEXT: cim.configure_weight {{.*}}macro_slot = 0 : i64{{.*}}work_id = 0 : i64
-// HOST-NEXT: cim.dispatch {{.*}}macro_slot = 0 : i64{{.*}}work_id = 0 : i64
+// HOST: cim.configure_input {{.*}}macro_idx = 0 : i64{{.*}}work_id = 0 : i64
+// HOST-NEXT: cim.configure_weight {{.*}}macro_idx = 0 : i64{{.*}}work_id = 0 : i64
+// HOST-NEXT: cim.dispatch {{.*}}macro_idx = 0 : i64{{.*}}work_id = 0 : i64
 // HOST-NEXT: cim.once
-// HOST-NEXT: %[[READ:.*]] = cim.readback {{.*}}macro_slot = 0 : i64{{.*}}work_id = 0 : i64{{.*}} : tensor<16xi21>
-// HOST-NEXT: cim.group_barrier {cim.segment_id = 0 : i64, group_id = 0 : i64}
-// HOST: arith.extsi %[[READ]] : tensor<16xi21> to tensor<16xi32>
+// HOST-NEXT: %[[READ:.*]] = cim.readback {{.*}}macro_idx = 0 : i64{{.*}}work_id = 0 : i64{{.*}} : tensor<16xi21>
+// HOST-NEXT: cim.group_barrier {group_id = 0 : i64}
+// HOST: arith.extsi %{{.*}} : tensor<16xi21> to tensor<16xi32>
 // HOST-NOT: arith.addi
 // HOST: return {{.*}} : tensor<16x1xi32>
 

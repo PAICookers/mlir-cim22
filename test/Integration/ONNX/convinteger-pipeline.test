@@ -26,7 +26,7 @@
 // ODD-COUNT: 9
 // ODD-LABEL: func.func @main
 // ODD: cim.vmm
-// ODD: cim.vmm {{.*}}macro_slot = 0 : i64{{.*}}work_id = 8 : i64
+// ODD: cim.vmm {{.*}}macro_idx = 0 : i64{{.*}}work_id = 8 : i64
 // ODD: return %{{.*}} : tensor<1x1x3x3xi32>
 
 // POINTWISE-COUNT: 12

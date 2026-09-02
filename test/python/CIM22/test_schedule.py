@@ -26,7 +26,7 @@ SMALL_SCHEDULE = [
 def render_dump(work, m, k, n):
     lines = []
     for item in work:
-        attrs = "cim.segment_id = 0 : i64, " + ", ".join(
+        attrs = "cim.transaction_idx = 0 : i64, " + ", ".join(
             f"{name} = {value} : i64"
             for name, value in zip(verify.ATTRS, item, strict=True)
         )

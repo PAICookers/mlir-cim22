@@ -1,4 +1,4 @@
-//===- CIMExecutableRunnerIntegrationTest.cpp - CIM22 pipeline test -*- C++
+//===- CIMTransactionRunnerIntegrationTest.cpp - CIM22 pipeline test -*- C++
 //-*-===//
 
 #include "CIM22/Conversion/LinalgToCIM/ExecutionPlanVerifier.h"
@@ -33,7 +33,7 @@ struct Trace final : CIMTraceSink {
   void record(const CIMTraceEvent &event) override { events.push_back(event); }
 };
 
-const DynamicInputBinding *findInput(const CIMExecutable &executable,
+const DynamicInputBinding *findInput(const CIMTransaction &executable,
                                      int64_t groupId, int64_t workId) {
   for (const DynamicInputBinding &input : executable.getDynamicInputs())
     if (input.groupId == groupId && input.workId == workId)
@@ -41,7 +41,7 @@ const DynamicInputBinding *findInput(const CIMExecutable &executable,
   return nullptr;
 }
 
-const StaticWeightSection *findWeight(const CIMExecutable &executable,
+const StaticWeightSection *findWeight(const CIMTransaction &executable,
                                       int64_t groupId, int64_t workId) {
   for (const StaticWeightSection &weight : executable.getStaticWeights())
     if (weight.groupId == groupId && weight.workId == workId)
@@ -49,7 +49,7 @@ const StaticWeightSection *findWeight(const CIMExecutable &executable,
   return nullptr;
 }
 
-size_t inputIndex(const CIMExecutable &executable,
+size_t inputIndex(const CIMTransaction &executable,
                   const DynamicInputBinding *target) {
   for (auto [index, input] : llvm::enumerate(executable.getDynamicInputs()))
     if (&input == target)
@@ -84,12 +84,12 @@ int main(int argc, char **argv) {
       firstMapping = readback->getAttr("cim.mapping");
   });
 
-  auto executable = mlir::cim22::target::compileCIMExecutable(*module);
+  auto executable = mlir::cim22::target::compileCIMTransaction(*module);
   if (failed(executable)) {
     std::cerr << "FAIL: CIM executable construction\n";
     return 1;
   }
-  const CIMExecutable &value = *executable;
+  const CIMTransaction &value = *executable;
   const size_t expectedGroups = batch2 ? 4 : 20;
   const size_t expectedWorks = batch2 ? 8 : 40;
   if (value.getGroups().size() != expectedGroups ||

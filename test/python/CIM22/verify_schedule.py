@@ -14,7 +14,9 @@ ATTRS = ("work_id", "m_tile", "n_tile", "k_tile", "group_id")
 ATTR_PATTERN = re.compile(
     r"\b(work_id|m_tile|n_tile|k_tile|group_id)\s*=\s*(-?\d+)\s*:\s*i64\b"
 )
-SEGMENT_PATTERN = re.compile(r"\bcim\.segment_id\s*=\s*(-?\d+)\s*:\s*i64\b")
+TRANSACTION_PATTERN = re.compile(
+    r"\bcim\.transaction_idx\s*=\s*(-?\d+)\s*:\s*i64\b"
+)
 RESULT_PATTERN = re.compile(r"->\s*tensor<16xi21>(?![A-Za-z0-9_])")
 OP_MARKERS = {
     operation: f" = {operation} "
@@ -70,10 +72,10 @@ def _parse_schedule_and_counts(text: str) -> tuple[list[Work], Counter[str]]:
             raise VerificationError(
                 f"line {line_number}: missing canonical i64 attribute"
             )
-        segment = SEGMENT_PATTERN.search(line)
-        if not segment or int(segment.group(1)) != 0:
+        transaction = TRANSACTION_PATTERN.search(line)
+        if not transaction or int(transaction.group(1)) < 0:
             raise VerificationError(
-                f"line {line_number}: expected cim.segment_id 0"
+                f"line {line_number}: expected non-negative cim.transaction_idx"
             )
         if not RESULT_PATTERN.search(line):
             raise VerificationError(

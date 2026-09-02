@@ -37,7 +37,7 @@ void addPacket(std::vector<CIMFramePacket> &packets, CIMPacketKind kind,
   packets.push_back(packet);
 }
 
-CIMExecutable makeExecutable(FixtureFault fault = FixtureFault::None) {
+CIMTransaction makeExecutable(FixtureFault fault = FixtureFault::None) {
   std::vector<CIMGroup> groups;
   for (int64_t groupId : {1, 0}) {
     CIMGroup group;
@@ -94,7 +94,7 @@ CIMExecutable makeExecutable(FixtureFault fault = FixtureFault::None) {
   if (fault == FixtureFault::InvalidAddress)
     readbacks.back().outputCacheAddress = 8;
 
-  return CIMExecutable("cim22-4x5-v1", 1, 1, std::move(groups),
+  return CIMTransaction("cim22-4x5-v1", 1, 1, std::move(groups),
                        std::move(weights), std::move(packets),
                        std::move(inputs), std::move(readbacks), {});
 }
@@ -108,7 +108,7 @@ int32_t expectedValue(const StaticWeightSection &weight,
   return sum;
 }
 
-const StaticWeightSection &weightFor(const CIMExecutable &executable,
+const StaticWeightSection &weightFor(const CIMTransaction &executable,
                                      int64_t group, int64_t work) {
   for (const StaticWeightSection &weight : executable.getStaticWeights())
     if (weight.groupId == group && weight.workId == work)
@@ -122,7 +122,7 @@ void expectError(llvm::Error error) {
   llvm::consumeError(std::move(error));
 }
 
-void checkRun(CIMSoftwareRunner &runner, const CIMExecutable &executable,
+void checkRun(CIMSoftwareRunner &runner, const CIMTransaction &executable,
               VectorTrace *trace = nullptr) {
   std::array<std::array<int8_t, kCIMInputElements>, 4> inputStorage{};
   std::array<std::array<int32_t, kCIMOutputElements>, 4> outputStorage{};
@@ -155,7 +155,7 @@ void checkRun(CIMSoftwareRunner &runner, const CIMExecutable &executable,
 } // namespace
 
 int main() {
-  CIMExecutable executable = makeExecutable();
+  CIMTransaction executable = makeExecutable();
   CIMSoftwareRunner runner;
   VectorTrace trace;
   checkRun(runner, executable, &trace);
@@ -185,7 +185,7 @@ int main() {
        {FixtureFault::MissingInput, FixtureFault::MissingWeight,
         FixtureFault::MissingReadback, FixtureFault::RouteMismatch,
         FixtureFault::InvalidAddress, FixtureFault::Overflow}) {
-    CIMExecutable faulty = makeExecutable(fault);
+    CIMTransaction faulty = makeExecutable(fault);
     std::array<std::array<int8_t, kCIMInputElements>, 4> inputStorage{};
     std::array<std::array<int32_t, kCIMOutputElements>, 4> outputStorage{};
     std::array<CIMInputView, 4> inputViews{};

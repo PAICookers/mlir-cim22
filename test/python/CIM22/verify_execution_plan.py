@@ -25,8 +25,8 @@ COMMON = (
     "m_tile",
     "n_tile",
     "k_tile",
-    "core_slot",
-    "macro_slot",
+    "core_idx",
+    "macro_idx",
 )
 
 
@@ -39,6 +39,7 @@ class Op(NamedTuple):
     body: str
     line: str
     line_number: int
+    transaction_idx: int = -1
 
 
 class Work(NamedTuple):
@@ -47,8 +48,8 @@ class Work(NamedTuple):
     m_tile: int
     n_tile: int
     k_tile: int
-    core_slot: int
-    macro_slot: int
+    core_idx: int
+    macro_idx: int
     mapping: tuple[
         tuple[int, int],
         tuple[int, int],
@@ -82,9 +83,13 @@ def parse_ops(text: str) -> tuple[Op, ...]:
         r'(?<![A-Za-z0-9_.])"?cim\.(' + "|".join(OPS) + r')"?(?![A-Za-z0-9_.])'
     )
     operations = []
+    transaction_idx = -1
+    transaction_start = None
     for line_number, line in enumerate(text.splitlines(), 1):
         if line.lstrip().startswith("//"):
             continue
+        if re.search(r'"cim\.transaction"\s*\([^)]*\)\s*\(\{', line):
+            transaction_start = len(operations)
         match = pattern.search(line)
         if match:
             body = (
@@ -93,7 +98,21 @@ def parse_ops(text: str) -> tuple[Op, ...]:
                 and "{" not in line[match.end() :]
                 else _balanced_body(line, match.start(), line_number)
             )
-            operations.append(Op(match.group(1), body, line, line_number))
+            operations.append(
+                Op(match.group(1), body, line, line_number, transaction_idx)
+            )
+        if re.match(r"\s*\}\)\s*\{cim\.transaction_idx", line):
+            closing_transaction = re.search(
+                r"cim\.transaction_idx\s*=\s*(-?\d+)", line
+            )
+            if closing_transaction and transaction_start is not None:
+                transaction_idx = int(closing_transaction.group(1))
+                for index in range(transaction_start, len(operations)):
+                    operations[index] = operations[index]._replace(
+                        transaction_idx=transaction_idx
+                    )
+            transaction_idx = -1
+            transaction_start = None
     return tuple(operations)
 
 
@@ -162,10 +181,10 @@ def _mapping(body: str, line_number: int):
 
 def _work(op: Op) -> Work:
     values = [_integer(op.body, name, op.line_number) for name in COMMON[:-1]]
-    macro = _integer(op.body, "macro_slot", op.line_number)
+    macro = _integer(op.body, "macro_idx", op.line_number)
     if macro not in (0, 1):
         raise VerificationError(
-            f"line {op.line_number}: invalid macro_slot {macro}"
+            f"line {op.line_number}: invalid macro_idx {macro}"
         )
     mapping = _mapping(op.body, op.line_number)
     return Work(*values, macro, mapping)
@@ -192,7 +211,7 @@ def _static_symbols(ops: tuple[Op, ...]) -> set[str]:
             raise VerificationError(
                 f"line {op.line_number}: static weight must be tensor<16x64xi8>"
             )
-        if "cim.mapping" in op.body or "cim.segment_id" in op.body or any(
+        if "cim.mapping" in op.body or "cim.transaction_idx" in op.body or any(
             _integer_optional(op.body, name) is not None for name in COMMON
         ):
             raise VerificationError(
@@ -245,26 +264,20 @@ def validate_dump(text: str) -> tuple[Op, ...]:
     effectful = tuple(op for op in ops if op.kind != "static_weight")
     if not effectful:
         raise VerificationError("missing function execution-plan operations")
-    for op in effectful:
-        if _integer(op.body, "cim.segment_id", op.line_number) != 0:
-            raise VerificationError(
-                f"line {op.line_number}: executable plan requires segment 0"
-            )
-
-    groups: dict[int, list[Op]] = {}
-    group_runs = []
+    groups: dict[tuple[int, int], list[Op]] = {}
     for op in effectful:
         group = _integer(op.body, "group_id", op.line_number)
-        groups.setdefault(group, []).append(op)
-        if not group_runs or group_runs[-1] != group:
-            group_runs.append(group)
-    ordered_groups = list(groups)
-    if group_runs != list(range(len(ordered_groups))):
+        transaction = op.transaction_idx
+        if transaction < 0:
+            transaction = _integer(op.body, "cim.transaction_idx", op.line_number)
+        groups.setdefault((transaction, group), []).append(op)
+    transactions = sorted({transaction for transaction, _ in groups})
+    if transactions != list(range(len(transactions))):
         raise VerificationError(
-            f"group sequence is not monotonic: {group_runs}"
+            f"transaction sequence is not dense: {transactions}"
         )
 
-    for group_id, group_ops in groups.items():
+    for (transaction_idx, group_id), group_ops in groups.items():
         dispatches = [op for op in group_ops if op.kind == "dispatch"]
         reads = [op for op in group_ops if op.kind == "readback"]
         if not dispatches:
@@ -280,7 +293,7 @@ def validate_dump(text: str) -> tuple[Op, ...]:
             raise VerificationError(
                 f"group {group_id}: work IDs do not preserve two-wide schedule"
             )
-        if any(work.macro_slot != work.work_id % 2 for work in works):
+        if any(work.macro_idx != work.work_id % 2 for work in works):
             raise VerificationError(
                 f"group {group_id}: Macro selectors do not match scheduled work"
             )
@@ -309,8 +322,8 @@ def validate_dump(text: str) -> tuple[Op, ...]:
                 )
             if op.kind == "configure_weight":
                 _weight_symbol(op, symbols)
-            config_pairs.setdefault(work.macro_slot, []).append(op)
-        expected_macros = {work.macro_slot for work in works}
+            config_pairs.setdefault(work.macro_idx, []).append(op)
+        expected_macros = {work.macro_idx for work in works}
         if set(config_pairs) != expected_macros or any(
             sorted(op.kind for op in pair)
             != ["configure_input", "configure_weight"]
@@ -319,7 +332,7 @@ def validate_dump(text: str) -> tuple[Op, ...]:
             raise VerificationError(
                 f"group {group_id}: each Macro needs separate input and weight configuration"
             )
-        config_order = [(_work(op).macro_slot, op.kind) for op in configs]
+        config_order = [(_work(op).macro_idx, op.kind) for op in configs]
         expected_config_order = [
             (macro, kind)
             for macro in sorted(expected_macros)
@@ -336,14 +349,14 @@ def validate_dump(text: str) -> tuple[Op, ...]:
                 f"group {group_id}: expected one once operation"
             )
         once_op = once[0]
-        once_core = _integer(once_op.body, "core_slot", once_op.line_number)
-        if _integer_optional(once_op.body, "macro_slot") is not None:
+        once_core = _integer(once_op.body, "core_idx", once_op.line_number)
+        if _integer_optional(once_op.body, "macro_idx") is not None:
             raise VerificationError(
-                f"line {once_op.line_number}: once must not carry macro_slot"
+                f"line {once_op.line_number}: once must not carry macro_idx"
             )
         once_mapping = _mapping(once_op.body, once_op.line_number)
-        if once_core != works[0].core_slot or any(
-            work.core_slot != once_core for work in works
+        if once_core != works[0].core_idx or any(
+            work.core_idx != once_core for work in works
         ):
             raise VerificationError(
                 f"group {group_id}: once core mismatches work core"
@@ -393,7 +406,10 @@ def main() -> None:
     ops = validate_dump(args.mlir.read_text())
     groups = len(
         {
-            _integer(op.body, "group_id", op.line_number)
+            (
+                op.transaction_idx,
+                _integer(op.body, "group_id", op.line_number),
+            )
             for op in ops
             if op.kind != "static_weight"
         }

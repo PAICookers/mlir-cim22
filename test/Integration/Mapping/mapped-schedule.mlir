@@ -7,9 +7,9 @@
 
 // MAP-LABEL: func.func @matmul_integer
 // MAP-SAME: attributes {cim.placement_policy = "core-major-dual-macro-v1", cim.route_policy = "lower-left-maximal-xy-v1", cim.target_profile = "cim22-4x5-v1", cim.target_profile_version = 1 : i64}
-// MAP: cim.vmm {{.*}} {cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}, cim.segment_id = 0 : i64, core_slot = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_slot = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64}
-// MAP: cim.vmm {{.*}} {cim.mapping = {core_coord = array<i64: 3, 4>, destination = array<i64: 3, 4>, ingress = array<i64: 0, 0>, route = array<i64: 3, 1, 0, 0, 0, 0>, source = array<i64: 0, 0>}, cim.segment_id = 0 : i64, core_slot = 19 : i64, group_id = 19 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_slot = 0 : i64, n_tile = 19 : i64, work_id = 38 : i64}
-// MAP: cim.vmm {{.*}} {cim.mapping = {core_coord = array<i64: 3, 4>, destination = array<i64: 3, 4>, ingress = array<i64: 0, 0>, route = array<i64: 3, 1, 0, 0, 0, 0>, source = array<i64: 0, 0>}, cim.segment_id = 0 : i64, core_slot = 19 : i64, group_id = 19 : i64, k_tile = 1 : i64, m_tile = 0 : i64, macro_slot = 1 : i64, n_tile = 19 : i64, work_id = 39 : i64}
+// MAP: cim.vmm {{.*}} {cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}, cim.transaction_idx = 0 : i64, core_idx = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_idx = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64}
+// MAP: cim.vmm {{.*}} {cim.mapping = {core_coord = array<i64: 3, 4>, destination = array<i64: 3, 4>, ingress = array<i64: 0, 0>, route = array<i64: 3, 1, 0, 0, 0, 0>, source = array<i64: 0, 0>}, cim.transaction_idx = 0 : i64, core_idx = 19 : i64, group_id = 19 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_idx = 0 : i64, n_tile = 19 : i64, work_id = 38 : i64}
+// MAP: cim.vmm {{.*}} {cim.mapping = {core_coord = array<i64: 3, 4>, destination = array<i64: 3, 4>, ingress = array<i64: 0, 0>, route = array<i64: 3, 1, 0, 0, 0, 0>, source = array<i64: 0, 0>}, cim.transaction_idx = 0 : i64, core_idx = 19 : i64, group_id = 19 : i64, k_tile = 1 : i64, m_tile = 0 : i64, macro_idx = 1 : i64, n_tile = 19 : i64, work_id = 39 : i64}
 // MAP: arith.extsi {{.*}} tensor<16xi21> to tensor<16xi32>
 // MAP: arith.addi {{.*}} : tensor<16xi32>
 // MAP-NOT: arith.trunci

@@ -16,8 +16,8 @@ PLAN_BINDING_FIELDS = {
     "k_tile",
     "work_id",
     "group_id",
-    "core_slot",
-    "macro_slot",
+    "core_idx",
+    "macro_idx",
     "mapping",
 }
 WORK_FIELDS = (
@@ -26,8 +26,8 @@ WORK_FIELDS = (
     "k_tile",
     "work_id",
     "group_id",
-    "core_slot",
-    "macro_slot",
+    "core_idx",
+    "macro_idx",
 )
 
 
@@ -199,10 +199,6 @@ def _parse_configure(
     if not match:
         return None
     body = _balanced(line, match.start(), line_number)
-    if _integer(body, "cim.segment_id", 64, line_number) != 0:
-        raise VerificationError(
-            f"line {line_number}: expected cim.segment_id 0"
-        )
     work = tuple(_integer(body, name, 64, line_number) for name in WORK_FIELDS)
     mapping = _mapping(body, "cim.mapping", line_number)
     return Record(

@@ -25,10 +25,10 @@ def mapping_text(mapping):
 
 def work_attrs(work):
     return (
-        f"cim.mapping = {mapping_text(work.mapping)}, cim.segment_id = 0 : i64, "
-        f"core_slot = {work.core_slot} : i64, "
+        f"cim.mapping = {mapping_text(work.mapping)}, cim.transaction_idx = 0 : i64, "
+        f"core_idx = {work.core_idx} : i64, "
         f"group_id = {work.group_id} : i64, k_tile = {work.k_tile} : i64, "
-        f"m_tile = {work.m_tile} : i64, macro_slot = {work.macro_slot} : i64, "
+        f"m_tile = {work.m_tile} : i64, macro_idx = {work.macro_idx} : i64, "
         f"n_tile = {work.n_tile} : i64, "
         f"work_id = {work.work_id} : i64"
     )
@@ -70,8 +70,8 @@ def render_dump(groups=((WORK0, WORK1),)):
         first = group[0]
         once_attrs = (
             f"cim.mapping = {mapping_text(first.mapping)}, "
-            "cim.segment_id = 0 : i64, "
-            f"core_slot = {first.core_slot} : i64, "
+            "cim.transaction_idx = 0 : i64, "
+            f"core_idx = {first.core_idx} : i64, "
             f"group_id = {first.group_id} : i64"
         )
         lines.append(f'    "cim.once"() {{{once_attrs}}} : () -> ()')
@@ -83,7 +83,7 @@ def render_dump(groups=((WORK0, WORK1),)):
             )
             readbacks.append(result)
         barrier_attrs = (
-            f"cim.segment_id = 0 : i64, group_id = {first.group_id} : i64"
+            f"cim.transaction_idx = 0 : i64, group_id = {first.group_id} : i64"
         )
         lines.append(
             f'    "cim.group_barrier"() {{{barrier_attrs}}} : () -> ()'
@@ -163,8 +163,8 @@ class ExecutionPlanVerificationTest(unittest.TestCase):
         invalid_macro = mutate_line(
             text,
             "cim.configure_input",
-            "macro_slot = 0 : i64",
-            "macro_slot = 2 : i64",
+            "macro_idx = 0 : i64",
+            "macro_idx = 2 : i64",
         )
         mismatched_mapping = mutate_line(
             text,
@@ -173,7 +173,7 @@ class ExecutionPlanVerificationTest(unittest.TestCase):
             "route = array<i64: 0, 0, 0, 1, 0, 0>",
         )
         same_macro = text.replace(
-            "macro_slot = 1 : i64", "macro_slot = 0 : i64"
+            "macro_idx = 1 : i64", "macro_idx = 0 : i64"
         )
         missing_config = "\n".join(
             line
@@ -182,12 +182,12 @@ class ExecutionPlanVerificationTest(unittest.TestCase):
         )
         single = render_dump(((WORK0,),))
         wrong_single_macro = single.replace(
-            "macro_slot = 0 : i64", "macro_slot = 1 : i64"
+            "macro_idx = 0 : i64", "macro_idx = 1 : i64"
         )
         skipped_work = single.replace("work_id = 0 : i64", "work_id = 1 : i64")
         faults = (
             (missing_work, "missing work_id"),
-            (invalid_macro, "invalid macro_slot 2"),
+            (invalid_macro, "invalid macro_idx 2"),
             (mismatched_mapping, "configuration identity mismatch"),
             (same_macro, "Macro selectors do not match scheduled work"),
             (missing_config, "each Macro needs separate"),
@@ -204,7 +204,7 @@ class ExecutionPlanVerificationTest(unittest.TestCase):
     def test_once_readback_barrier_and_group_faults(self):
         text = render_dump()
         once_macro = text.replace(
-            '"cim.once"() {', '"cim.once"() {macro_slot = 0 : i64, ', 1
+            '"cim.once"() {', '"cim.once"() {macro_idx = 0 : i64, ', 1
         )
         once_line = next(
             line for line in text.splitlines() if "cim.once" in line
@@ -239,11 +239,11 @@ class ExecutionPlanVerificationTest(unittest.TestCase):
         )
         nonmonotonic = two_groups + "\n" + group0_barrier
         faults = (
-            (once_macro, "once must not carry macro_slot"),
+            (once_macro, "once must not carry macro_idx"),
             (duplicate_once, "expected one once operation"),
             (wrong_readback, "readback must return tensor<16xi21>"),
             (barrier_early, "readback work order mismatches dispatch"),
-            (nonmonotonic, "group sequence is not monotonic"),
+            (nonmonotonic, "expected one group_barrier"),
         )
         for faulty, error in faults:
             with (
