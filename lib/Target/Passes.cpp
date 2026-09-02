@@ -33,7 +33,7 @@ constexpr llvm::StringLiteral kPlacementPolicy = "core-major-dual-macro-v1";
 constexpr llvm::StringLiteral kRoutePolicy = "lower-left-maximal-xy-v1";
 constexpr llvm::StringLiteral kTileAttrs[] = {"m_tile", "n_tile", "k_tile"};
 constexpr llvm::StringLiteral kScheduleAttrs[] = {"work_id", "group_id"};
-constexpr llvm::StringLiteral kMappingAttrs[] = {"core_slot", "macro_slot",
+constexpr llvm::StringLiteral kMappingAttrs[] = {"core_idx", "macro_idx",
                                                  "cim.mapping"};
 constexpr llvm::StringLiteral kFunctionAttrs[] = {
     "cim.target_profile", "cim.target_profile_version", "cim.placement_policy",
@@ -141,8 +141,8 @@ DictionaryAttr buildMapping(Builder &builder, const MappingResult &result) {
 LogicalResult verifyMappedOperation(cim::VMMOp op,
                                     const MappingResult &expected,
                                     DictionaryAttr expectedMapping) {
-  auto coreSlot = readNonNegativeI64(op, "core_slot");
-  auto macroSlot = readNonNegativeI64(op, "macro_slot");
+  auto coreSlot = readNonNegativeI64(op, "core_idx");
+  auto macroSlot = readNonNegativeI64(op, "macro_idx");
   if (!coreSlot || !macroSlot)
     return failure();
   if (*coreSlot != expected.coreSlot || *macroSlot != expected.macroSlot)
@@ -231,8 +231,8 @@ public:
                       builder.getStringAttr(kPlacementPolicy));
     function->setAttr("cim.route_policy", builder.getStringAttr(kRoutePolicy));
     for (auto [vmm, mapping] : llvm::zip_equal(vmms, expectedMappings)) {
-      vmm->setAttr("core_slot", builder.getI64IntegerAttr(mapping.coreSlot));
-      vmm->setAttr("macro_slot", builder.getI64IntegerAttr(mapping.macroSlot));
+      vmm->setAttr("core_idx", builder.getI64IntegerAttr(mapping.coreSlot));
+      vmm->setAttr("macro_idx", builder.getI64IntegerAttr(mapping.macroSlot));
       vmm->setAttr("cim.mapping", buildMapping(builder, mapping));
     }
   }

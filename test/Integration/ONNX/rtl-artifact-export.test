@@ -1,0 +1,51 @@
+// RUN: %python %S/../../python/ONNX/generate_rtl_artifact_onnx.py --output %t.models/rtl-artifact.onnx
+// RUN: mlir-cim22-onnx-import %t.models/rtl-artifact.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(fold-cim-int8-bias,partition-cim-program,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section,lower-cimframe-commands-to-packets,verify-cimframe)' -o %t.packet
+// RUN: rm -rf %t.artifacts %t.artifacts-copy %t.multicast.artifacts %t.heterogeneous.artifacts
+// RUN: mlir-cim22-opt %t.packet --export-cim-rtl-artifacts='output-dir=%t.artifacts input-cache-file=%S/../../Inputs/CIM22/test_data_1_17_macro1/cache_in_int8.txt' -o /dev/null
+// RUN: test -f %t.artifacts/01_config.frames.txt
+// RUN: test -f %t.artifacts/02_work.frames.txt
+// RUN: test -f %t.artifacts/03_readback.frames.txt
+// RUN: test -f %t.artifacts/sources/cim1_w.txt
+// RUN: test -f %t.artifacts/sources/cim2_w.txt
+// RUN: test -f %t.artifacts/sources/cache1_in.txt
+// RUN: test -f %t.artifacts/sources/cache2_in.txt
+// RUN: test -f %t.artifacts/expected/output_1.txt
+// RUN: test -f %t.artifacts/expected/output_2.txt
+// RUN: test ! -e %t.artifacts/groups
+// RUN: test ! -e %t.artifacts/manifest.json
+// RUN: test ! -e %t.artifacts/replay.frames.txt
+// RUN: test ! -e %t.artifacts/Weight_EXP
+// RUN: test ! -e %t.artifacts/expected/cache_out.txt
+// RUN: test ! -e %t.artifacts/expected/cim_out.txt
+// RUN: test $(wc -l < %t.artifacts/01_config.frames.txt) -eq 792
+// RUN: test $(wc -l < %t.artifacts/02_work.frames.txt) -eq 2
+// RUN: test $(wc -l < %t.artifacts/03_readback.frames.txt) -eq 20
+// RUN: awk 'length($0) != 64 || $0 ~ /[^01]/ { exit 1 }' %t.artifacts/01_config.frames.txt
+// RUN: awk 'length($0) != 64 || $0 ~ /[^01]/ { exit 1 }' %t.artifacts/02_work.frames.txt
+// RUN: awk 'length($0) != 64 || $0 ~ /[^01]/ { exit 1 }' %t.artifacts/03_readback.frames.txt
+// RUN: test $(wc -l < %t.artifacts/sources/cim1_w.txt) -eq 256
+// RUN: test $(wc -l < %t.artifacts/sources/cim2_w.txt) -eq 256
+// RUN: test $(wc -l < %t.artifacts/sources/cache1_in.txt) -eq 8
+// RUN: test $(wc -l < %t.artifacts/sources/cache2_in.txt) -eq 8
+// RUN: test $(wc -l < %t.artifacts/expected/output_1.txt) -eq 8
+// RUN: test $(wc -l < %t.artifacts/expected/output_2.txt) -eq 8
+// RUN: awk 'NF != 16 { exit 1 } { for (i = 1; i <= NF; ++i) if (length($i) != 21 || $i ~ /[^01]/) exit 1 }' %t.artifacts/expected/output_1.txt
+// RUN: awk 'NF != 16 { exit 1 } { for (i = 1; i <= NF; ++i) if (length($i) != 21 || $i ~ /[^01]/) exit 1 }' %t.artifacts/expected/output_2.txt
+// RUN: %python %S/../../python/ONNX/generate_rtl_artifact_onnx.py --batch 4 --output %t.models/rtl-artifact-multicast.onnx
+// RUN: mlir-cim22-onnx-import %t.models/rtl-artifact-multicast.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(fold-cim-int8-bias,partition-cim-program,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section,lower-cimframe-commands-to-packets,verify-cimframe)' -o %t.multicast.packet
+// RUN: mlir-cim22-opt %t.multicast.packet --export-cim-rtl-artifacts='output-dir=%t.multicast.artifacts input-cache-file=%S/../../Inputs/CIM22/test_data_1_17_macro1/cache_in_int8.txt' -o /dev/null
+// RUN: test $(wc -l < %t.multicast.artifacts/01_config.frames.txt) -eq 790
+// RUN: test $(wc -l < %t.multicast.artifacts/expected/output_1.txt) -eq 8
+// RUN: test $(wc -l < %t.multicast.artifacts/expected/output_2.txt) -eq 8
+// RUN: grep -q '^1001000000000000000000000000000100000011000000000000000000000001$' %t.multicast.artifacts/02_work.frames.txt
+// RUN: %python %S/../../python/ONNX/generate_rtl_artifact_onnx.py --heterogeneous --batch 2 --output %t.models/rtl-artifact-heterogeneous.onnx
+// RUN: mlir-cim22-onnx-import %t.models/rtl-artifact-heterogeneous.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(fold-cim-int8-bias,partition-cim-program,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section,lower-cimframe-commands-to-packets,verify-cimframe)' -o %t.heterogeneous.packet
+// RUN: not mlir-cim22-opt %t.heterogeneous.packet --export-cim-rtl-artifacts='output-dir=%t.heterogeneous.artifacts input-cache-file=%S/../../Inputs/CIM22/test_data_1_17_macro1/cache_in_int8.txt' 2>&1 | FileCheck %s --check-prefix=HETEROGENEOUS
+// RUN: mlir-cim22-opt %t.packet --export-cim-rtl-artifacts='output-dir=%t.artifacts-copy input-cache-file=%S/../../Inputs/CIM22/test_data_1_17_macro1/cache_in_int8.txt' -o /dev/null
+// RUN: diff -r %t.artifacts %t.artifacts-copy
+// RUN: not mlir-cim22-opt %t.packet --export-cim-rtl-artifacts 2>&1 | FileCheck %s --check-prefix=MISSING
+// RUN: not mlir-cim22-opt %t.packet --export-cim-rtl-artifacts='output-dir=%t.artifacts input-cache-file=%S/../../Inputs/CIM22/test_data_1_17_macro1/cache_in_int8.txt' 2>&1 | FileCheck %s --check-prefix=EXISTS
+
+// MISSING: export-cim-rtl-artifacts requires output-dir
+// EXISTS: RTL artifact output directory already exists
+// HETEROGENEOUS: multicast source mode cannot represent different weights for one Macro

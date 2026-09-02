@@ -1,6 +1,7 @@
 add_mlir_library(MLIRCIM22Target
   CIMFrameCodec.cpp
   CIMExecutable.cpp
+  CIMRTLArtifactExporter.cpp
   Passes.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -18,4 +19,5 @@ add_mlir_library(MLIRCIM22Target
   MLIRFuncDialect
   MLIRIR
   MLIRPass
+  LLVMSupport
 )
