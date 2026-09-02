@@ -293,9 +293,9 @@ int main(int argc, char **argv) {
   if (!check(mlir::succeeded(Module), "fixture must import"))
     return 1;
   mlir::ModuleOp Imported = (*Module).get();
-  if (!checkNormalizedModule(Imported, Model.graph().initializer(0), 32, 512,
-                             1024) ||
-      !checkLowering(Imported, 32, 512, 1024))
+  if (!checkNormalizedModule(Imported, Model.graph().initializer(0), 1, 128,
+                             320) ||
+      !checkLowering(Imported, 1, 128, 320))
     return 1;
 
   onnx::ModelProto Synthetic = makeSyntheticModel(Model);

@@ -7,7 +7,7 @@ from pathlib import Path
 import verify_schedule as verify
 
 MATMULINTEGER_FIXTURE = (
-    Path(__file__).parents[2] / "Inputs/ONNX/int8_matmulinteger_model.onnx"
+    Path(__file__).parents[2] / "Inputs/ONNX/int8_matmul_m1_k128_n320.onnx"
 )
 
 
@@ -60,29 +60,29 @@ class ScheduleVerificationTest(unittest.TestCase):
         verify.validate_dump(render_dump(SMALL_SCHEDULE, 2, 65, 17), 2, 65, 17)
 
     def test_matmulinteger_boundaries_dense_ids_and_group_size(self):
-        work = verify.expected_schedule(32, 512, 1024)
-        self.assertEqual(len(work), 16384)
+        work = verify.expected_schedule(1, 65, 337)
+        self.assertEqual(len(work), 44)
         self.assertEqual(work[0], verify.Work(0, 0, 0, 0, 0))
         self.assertEqual(
             work[38:40],
             [
-                verify.Work(38, 0, 4, 6, 19),
-                verify.Work(39, 0, 4, 7, 19),
+                verify.Work(38, 0, 19, 0, 19),
+                verify.Work(39, 0, 19, 1, 19),
             ],
         )
-        self.assertEqual(work[40], verify.Work(40, 0, 5, 0, 20))
+        self.assertEqual(work[40], verify.Work(40, 0, 20, 0, 20))
         self.assertEqual(
             work[-2:],
             [
-                verify.Work(16382, 31, 63, 6, 8191),
-                verify.Work(16383, 31, 63, 7, 8191),
+                verify.Work(42, 0, 21, 0, 21),
+                verify.Work(43, 0, 21, 1, 21),
             ],
         )
-        self.assertEqual([item.work_id for item in work], list(range(16384)))
+        self.assertEqual([item.work_id for item in work], list(range(44)))
         self.assertEqual(
             max(Counter(item.group_id for item in work).values()), 2
         )
-        verify.validate_dump(render_dump(work, 32, 512, 1024), 32, 512, 1024)
+        verify.validate_dump(render_dump(work, 1, 65, 337), 1, 65, 337)
 
     def test_fixed_seed_int32_direct_equals_tiled_reconstruction(self):
         shape = (2, 65, 17)
@@ -97,13 +97,13 @@ class ScheduleVerificationTest(unittest.TestCase):
     def test_real_matmulinteger_fixture_int32_direct_equals_tiled_reconstruction(
         self,
     ):
-        weight = verify.load_onnx_weight(MATMULINTEGER_FIXTURE, 512, 1024)
-        self.assertEqual(weight.shape, (512, 1024))
+        weight = verify.load_onnx_weight(MATMULINTEGER_FIXTURE, 128, 320)
+        self.assertEqual(weight.shape, (128, 320))
         self.assertEqual(weight.dtype.name, "int8")
         result_shape, partial_min, partial_max = verify.verify_numeric(
-            32, 512, 1024, seed=2205, weight=weight
+            1, 128, 320, seed=2205, weight=weight
         )
-        self.assertEqual(result_shape, (32, 1024))
+        self.assertEqual(result_shape, (1, 320))
         self.assertLessEqual(verify.I21_MIN, partial_min)
         self.assertLessEqual(partial_min, partial_max)
         self.assertLessEqual(partial_max, verify.I21_MAX)

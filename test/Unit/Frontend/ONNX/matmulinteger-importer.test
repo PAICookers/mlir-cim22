@@ -1,1 +1,1 @@
-// RUN: mlir-cim22-matmulinteger-importer-test %S/../../../Inputs/ONNX/int8_matmulinteger_model.onnx
+// RUN: mlir-cim22-matmulinteger-importer-test %S/../../../Inputs/ONNX/int8_matmul_m1_k128_n320.onnx

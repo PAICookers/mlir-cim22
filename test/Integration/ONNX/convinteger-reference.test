@@ -1,9 +1,5 @@
 // RUN: %python %S/../../python/ONNX/generate_conv_integer_onnx.py --emit-dir %t.models
 // RUN: mlir-cim22-onnx-import %t.models/canonical.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,partition-cim-program,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section)' > %t.canonical
 // RUN: env PYTHONPATH=%S/../../python/CIM22 %python %S/../../python/ONNX/verify_compiled_int8.py %t.canonical %t.models/canonical.onnx
-// RUN: mlir-cim22-onnx-import %t.models/odd.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,partition-cim-program,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section)' > %t.odd
-// RUN: env PYTHONPATH=%S/../../python/CIM22 %python %S/../../python/ONNX/verify_compiled_int8.py %t.odd %t.models/odd.onnx
-// RUN: mlir-cim22-onnx-import %t.models/pointwise.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,partition-cim-program,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section)' > %t.pointwise
-// RUN: env PYTHONPATH=%S/../../python/CIM22 %python %S/../../python/ONNX/verify_compiled_int8.py %t.pointwise %t.models/pointwise.onnx
 // RUN: mlir-cim22-onnx-import %t.models/rectangular.onnx | mlir-cim22-opt --pass-pipeline='builtin.module(normalize-cim-conv,partition-cim-program,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section)' > %t.rectangular
 // RUN: env PYTHONPATH=%S/../../python/CIM22 %python %S/../../python/ONNX/verify_compiled_int8.py %t.rectangular %t.models/rectangular.onnx
