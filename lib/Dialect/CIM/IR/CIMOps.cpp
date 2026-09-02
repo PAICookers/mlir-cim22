@@ -21,17 +21,16 @@ using namespace mlir::cim;
 namespace {
 const llvm::StringRef kTileAttrs[] = {"m_tile", "n_tile", "k_tile"};
 const llvm::StringRef kScheduleAttrs[] = {"work_id", "group_id"};
-const llvm::StringRef kMappingAttrs[] = {"core_slot", "macro_slot",
+const llvm::StringRef kMappingAttrs[] = {"core_idx", "macro_idx",
                                          "cim.mapping"};
 const llvm::StringRef kExecutionPlanIdentityAttrs[] = {
-    CIMDialect::getSegmentIdAttrName(),
     "m_tile",
     "n_tile",
     "k_tile",
     "work_id",
     "group_id",
-    "core_slot",
-    "macro_slot",
+    "core_idx",
+    "macro_idx",
     "cim.mapping"};
 
 unsigned countPresent(Operation *op, ArrayRef<llvm::StringRef> names) {
@@ -76,34 +75,29 @@ LogicalResult verifyFullExecutionPlanIdentity(Operation *op) {
   if (failed(verifyNonNegative(
           op, ArrayRef(kExecutionPlanIdentityAttrs).drop_back())))
     return failure();
-  auto macro = op->getAttrOfType<IntegerAttr>("macro_slot");
+  auto macro = op->getAttrOfType<IntegerAttr>("macro_idx");
   if (!macro || macro.getInt() < 0 || macro.getInt() > 1)
-    return op->emitOpError("expects macro_slot to be 0 or 1");
+    return op->emitOpError("expects macro_idx to be 0 or 1");
   return verifyMapping(op);
 }
 
 LogicalResult verifyGroupOperation(Operation *op, bool withMapping) {
-  auto segment =
-      op->getAttrOfType<IntegerAttr>(CIMDialect::getSegmentIdAttrName());
-  if (!segment || !segment.getType().isSignlessInteger(64) ||
-      segment.getInt() < 0)
-    return op->emitOpError("expects non-negative i64 cim.segment_id");
   auto group = op->getAttrOfType<IntegerAttr>("group_id");
   if (!group || !group.getType().isSignlessInteger(64) || group.getInt() < 0)
     return op->emitOpError("expects non-negative i64 group_id");
   if (!withMapping)
     return countPresent(op, {"m_tile", "n_tile", "k_tile", "work_id",
-                             "core_slot", "macro_slot", "cim.mapping"}) == 0
+                             "core_idx", "macro_idx", "cim.mapping"}) == 0
                ? success()
                : op->emitOpError(
-                     "must carry only cim.segment_id and group_id identity");
-  auto core = op->getAttrOfType<IntegerAttr>("core_slot");
+                     "must carry only group_id identity");
+  auto core = op->getAttrOfType<IntegerAttr>("core_idx");
   if (!core || !core.getType().isSignlessInteger(64) || core.getInt() < 0)
-    return op->emitOpError("expects non-negative i64 core_slot");
+    return op->emitOpError("expects non-negative i64 core_idx");
   if (countPresent(
-          op, {"m_tile", "n_tile", "k_tile", "work_id", "macro_slot"}) != 0)
+          op, {"m_tile", "n_tile", "k_tile", "work_id", "macro_idx"}) != 0)
     return op->emitOpError(
-        "must carry only cim.segment_id, group_id, core_slot, and cim.mapping "
+        "must carry only group_id, core_idx, and cim.mapping "
         "identity");
   return verifyMapping(op);
 }
@@ -123,10 +117,6 @@ LogicalResult VMMOp::verify() {
   if (resultType.getShape() != llvm::ArrayRef<int64_t>{16})
     return emitOpError("expects result shape [16], but got ") << resultType;
 
-  if (failed(verifyNonNegative(getOperation(),
-                               {CIMDialect::getSegmentIdAttrName()})))
-    return failure();
-
   unsigned tileAttrCount = countPresent(getOperation(), kTileAttrs);
   if (tileAttrCount != 0 && tileAttrCount != std::size(kTileAttrs))
     return emitOpError("requires m_tile, n_tile, and k_tile together");
@@ -138,16 +128,13 @@ LogicalResult VMMOp::verify() {
     return emitOpError("requires work_id and group_id together");
   if (scheduleAttrCount != 0 && tileAttrCount == 0)
     return emitOpError("requires tile identity before schedule attributes");
-  if (scheduleAttrCount != 0 &&
-      !getOperation()->hasAttr(CIMDialect::getSegmentIdAttrName()))
-    return emitOpError("requires cim.segment_id before schedule attributes");
   if (failed(verifyNonNegative(getOperation(), kScheduleAttrs)))
     return failure();
 
   unsigned mappingAttrCount = countPresent(getOperation(), kMappingAttrs);
   if (mappingAttrCount != 0 && mappingAttrCount != std::size(kMappingAttrs))
     return emitOpError(
-        "requires core_slot, macro_slot, and cim.mapping together");
+        "requires core_idx, macro_idx, and cim.mapping together");
   if (mappingAttrCount != 0 && scheduleAttrCount == 0)
     return emitOpError("requires logical schedule before target mapping");
   if (failed(verifyNonNegative(getOperation(),
@@ -205,6 +192,32 @@ LogicalResult ReadbackOp::verify() {
 
 LogicalResult GroupBarrierOp::verify() {
   return verifyGroupOperation(getOperation(), /*withMapping=*/false);
+}
+
+LogicalResult TransactionOp::verify() {
+  auto index = getOperation()->getAttrOfType<IntegerAttr>(
+      CIMDialect::getTransactionIdxAttrName());
+  if (!index || !index.getType().isSignlessInteger(64) || index.getInt() < 0)
+    return emitOpError("expects non-negative i64 cim.transaction_idx");
+  if (!getBody().hasOneBlock())
+    return emitOpError("expects exactly one body block");
+  Block &block = getBody().front();
+  if (block.getNumArguments() != getInputs().size())
+    return emitOpError("expects one region argument for each input");
+  for (auto [argument, input] : llvm::zip(block.getArguments(), getInputs()))
+    if (argument.getType() != input.getType())
+      return emitOpError("transaction input and region argument types differ");
+  auto yield = dyn_cast<YieldOp>(block.getTerminator());
+  if (!yield || yield.getNumOperands() != getNumResults())
+    return emitOpError("expects cim.yield operands to match transaction results");
+  for (auto [result, value] : llvm::zip(getResults(), yield.getOperands()))
+    if (result.getType() != value.getType())
+      return emitOpError("transaction result and yield types differ");
+  for (Operation &op : block.without_terminator())
+    if (!isa<ConfigureInputOp, ConfigureWeightOp, DispatchOp, OnceOp,
+             ReadbackOp, GroupBarrierOp>(&op))
+      return op.emitError("Host operations are not allowed inside cim.transaction");
+  return success();
 }
 
 #define GET_OP_CLASSES

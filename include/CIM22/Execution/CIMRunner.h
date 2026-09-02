@@ -65,7 +65,7 @@ class CIMRunner {
 public:
   virtual ~CIMRunner() = default;
 
-  virtual llvm::Error run(const CIMExecutable &executable,
+  virtual llvm::Error run(const CIMTransaction &executable,
                           const CIMRunInputs &inputs,
                           CIMRunOutputs &outputs,
                           CIMTraceSink *trace = nullptr) = 0;
@@ -73,14 +73,14 @@ public:
 
 class CIMSoftwareRunner final : public CIMRunner {
 public:
-  llvm::Error run(const CIMExecutable &executable, const CIMRunInputs &inputs,
+  llvm::Error run(const CIMTransaction &executable, const CIMRunInputs &inputs,
                   CIMRunOutputs &outputs,
                   CIMTraceSink *trace = nullptr) override;
 };
 
 class CIMUartRunner final : public CIMRunner {
 public:
-  llvm::Error run(const CIMExecutable &executable, const CIMRunInputs &inputs,
+  llvm::Error run(const CIMTransaction &executable, const CIMRunInputs &inputs,
                   CIMRunOutputs &outputs,
                   CIMTraceSink *trace = nullptr) override;
 };

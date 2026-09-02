@@ -1,4 +1,4 @@
-//===- CIMSegments.h - CIM execution segments -----------------*- C++ -*-===//
+//===- CIMSegments.h - CIM transaction analysis ----------------*- C++ -*-===//
 //
 // Licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -18,9 +18,9 @@
 
 namespace mlir::cim {
 
-/// Non-owning view of one verified Host-visible CIM launch boundary.
-struct CIMSegmentInfo {
-  int64_t segmentId;
+/// Non-owning view of one verified Host-visible CIM transaction.
+struct CIMTransactionInfo {
+  int64_t transactionIdx;
   SmallVector<Value> inputs;
   SmallVector<Value> outputs;
 };
@@ -28,9 +28,8 @@ struct CIMSegmentInfo {
 /// Identifies the CIM operations that form an execution plan.
 bool isExecutionPlanOp(Operation *op);
 
-/// Collects segments from a function that passed operation and plan
-/// verification, preserving execution-plan order without taking ownership.
-SmallVector<CIMSegmentInfo> analyzeCIMSegments(func::FuncOp function);
+/// Collects transactions from a verified function in execution order.
+SmallVector<CIMTransactionInfo> analyzeCIMTransactions(func::FuncOp function);
 
 } // namespace mlir::cim
 

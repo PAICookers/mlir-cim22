@@ -6,7 +6,7 @@
 
 namespace cim22::execution {
 
-llvm::Error CIMUartRunner::run(const CIMExecutable &, const CIMRunInputs &,
+llvm::Error CIMUartRunner::run(const CIMTransaction &, const CIMRunInputs &,
                                CIMRunOutputs &, CIMTraceSink *) {
   return llvm::createStringError(
       llvm::inconvertibleErrorCode(),

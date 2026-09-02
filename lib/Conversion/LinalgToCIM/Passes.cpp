@@ -82,7 +82,7 @@ FailureOr<DenseElementsAttr> evaluateDenseTensor(Value value) {
         llvm::is_contained(strides, ShapedType::kDynamic))
       return failure();
 
-    SmallVector<APInt> sourceValues((*source).getValues<APInt>());
+    auto sourceValues = (*source).getValues<APInt>();
     SmallVector<APInt> resultValues;
     resultValues.reserve(resultType.getNumElements());
     int64_t sourceColumns = sourceType.getDimSize(1);
@@ -90,8 +90,8 @@ FailureOr<DenseElementsAttr> evaluateDenseTensor(Value value) {
       for (int64_t column = 0; column < sizes[1]; ++column) {
         int64_t sourceRow = offsets[0] + row * strides[0];
         int64_t sourceColumn = offsets[1] + column * strides[1];
-        resultValues.push_back(
-            sourceValues[sourceRow * sourceColumns + sourceColumn]);
+        resultValues.push_back(sourceValues.begin()[sourceRow * sourceColumns +
+                                                     sourceColumn]);
       }
     return DenseElementsAttr::get(resultType, resultValues);
   }
@@ -141,7 +141,7 @@ VMMOp createIdentifiedVMM(OpBuilder &builder, Location location,
                           int64_t segmentId, int64_t mTile, int64_t nTile,
                           int64_t kTile) {
   auto vmm = VMMOp::create(builder, location, resultType, input, weight);
-  vmm->setAttr(CIMDialect::getSegmentIdAttrName(),
+  vmm->setAttr(CIMDialect::getTransactionIdxAttrName(),
                builder.getI64IntegerAttr(segmentId));
   vmm->setAttr("m_tile", builder.getI64IntegerAttr(mTile));
   vmm->setAttr("n_tile", builder.getI64IntegerAttr(nTile));
@@ -505,7 +505,7 @@ bool isOffloadableRoot(Operation *op) {
 
 bool isPartitionedRoot(Operation *op) {
   auto segmentId =
-      op->getAttrOfType<IntegerAttr>(CIMDialect::getSegmentIdAttrName());
+      op->getAttrOfType<IntegerAttr>(CIMDialect::getTransactionIdxAttrName());
   return segmentId && segmentId.getType().isSignlessInteger(64) &&
          segmentId.getInt() >= 0 && isOffloadableRoot(op);
 }
@@ -532,7 +532,7 @@ public:
 
     auto inputs = adaptor.getInputs();
     int64_t segmentId =
-        op->getAttrOfType<IntegerAttr>(CIMDialect::getSegmentIdAttrName())
+        op->getAttrOfType<IntegerAttr>(CIMDialect::getTransactionIdxAttrName())
             .getInt();
     auto weightType = cast<RankedTensorType>(inputs[0].getType());
     int64_t outputSize = weightType.getDimSize(0);
@@ -682,7 +682,7 @@ public:
     Location location = op.getLoc();
     auto inputs = adaptor.getInputs();
     IntegerAttr segmentId =
-        op->getAttrOfType<IntegerAttr>(CIMDialect::getSegmentIdAttrName());
+        op->getAttrOfType<IntegerAttr>(CIMDialect::getTransactionIdxAttrName());
     auto weightType = cast<RankedTensorType>(inputs[0].getType());
     auto inputType = cast<RankedTensorType>(inputs[1].getType());
     int64_t outputSize = weightType.getDimSize(0);
@@ -716,7 +716,7 @@ public:
       auto matvec = linalg::MatvecOp::create(
           rewriter, location, TypeRange{columnResultType},
           ValueRange{inputs[0], inputColumn.getResult()}, ValueRange{zero});
-      matvec->setAttr(CIMDialect::getSegmentIdAttrName(), segmentId);
+      matvec->setAttr(CIMDialect::getTransactionIdxAttrName(), segmentId);
       matvec->setAttr(CIMDialect::getMatTileAttrName(),
                       rewriter.getI64IntegerAttr(column));
       if (integerProfile) {
@@ -757,7 +757,7 @@ public:
     Location location = op.getLoc();
     auto inputs = adaptor.getInputs();
     int64_t segmentId =
-        op->getAttrOfType<IntegerAttr>(CIMDialect::getSegmentIdAttrName())
+        op->getAttrOfType<IntegerAttr>(CIMDialect::getTransactionIdxAttrName())
             .getInt();
     auto weightType = cast<RankedTensorType>(inputs[0].getType());
     int64_t matTile = getMatTile(op);
@@ -1214,7 +1214,7 @@ public:
       function.walk([&](Operation *op) {
         if (!isOffloadableRoot(op))
           return;
-        op->setAttr(CIMDialect::getSegmentIdAttrName(),
+        op->setAttr(CIMDialect::getTransactionIdxAttrName(),
                     builder.getI64IntegerAttr(segmentId++));
       });
     }
@@ -1230,10 +1230,10 @@ public:
     target.addLegalDialect<CIMDialect>();
     target.addLegalDialect<tensor::TensorDialect>();
     target.addDynamicallyLegalOp<linalg::MatvecOp>([](linalg::MatvecOp op) {
-      return !op->hasAttr(CIMDialect::getSegmentIdAttrName());
+      return !op->hasAttr(CIMDialect::getTransactionIdxAttrName());
     });
     target.addDynamicallyLegalOp<linalg::MatmulOp>([](linalg::MatmulOp op) {
-      return !op->hasAttr(CIMDialect::getSegmentIdAttrName());
+      return !op->hasAttr(CIMDialect::getTransactionIdxAttrName());
     });
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
@@ -1274,14 +1274,14 @@ public:
     SmallVector<SmallVector<VMMOp>> segments;
     for (VMMOp vmm : allVMMs) {
       auto segmentId =
-          readNonNegativeI64(vmm, CIMDialect::getSegmentIdAttrName());
+          readNonNegativeI64(vmm, CIMDialect::getTransactionIdxAttrName());
       if (!segmentId)
         return signalPassFailure();
       if (segments.empty() ||
           *segmentId != static_cast<int64_t>(segments.size() - 1)) {
         if (*segmentId != static_cast<int64_t>(segments.size())) {
           vmm.emitOpError("materialize-cim-schedule requires dense, "
-                          "contiguous cim.segment_id ordering");
+                          "contiguous cim.transaction_idx ordering");
           return signalPassFailure();
         }
         segments.emplace_back();
@@ -1412,14 +1412,13 @@ public:
 };
 
 const llvm::StringRef kExecutionPlanIdentityAttrs[] = {
-    CIMDialect::getSegmentIdAttrName(),
     "m_tile",
     "n_tile",
     "k_tile",
     "work_id",
     "group_id",
-    "core_slot",
-    "macro_slot",
+    "core_idx",
+    "macro_idx",
     "cim.mapping"};
 constexpr int64_t kOutputCacheRows = 8;
 
@@ -1439,11 +1438,11 @@ public:
     struct WorkPlan {
       VMMOp vmm;
       DenseIntElementsAttr weight;
-      int64_t segmentId;
+      int64_t transactionIdx;
       int64_t workId;
       int64_t groupId;
-      int64_t coreSlot;
-      int64_t macroSlot;
+      int64_t coreIdx;
+      int64_t macroIdx;
     };
     struct FunctionPlan {
       func::FuncOp function;
@@ -1481,7 +1480,7 @@ public:
 
       FunctionPlan plan{function, {}};
       plan.works.reserve(vmms.size());
-      int64_t currentSegment = -1;
+      int64_t currentTransaction = -1;
       int64_t expectedWork = 0;
       for (VMMOp vmm : vmms) {
         if (countPresent(vmm, kExecutionPlanIdentityAttrs) !=
@@ -1491,25 +1490,25 @@ public:
               "work identity");
           return signalPassFailure();
         }
-        auto segmentId =
-            readNonNegativeI64(vmm, CIMDialect::getSegmentIdAttrName());
+        auto transactionIdx =
+            readNonNegativeI64(vmm, CIMDialect::getTransactionIdxAttrName());
         auto workId = readNonNegativeI64(vmm, "work_id");
         auto groupId = readNonNegativeI64(vmm, "group_id");
-        auto coreSlot = readNonNegativeI64(vmm, "core_slot");
-        auto macroSlot = readNonNegativeI64(vmm, "macro_slot");
-        if (!segmentId || !workId || !groupId || !coreSlot || !macroSlot)
+        auto coreIdx = readNonNegativeI64(vmm, "core_idx");
+        auto macroIdx = readNonNegativeI64(vmm, "macro_idx");
+        if (!transactionIdx || !workId || !groupId || !coreIdx || !macroIdx)
           return signalPassFailure();
-        if (*segmentId != currentSegment) {
-          if (*segmentId != currentSegment + 1) {
+        if (*transactionIdx != currentTransaction) {
+          if (*transactionIdx != currentTransaction + 1) {
             vmm.emitOpError("materialize-cim-execution-plan requires dense, "
-                            "contiguous cim.segment_id ordering");
+                            "contiguous cim.transaction_idx ordering");
             return signalPassFailure();
           }
-          currentSegment = *segmentId;
+          currentTransaction = *transactionIdx;
           expectedWork = 0;
         }
         if (*workId != expectedWork || *groupId != *workId / 2 ||
-            *macroSlot > 1) {
+            *macroIdx > 1) {
           vmm.emitOpError(
               "materialize-cim-execution-plan rejects invalid work placement");
           return signalPassFailure();
@@ -1530,35 +1529,101 @@ public:
                           "elements");
           return signalPassFailure();
         }
-        plan.works.push_back({vmm, intWeight, *segmentId, *workId, *groupId,
-                              *coreSlot, *macroSlot});
+        plan.works.push_back({vmm, intWeight, *transactionIdx, *workId,
+                              *groupId, *coreIdx, *macroIdx});
       }
 
-      for (size_t index = 0; index < plan.works.size();) {
-        WorkPlan &first = plan.works[index];
-        if (index + 1 == plan.works.size() ||
-            plan.works[index + 1].segmentId != first.segmentId) {
-          ++index;
-          continue;
+      // A logical schedule may reuse the 20 physical cores for later groups.
+      // Materialize those groups as successive runtime transactions so each
+      // transaction can configure all of its cores before the shared work
+      // phase.  Group and work identities are local to the resulting wave.
+      Builder identityBuilder(function.getContext());
+      int64_t nextTransactionIdx = 0;
+      for (size_t sourceBegin = 0; sourceBegin < plan.works.size();) {
+        size_t sourceEnd = sourceBegin + 1;
+        while (sourceEnd < plan.works.size() &&
+               plan.works[sourceEnd].transactionIdx ==
+                   plan.works[sourceBegin].transactionIdx)
+          ++sourceEnd;
+
+        llvm::DenseSet<int64_t> activeCores;
+        int64_t transactionIdx = nextTransactionIdx;
+        int64_t localGroupId = 0;
+        int64_t localWorkId = 0;
+        for (size_t groupBegin = sourceBegin; groupBegin < sourceEnd;) {
+          size_t groupEnd = groupBegin + 1;
+          while (groupEnd < sourceEnd &&
+                 plan.works[groupEnd].groupId ==
+                     plan.works[groupBegin].groupId)
+            ++groupEnd;
+          int64_t coreIdx = plan.works[groupBegin].coreIdx;
+          if (activeCores.contains(coreIdx) || activeCores.size() == 20) {
+            transactionIdx = ++nextTransactionIdx;
+            activeCores.clear();
+            localGroupId = 0;
+            localWorkId = 0;
+          }
+          for (size_t workIndex = groupBegin; workIndex < groupEnd;
+               ++workIndex) {
+            WorkPlan &work = plan.works[workIndex];
+            work.transactionIdx = transactionIdx;
+            work.groupId = localGroupId;
+            work.workId = localWorkId++;
+            work.vmm->setAttr(
+                CIMDialect::getTransactionIdxAttrName(),
+                identityBuilder.getI64IntegerAttr(work.transactionIdx));
+            work.vmm->setAttr(
+                "group_id", identityBuilder.getI64IntegerAttr(work.groupId));
+            work.vmm->setAttr(
+                "work_id", identityBuilder.getI64IntegerAttr(work.workId));
+          }
+          activeCores.insert(coreIdx);
+          ++localGroupId;
+          groupBegin = groupEnd;
         }
-        WorkPlan &second = plan.works[index + 1];
-        if (first.groupId != second.groupId ||
-            first.coreSlot != second.coreSlot || first.macroSlot != 0 ||
-            second.macroSlot != 1 ||
-            first.vmm->getAttr("cim.mapping") !=
-                second.vmm->getAttr("cim.mapping")) {
-          second.vmm.emitOpError(
-              "materialize-cim-execution-plan requires a same-route Macro 0/1 "
-              "pair per two-work group");
-          return signalPassFailure();
-        }
-        index += 2;
+        nextTransactionIdx = transactionIdx + 1;
+        sourceBegin = sourceEnd;
       }
 
       for (size_t begin = 0; begin < plan.works.size();) {
         size_t end = begin + 1;
         while (end < plan.works.size() &&
-               plan.works[end].segmentId == plan.works[begin].segmentId)
+               plan.works[end].transactionIdx ==
+                   plan.works[begin].transactionIdx)
+          ++end;
+        for (size_t groupBegin = begin; groupBegin < end;) {
+          size_t groupEnd = groupBegin + 1;
+          while (groupEnd < end &&
+                 plan.works[groupEnd].groupId ==
+                     plan.works[groupBegin].groupId)
+            ++groupEnd;
+          bool validSingleMacro =
+              groupEnd - groupBegin == 1 &&
+              plan.works[groupBegin].macroIdx == 0;
+          bool validDualMacro =
+              groupEnd - groupBegin == 2 &&
+              plan.works[groupBegin].coreIdx ==
+                  plan.works[groupBegin + 1].coreIdx &&
+              plan.works[groupBegin].macroIdx == 0 &&
+              plan.works[groupBegin + 1].macroIdx == 1 &&
+              plan.works[groupBegin].vmm->getAttr("cim.mapping") ==
+                  plan.works[groupBegin + 1].vmm->getAttr("cim.mapping");
+          if (!validSingleMacro && !validDualMacro) {
+            plan.works[groupBegin].vmm.emitOpError(
+                "materialize-cim-execution-plan requires a same-route Macro "
+                "0/1 pair per two-work group");
+            return signalPassFailure();
+          }
+          groupBegin = groupEnd;
+        }
+        begin = end;
+      }
+
+      for (size_t begin = 0; begin < plan.works.size();) {
+        size_t end = begin + 1;
+        while (end < plan.works.size() &&
+               plan.works[end].transactionIdx ==
+                   plan.works[begin].transactionIdx)
           ++end;
 
         llvm::DenseSet<Operation *> segmentWork;
@@ -1624,7 +1689,7 @@ public:
       for (WorkPlan &work : plan.works) {
         std::string name =
             (Twine("__cim_weight_") + plan.function.getSymName() + "_s" +
-             Twine(work.segmentId) + "_w" + Twine(work.workId))
+             Twine(work.transactionIdx) + "_w" + Twine(work.workId))
                 .str();
         StaticWeightOp::create(moduleBuilder, work.vmm.getLoc(), name,
                                work.weight);
@@ -1634,97 +1699,127 @@ public:
       plan.function->setAttr("cim.execution_plan_schema_version",
                              moduleBuilder.getI64IntegerAttr(1));
       for (size_t index = 0; index < plan.works.size();) {
-        size_t count =
-            index + 1 < plan.works.size() && plan.works[index + 1].segmentId ==
-                                                 plan.works[index].segmentId
-                ? 2
-                : 1;
-        WorkPlan &last = plan.works[index + count - 1];
+        size_t transactionEnd = index + 1;
+        while (transactionEnd < plan.works.size() &&
+               plan.works[transactionEnd].transactionIdx ==
+                   plan.works[index].transactionIdx)
+          ++transactionEnd;
+        Operation *lastVMM = plan.works[transactionEnd - 1].vmm;
         SmallVector<Operation *> earlyUsers;
-        if (count == 2) {
-          for (Operation *op = plan.works[index].vmm->getNextNode();
-               op && op != last.vmm.getOperation(); op = op->getNextNode())
-            if (dependsOn(op, plan.works[index].vmm))
-              earlyUsers.push_back(op);
+        llvm::DenseSet<Operation *> transactionResults;
+        for (size_t workIndex = index; workIndex < transactionEnd;
+             ++workIndex)
+          transactionResults.insert(plan.works[workIndex].vmm);
+        for (Operation *op = plan.works[index].vmm->getNextNode();
+             op && op != lastVMM; op = op->getNextNode()) {
+          bool dependsOnTransaction = llvm::any_of(
+              op->getOperands(), [&](Value operand) {
+                return transactionResults.contains(operand.getDefiningOp());
+              });
+          if (dependsOnTransaction) {
+            earlyUsers.push_back(op);
+            transactionResults.insert(op);
+          }
         }
 
-        OpBuilder builder(last.vmm);
+        SmallVector<Value> inputs;
+        SmallVector<Type> resultTypes;
+        for (size_t workIndex = index; workIndex < transactionEnd;
+             ++workIndex) {
+          Value input = plan.works[workIndex].vmm.getInput();
+          if (!llvm::is_contained(inputs, input))
+            inputs.push_back(input);
+          resultTypes.push_back(plan.works[workIndex].vmm.getResult().getType());
+        }
+        OpBuilder builder(plan.works[index].vmm);
+        SmallVector<NamedAttribute> attributes;
+        attributes.push_back(builder.getNamedAttr(
+            CIMDialect::getTransactionIdxAttrName(), builder.getI64IntegerAttr(
+                plan.works[index].transactionIdx)));
+        TransactionOp transaction = TransactionOp::create(
+            builder, plan.works[index].vmm.getLoc(), resultTypes, inputs,
+            attributes);
+        Block *body = builder.createBlock(&transaction.getBody());
+        for (Value input : inputs)
+          body->addArgument(input.getType(), input.getLoc());
+        OpBuilder bodyBuilder(body, body->end());
+        SmallVector<Value> readbackValues;
         SmallVector<ReadbackOp> readbacks;
-        readbacks.reserve(count);
-        for (size_t offset = 0; offset < count; ++offset) {
-          WorkPlan &work = plan.works[index + offset];
-          auto input = ConfigureInputOp::create(builder, work.vmm.getLoc(),
-                                                work.vmm.getInput());
+
+        // The source transaction owns one continuous configuration phase.
+        for (size_t workIndex = index; workIndex < transactionEnd;
+             ++workIndex) {
+          WorkPlan &work = plan.works[workIndex];
+          auto inputPosition = llvm::find(inputs, work.vmm.getInput());
+          auto input = ConfigureInputOp::create(
+              bodyBuilder, work.vmm.getLoc(),
+              body->getArgument(inputPosition - inputs.begin()));
           copyExecutionPlanIdentity(work.vmm, input);
-          auto weight = ConfigureWeightOp::create(builder, work.vmm.getLoc(),
-                                                  resources[index + offset]);
+          auto weight = ConfigureWeightOp::create(bodyBuilder, work.vmm.getLoc(),
+                                                   resources[workIndex]);
           copyExecutionPlanIdentity(work.vmm, weight);
         }
-        for (size_t offset = 0; offset < count; ++offset) {
-          WorkPlan &work = plan.works[index + offset];
-          auto dispatch = DispatchOp::create(builder, work.vmm.getLoc());
-          copyExecutionPlanIdentity(work.vmm, dispatch);
-        }
-        WorkPlan &first = plan.works[index];
-        auto once = OnceOp::create(builder, first.vmm.getLoc());
-        once->setAttr(CIMDialect::getSegmentIdAttrName(),
-                      first.vmm->getAttr(CIMDialect::getSegmentIdAttrName()));
-        once->setAttr("group_id", first.vmm->getAttr("group_id"));
-        once->setAttr("core_slot", first.vmm->getAttr("core_slot"));
-        once->setAttr("cim.mapping", first.vmm->getAttr("cim.mapping"));
-        for (size_t offset = 0; offset < count; ++offset) {
-          WorkPlan &work = plan.works[index + offset];
-          auto readback = ReadbackOp::create(builder, work.vmm.getLoc(),
-                                             work.vmm.getResult().getType());
-          copyExecutionPlanIdentity(work.vmm, readback);
-          auto nTile = readNonNegativeI64(work.vmm, "n_tile");
-          if (!nTile) {
-            work.vmm.emitOpError(
-                "materialize-cim-execution-plan requires n_tile for the "
-                "INT8 output Cache");
-            return signalPassFailure();
+        for (size_t groupBegin = index; groupBegin < transactionEnd;) {
+          size_t groupEnd = groupBegin + 1;
+          while (groupEnd < transactionEnd &&
+                 plan.works[groupEnd].groupId == plan.works[groupBegin].groupId)
+            ++groupEnd;
+          for (size_t workIndex = groupBegin; workIndex < groupEnd; ++workIndex) {
+            auto dispatch = DispatchOp::create(bodyBuilder,
+                                                plan.works[workIndex].vmm.getLoc());
+            copyExecutionPlanIdentity(plan.works[workIndex].vmm, dispatch);
           }
-          auto mapping = work.vmm->getAttrOfType<DictionaryAttr>("cim.mapping");
-          auto route = mapping ? mapping.getAs<DenseI64ArrayAttr>("route")
-                               : DenseI64ArrayAttr();
-          if (!route || route.size() != 6) {
-            work.vmm.emitOpError(
-                "materialize-cim-execution-plan requires a six-element "
-                "mapped route for readback");
-            return signalPassFailure();
+          WorkPlan &first = plan.works[groupBegin];
+          auto once = OnceOp::create(bodyBuilder, first.vmm.getLoc());
+          once->setAttr("group_id", first.vmm->getAttr("group_id"));
+          once->setAttr("core_idx", first.vmm->getAttr("core_idx"));
+          once->setAttr("cim.mapping", first.vmm->getAttr("cim.mapping"));
+          groupBegin = groupEnd;
+        }
+        for (size_t groupBegin = index; groupBegin < transactionEnd;) {
+          size_t groupEnd = groupBegin + 1;
+          while (groupEnd < transactionEnd &&
+                 plan.works[groupEnd].groupId == plan.works[groupBegin].groupId)
+            ++groupEnd;
+          for (size_t workIndex = groupBegin; workIndex < groupEnd; ++workIndex) {
+            WorkPlan &work = plan.works[workIndex];
+            auto readback = ReadbackOp::create(bodyBuilder, work.vmm.getLoc(),
+                                                work.vmm.getResult().getType());
+            copyExecutionPlanIdentity(work.vmm, readback);
+            auto nTile = readNonNegativeI64(work.vmm, "n_tile");
+            auto mapping = work.vmm->getAttrOfType<DictionaryAttr>("cim.mapping");
+            auto route = mapping ? mapping.getAs<DenseI64ArrayAttr>("route")
+                                 : DenseI64ArrayAttr();
+            if (!nTile || !route || route.size() != 6) {
+              work.vmm.emitOpError("materialize-cim-execution-plan requires "
+                                   "n_tile and a six-element route for readback");
+              return signalPassFailure();
+            }
+            readback->setAttr("output_cache_address",
+                              bodyBuilder.getI64IntegerAttr(*nTile % kOutputCacheRows));
+            readback->setAttr("test_core_xy", bodyBuilder.getI64IntegerAttr(-route[0]));
+            readback->setAttr("test_core_x", bodyBuilder.getI64IntegerAttr(-route[1]));
+            readback->setAttr("test_core_y", bodyBuilder.getI64IntegerAttr(-route[2]));
+            readbacks.push_back(readback);
+            readbackValues.push_back(readback.getResult());
           }
-          // Groups are read back before the next group starts, so the eight
-          // output-cache rows can be reused by successive N tiles.
-          readback->setAttr(
-              "output_cache_address",
-              builder.getI64IntegerAttr(*nTile % kOutputCacheRows));
-          readback->setAttr("test_core_xy",
-                            builder.getI64IntegerAttr(-route[0]));
-          readback->setAttr("test_core_x",
-                            builder.getI64IntegerAttr(-route[1]));
-          readback->setAttr("test_core_y",
-                            builder.getI64IntegerAttr(-route[2]));
-          readbacks.push_back(readback);
+          auto barrier = GroupBarrierOp::create(
+              bodyBuilder, plan.works[groupBegin].vmm.getLoc());
+          barrier->setAttr("group_id",
+                           plan.works[groupBegin].vmm->getAttr("group_id"));
+          groupBegin = groupEnd;
         }
-        auto barrier = GroupBarrierOp::create(builder, first.vmm.getLoc());
-        barrier->setAttr(
-            CIMDialect::getSegmentIdAttrName(),
-            first.vmm->getAttr(CIMDialect::getSegmentIdAttrName()));
-        barrier->setAttr("group_id", first.vmm->getAttr("group_id"));
-
-        Operation *anchor = barrier;
-        for (Operation *op : earlyUsers) {
-          op->moveAfter(anchor);
-          anchor = op;
-        }
-        for (size_t offset = 0; offset < count; ++offset) {
-          WorkPlan &work = plan.works[index + offset];
-          work.vmm.getResult().replaceAllUsesWith(
-              readbacks[offset].getResult());
-        }
-        for (size_t offset = 0; offset < count; ++offset)
-          plan.works[index + offset].vmm.erase();
-        index += count;
+        YieldOp::create(bodyBuilder, plan.works[index].vmm.getLoc(),
+                        readbackValues);
+        for (auto [offset, readback] : llvm::enumerate(readbacks))
+          plan.works[index + offset].vmm.getResult().replaceAllUsesWith(
+              transaction.getResult(offset));
+        for (size_t workIndex = index; workIndex < transactionEnd; ++workIndex)
+          plan.works[workIndex].vmm.erase();
+        for (auto iterator = earlyUsers.rbegin();
+             iterator != earlyUsers.rend(); ++iterator)
+          (*iterator)->moveAfter(transaction);
+        index = transactionEnd;
       }
       if (failed(verifyCIMExecutionPlan(plan.function)))
         return signalPassFailure();

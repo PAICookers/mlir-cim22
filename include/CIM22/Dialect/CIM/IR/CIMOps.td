@@ -24,7 +24,7 @@ def CIM_VMMOp : CIM_Op<"vmm", [Pure]> {
 
     Before M5 scheduling this operation may carry zero-based `m_tile`,
     `n_tile`, and `k_tile` identity. M5 adds logical `work_id` and `group_id`.
-    M4 then adds profile-local `core_slot` and `macro_slot` placement plus a
+    M4 then adds profile-local `core_idx` and `macro_idx` placement plus a
     verified `cim.mapping` semantic route result. These attributes do not model
     physical addresses, weight layout, frames, or runtime behavior.
 
@@ -53,8 +53,28 @@ def CIM_StaticWeightOp
   let hasVerifier = 1;
 }
 
+def CIM_TransactionOp
+    : CIM_Op<"transaction", [IsolatedFromAbove, HasParent<"func::FuncOp">,
+      SingleBlockImplicitTerminator<"YieldOp">]> {
+  let summary = "One synchronous interaction with the CIM chip";
+  let description = [{
+    A transaction owns the complete configuration, work, and output-cache
+    readback sequence for one CIM execution wave. Host operations remain in
+    the enclosing function and consume the explicit transaction results.
+  }];
+  let arguments = (ins Variadic<AnyType>:$inputs);
+  let results = (outs Variadic<AnyType>:$results);
+  let regions = (region SizedRegion<1>:$body);
+  let hasVerifier = 1;
+}
+
+def CIM_YieldOp : CIM_Op<"yield", [Terminator, HasParent<"TransactionOp">]> {
+  let summary = "Return CIM readbacks from a transaction";
+  let arguments = (ins Variadic<AnyType>:$values);
+}
+
 def CIM_ConfigureInputOp
-    : CIM_Op<"configure_input", [HasParent<"func::FuncOp">]> {
+    : CIM_Op<"configure_input"> {
   let summary = "Configure one mapped Macro input tile";
   let arguments = (ins RankedTensorOf<[I8]>:$input);
   let assemblyFormat = "$input attr-dict `:` type($input)";
@@ -62,26 +82,26 @@ def CIM_ConfigureInputOp
 }
 
 def CIM_ConfigureWeightOp
-    : CIM_Op<"configure_weight", [HasParent<"func::FuncOp">]> {
+    : CIM_Op<"configure_weight"> {
   let summary = "Configure one mapped Macro static weight tile";
   let arguments = (ins SymbolRefAttr:$resource);
   let assemblyFormat = "$resource attr-dict";
   let hasVerifier = 1;
 }
 
-def CIM_DispatchOp : CIM_Op<"dispatch", [HasParent<"func::FuncOp">]> {
+def CIM_DispatchOp : CIM_Op<"dispatch"> {
   let summary = "Describe one mapped VMM dispatch";
   let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
 }
 
-def CIM_OnceOp : CIM_Op<"once", [HasParent<"func::FuncOp">]> {
+def CIM_OnceOp : CIM_Op<"once"> {
   let summary = "Trigger one mapped core group once";
   let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
 }
 
-def CIM_ReadbackOp : CIM_Op<"readback", [HasParent<"func::FuncOp">]> {
+def CIM_ReadbackOp : CIM_Op<"readback"> {
   let summary = "Read back one mapped i21 VMM partial";
   let results = (outs RankedTensorOf<[CIM_I21]>:$result);
   let assemblyFormat = "attr-dict `:` type($result)";
@@ -89,7 +109,7 @@ def CIM_ReadbackOp : CIM_Op<"readback", [HasParent<"func::FuncOp">]> {
 }
 
 def CIM_GroupBarrierOp
-    : CIM_Op<"group_barrier", [HasParent<"func::FuncOp">]> {
+    : CIM_Op<"group_barrier"> {
   let summary = "Complete one mapped execution-plan group";
   let assemblyFormat = "attr-dict";
   let hasVerifier = 1;

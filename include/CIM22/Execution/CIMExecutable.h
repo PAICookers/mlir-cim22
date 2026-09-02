@@ -1,4 +1,4 @@
-//===- CIMExecutable.h - In-memory CIM22 execution plan --------*- C++ -*-===//
+//===- CIMTransaction.h - In-memory CIM22 execution plan --------*- C++ -*-===//
 //
 // Licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -78,9 +78,9 @@ struct CIMGroup {
   std::vector<CIMWork> works;
 };
 
-class CIMExecutable final {
+class CIMTransaction final {
 public:
-  CIMExecutable(std::string targetProfile, int64_t targetProfileVersion,
+  CIMTransaction(std::string targetProfile, int64_t targetProfileVersion,
                 int64_t executionPlanVersion, std::vector<CIMGroup> groups,
                 std::vector<StaticWeightSection> weights,
                 std::vector<CIMFramePacket> packets,

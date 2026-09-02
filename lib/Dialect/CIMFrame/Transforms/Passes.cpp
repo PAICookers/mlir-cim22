@@ -32,7 +32,7 @@ namespace mlir::cimframe {
 namespace {
 constexpr llvm::StringLiteral kPlanBindingAttrs[] = {
     "m_tile",   "n_tile",    "k_tile",     "work_id",
-    "group_id", "core_slot", "macro_slot", "cim.mapping"};
+    "group_id", "core_idx", "macro_idx", "cim.mapping"};
 
 struct StaticWeightCommandPlan {
   Location location;
@@ -77,7 +77,7 @@ planStaticWeightCommand(cim::ConfigureWeightOp op, func::FuncOp function,
                         OpBuilder &builder) {
   for (NamedAttribute attr : op->getAttrs()) {
     StringRef name = attr.getName().strref();
-    if (name != "resource" && name != cim::CIMDialect::getSegmentIdAttrName() &&
+    if (name != "resource" && name != cim::CIMDialect::getTransactionIdxAttrName() &&
         !llvm::is_contained(kPlanBindingAttrs, name)) {
       op.emitOpError("materialize-cim-static-weight-section rejects unexpected "
                      "configure_weight attribute '")

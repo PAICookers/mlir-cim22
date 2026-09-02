@@ -32,7 +32,7 @@ size_t macroIndex(int64_t core, int64_t macro) {
   return static_cast<size_t>(core * kCIMMacroCount + macro);
 }
 
-const CIMWork *findWork(const CIMExecutable &executable, int64_t groupId,
+const CIMWork *findWork(const CIMTransaction &executable, int64_t groupId,
                         int64_t workId) {
   for (const CIMGroup &group : executable.getGroups()) {
     if (group.groupId != groupId)
@@ -44,7 +44,7 @@ const CIMWork *findWork(const CIMExecutable &executable, int64_t groupId,
   return nullptr;
 }
 
-const StaticWeightSection *findWeight(const CIMExecutable &executable,
+const StaticWeightSection *findWeight(const CIMTransaction &executable,
                                       int64_t groupId, int64_t workId) {
   for (const StaticWeightSection &weight : executable.getStaticWeights())
     if (weight.groupId == groupId && weight.workId == workId)
@@ -52,7 +52,7 @@ const StaticWeightSection *findWeight(const CIMExecutable &executable,
   return nullptr;
 }
 
-const DynamicInputBinding *findInput(const CIMExecutable &executable,
+const DynamicInputBinding *findInput(const CIMTransaction &executable,
                                      int64_t groupId, int64_t workId) {
   for (const DynamicInputBinding &input : executable.getDynamicInputs())
     if (input.groupId == groupId && input.workId == workId)
@@ -60,7 +60,7 @@ const DynamicInputBinding *findInput(const CIMExecutable &executable,
   return nullptr;
 }
 
-const ReadbackBinding *findReadback(const CIMExecutable &executable,
+const ReadbackBinding *findReadback(const CIMTransaction &executable,
                                     int64_t groupId, int64_t workId,
                                     int64_t macroSlot) {
   for (const ReadbackBinding &readback : executable.getReadbacks())
@@ -70,7 +70,7 @@ const ReadbackBinding *findReadback(const CIMExecutable &executable,
   return nullptr;
 }
 
-bool hasReadbackSequence(const CIMExecutable &executable,
+bool hasReadbackSequence(const CIMTransaction &executable,
                          const ReadbackBinding &binding, size_t &packetIndex) {
   llvm::ArrayRef<CIMFramePacket> packets = executable.getPackets();
   for (size_t index = 0; index + 2 < packets.size(); ++index) {
@@ -98,7 +98,7 @@ bool hasReadbackSequence(const CIMExecutable &executable,
   return false;
 }
 
-bool hasInputPacket(const CIMExecutable &executable,
+bool hasInputPacket(const CIMTransaction &executable,
                     const DynamicInputBinding &binding) {
   for (const CIMFramePacket &packet : executable.getPackets())
     if (packet.kind == CIMPacketKind::InputCacheWrite &&
@@ -108,7 +108,7 @@ bool hasInputPacket(const CIMExecutable &executable,
   return false;
 }
 
-bool hasWeightPacket(const CIMExecutable &executable,
+bool hasWeightPacket(const CIMTransaction &executable,
                      const StaticWeightSection &weight) {
   for (const CIMFramePacket &packet : executable.getPackets())
     if (packet.kind == CIMPacketKind::Weight &&
@@ -128,7 +128,7 @@ void emitTrace(CIMTraceSink *trace, uint64_t &sequence, CIMTraceEventKind kind,
                  cacheRowOrAddress});
 }
 
-llvm::Error validateBindings(const CIMExecutable &executable,
+llvm::Error validateBindings(const CIMTransaction &executable,
                              const CIMRunInputs &inputs,
                              CIMRunOutputs &outputs) {
   if (executable.getTargetProfile() != "cim22-4x5-v1" ||
@@ -155,7 +155,7 @@ llvm::Error validateBindings(const CIMExecutable &executable,
 }
 } // namespace
 
-llvm::Error CIMSoftwareRunner::run(const CIMExecutable &executable,
+llvm::Error CIMSoftwareRunner::run(const CIMTransaction &executable,
                                    const CIMRunInputs &inputs,
                                    CIMRunOutputs &outputs,
                                    CIMTraceSink *trace) {

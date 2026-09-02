@@ -26,7 +26,7 @@ def CIM_Dialect : Dialect {
     static StringRef getConvIntegerAttrName() {
       return "cim.onnx.conv_integer";
     }
-    static StringRef getSegmentIdAttrName() { return "cim.segment_id"; }
+    static StringRef getTransactionIdxAttrName() { return "cim.transaction_idx"; }
     static StringRef getMatTileAttrName() { return "cim.m_tile"; }
     static StringRef getPlanBindingAttrName() { return "cim.plan_binding"; }
   }];

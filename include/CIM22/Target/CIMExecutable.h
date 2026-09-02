@@ -1,4 +1,4 @@
-//===- CIMExecutable.h - CIM22 target executable compiler ------*- C++ -*-===//
+//===- CIMTransaction.h - CIM22 target executable compiler ------*- C++ -*-===//
 
 #ifndef CIM22_TARGET_CIMEXECUTABLE_H
 #define CIM22_TARGET_CIMEXECUTABLE_H
@@ -9,8 +9,8 @@
 
 namespace mlir::cim22::target {
 
-mlir::FailureOr<::cim22::execution::CIMExecutable>
-compileCIMExecutable(mlir::ModuleOp verifiedModule);
+mlir::FailureOr<::cim22::execution::CIMTransaction>
+compileCIMTransaction(mlir::ModuleOp verifiedModule);
 
 } // namespace mlir::cim22::target
 

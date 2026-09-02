@@ -1,4 +1,4 @@
-//===- CIMExecutable.cpp - CIM22 target executable compiler -----*- C++ -*-===//
+//===- CIMTransaction.cpp - CIM22 target executable compiler -----*- C++ -*-===//
 //
 // Licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -26,7 +26,7 @@
 #include <cstdint>
 
 namespace mlir::cim22::target {
-using ::cim22::execution::CIMExecutable;
+using ::cim22::execution::CIMTransaction;
 using ::cim22::execution::CIMFramePacket;
 using ::cim22::execution::CIMGroup;
 using ::cim22::execution::CIMPacketKind;
@@ -149,8 +149,8 @@ buildStaticWeight(cimframe::CIMInt8WeightPacketOp packet) {
   };
   auto group = get("group_id");
   auto work = get("work_id");
-  auto core = get("core_slot");
-  auto macro = get("macro_slot");
+  auto core = get("core_idx");
+  auto macro = get("macro_idx");
   auto resource = planBinding.getAs<FlatSymbolRefAttr>("resource");
   if (failed(group) || failed(work) || failed(core) || failed(macro) ||
       !resource)
@@ -174,7 +174,7 @@ buildStaticWeight(cimframe::CIMInt8WeightPacketOp packet) {
 }
 } // namespace
 
-FailureOr<CIMExecutable> compileCIMExecutable(ModuleOp module) {
+FailureOr<CIMTransaction> compileCIMTransaction(ModuleOp module) {
   if (failed(verify(module)))
     return failure();
 
@@ -190,11 +190,12 @@ FailureOr<CIMExecutable> compileCIMExecutable(ModuleOp module) {
   func::FuncOp function = plans.front();
   if (failed(cim::verifyCIMExecutionPlan(function)))
     return failure();
-  SmallVector<cim::CIMSegmentInfo> segments = cim::analyzeCIMSegments(function);
-  if (segments.size() != 1) {
-    function.emitError("compile-cim-executable expects exactly one CIM "
-                       "segment, but got ")
-        << segments.size();
+  SmallVector<cim::CIMTransactionInfo> transactions =
+      cim::analyzeCIMTransactions(function);
+  if (transactions.size() != 1) {
+    function.emitError("compile-cim-transaction expects exactly one CIM "
+                       "transaction, but got ")
+        << transactions.size();
     return failure();
   }
   if (failed(cimframe::verifyCIMFrameModule(module)))
@@ -296,11 +297,15 @@ FailureOr<CIMExecutable> compileCIMExecutable(ModuleOp module) {
   std::vector<CIMGroup> groups;
   std::vector<DynamicInputBinding> inputs;
   std::vector<ReadbackBinding> readbacks;
-  for (Operation &op : function.getBody().front()) {
+  for (Operation &container : function.getBody().front()) {
+    auto transaction = dyn_cast<cim::TransactionOp>(container);
+    if (!transaction)
+      continue;
+    for (Operation &op : transaction.getBody().front().without_terminator()) {
     if (auto input = dyn_cast<cim::ConfigureInputOp>(op)) {
       auto group = readI64(input, "group_id");
       auto work = readI64(input, "work_id");
-      auto macro = readI64(input, "macro_slot");
+      auto macro = readI64(input, "macro_idx");
       if (failed(group) || failed(work) || failed(macro))
         return failure();
       auto type = dyn_cast<RankedTensorType>(input.getInput().getType());
@@ -325,12 +330,12 @@ FailureOr<CIMExecutable> compileCIMExecutable(ModuleOp module) {
         input.emitError("CIM executable rejects duplicate work binding");
         return failure();
       }
-      auto core = readI64(input, "core_slot");
+      auto core = readI64(input, "core_idx");
       if (failed(core))
         return failure();
       if (*core >= 20 || *macro > 1)
-        return input.emitError("CIM executable requires core_slot in [0, 19] "
-                               "and macro_slot in [0, 1]");
+        return input.emitError("CIM executable requires core_idx in [0, 19] "
+                               "and macro_idx in [0, 1]");
       groupPtr->works.push_back(CIMWork{*work, *core, *macro, *route});
       int64_t inputSlot = *work;
       if (auto attr = input->getAttrOfType<IntegerAttr>("input_slot")) {
@@ -349,12 +354,12 @@ FailureOr<CIMExecutable> compileCIMExecutable(ModuleOp module) {
     if (auto readback = dyn_cast<cim::ReadbackOp>(op)) {
       auto group = readI64(readback, "group_id");
       auto work = readI64(readback, "work_id");
-      auto macro = readI64(readback, "macro_slot");
+      auto macro = readI64(readback, "macro_idx");
       if (failed(group) || failed(work) || failed(macro))
         return failure();
       if (*macro > 1)
         return readback.emitError(
-            "CIM executable requires macro_slot in [0, 1]");
+            "CIM executable requires macro_idx in [0, 1]");
       auto type = dyn_cast<RankedTensorType>(readback.getResult().getType());
       if (!type || type.getRank() != 1 || type.getDimSize(0) != 16 ||
           !type.getElementType().isSignlessInteger(21)) {
@@ -402,6 +407,7 @@ FailureOr<CIMExecutable> compileCIMExecutable(ModuleOp module) {
       packet.groupId = *group;
       packets.push_back(packet);
     }
+    }
   }
   if (groups.empty() || inputs.empty() || readbacks.empty()) {
     function.emitError(
@@ -417,7 +423,7 @@ FailureOr<CIMExecutable> compileCIMExecutable(ModuleOp module) {
         return failure();
       }
 
-  return CIMExecutable(profile.getValue().str(), profileVersion.getInt(),
+  return CIMTransaction(profile.getValue().str(), profileVersion.getInt(),
                        schema.getInt(), std::move(groups), std::move(weights),
                        std::move(packets), std::move(inputs),
                        std::move(readbacks),

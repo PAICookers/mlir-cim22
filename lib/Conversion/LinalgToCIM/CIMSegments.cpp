@@ -1,55 +1,34 @@
-//===- CIMSegments.cpp - CIM execution segments ---------------*- C++ -*-===//
-//
-// Licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-//===----------------------------------------------------------------------===//
+//===- CIMSegments.cpp - CIM transaction analysis --------------*- C++ -*-===//
 
 #include "CIM22/Conversion/LinalgToCIM/CIMSegments.h"
 
 #include "CIM22/Dialect/CIM/IR/CIMDialect.h"
 #include "CIM22/Dialect/CIM/IR/CIMOps.h"
 
-#include "llvm/ADT/SetVector.h"
-
 namespace mlir::cim {
 bool isExecutionPlanOp(Operation *op) {
-  return isa<ConfigureInputOp, ConfigureWeightOp, DispatchOp, OnceOp,
-             ReadbackOp, GroupBarrierOp>(op);
+  return isa<TransactionOp, ConfigureInputOp, ConfigureWeightOp, DispatchOp,
+             OnceOp, ReadbackOp, GroupBarrierOp>(op);
 }
 
-SmallVector<CIMSegmentInfo> analyzeCIMSegments(func::FuncOp function) {
-  SmallVector<CIMSegmentInfo> segments;
-  llvm::SetVector<Value> inputs;
-  llvm::SetVector<Value> outputs;
-
-  auto finishSegment = [&] {
-    if (segments.empty())
-      return;
-    segments.back().inputs.assign(inputs.begin(), inputs.end());
-    segments.back().outputs.assign(outputs.begin(), outputs.end());
-    inputs.clear();
-    outputs.clear();
-  };
-
+SmallVector<CIMTransactionInfo>
+analyzeCIMTransactions(func::FuncOp function) {
+  SmallVector<CIMTransactionInfo> transactions;
   for (Operation &op : function.getBody().front()) {
-    if (!isExecutionPlanOp(&op))
+    auto transaction = dyn_cast<TransactionOp>(op);
+    if (!transaction)
       continue;
-    int64_t segmentId =
-        cast<IntegerAttr>(op.getAttr(CIMDialect::getSegmentIdAttrName()))
+    const int64_t transactionIdx =
+        cast<IntegerAttr>(op.getAttr(CIMDialect::getTransactionIdxAttrName()))
             .getInt();
-    if (segments.empty() || segments.back().segmentId != segmentId) {
-      finishSegment();
-      segments.push_back(CIMSegmentInfo{segmentId, {}, {}});
-    }
-    if (auto input = dyn_cast<ConfigureInputOp>(op))
-      inputs.insert(input.getInput());
-    if (auto readback = dyn_cast<ReadbackOp>(op))
-      outputs.insert(readback.getResult());
+    CIMTransactionInfo info{transactionIdx, {}, {}};
+    info.inputs.assign(transaction.getInputs().begin(),
+                       transaction.getInputs().end());
+    info.outputs.assign(transaction.getResults().begin(),
+                        transaction.getResults().end());
+    transactions.push_back(std::move(info));
   }
-  finishSegment();
-  return segments;
+  return transactions;
 }
 
 } // namespace mlir::cim
