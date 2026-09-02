@@ -1,5 +1,11 @@
 # Project Engineering Rules
 
+Before planning or editing, read `.codex/project-rules.md`. It is the shared
+rule source for the main agent and the role agents under `.codex/agents/`;
+role TOML files add responsibilities but do not override it. For independently
+bounded work or independent verification, consider the matching specialist and
+keep file ownership disjoint.
+
 - Prefer the types, algorithms, analyses, `PatternRewriter`, TableGen, pass
   infrastructure, and test tools supplied by the currently locked LLVM/MLIR.
 - Before writing a project helper, IR representation, or abstraction, search
