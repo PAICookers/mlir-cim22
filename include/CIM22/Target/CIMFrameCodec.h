@@ -16,6 +16,9 @@
 
 namespace mlir::cim22::target {
 
+// Packs the CIM body payload; the caller supplies profile-specific high bits.
+uint64_t encodeCIMWeightPayload(uint32_t word, uint8_t address);
+
 // Encodes one verified, non-empty CIMFrame INT8 packet stage. The result is
 // software-only until CTQ-020 supplies independent execution evidence.
 FailureOr<SmallVector<uint64_t>> encodeCIMFrameInt8Packets(ModuleOp module);
