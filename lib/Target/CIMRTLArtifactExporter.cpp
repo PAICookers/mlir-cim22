@@ -4,10 +4,11 @@
 
 #include "CIM22/Execution/CIMExecutable.h"
 #include "CIM22/Target/CIMExecutable.h"
+#include "CIM22/Target/CIMFrameCodec.h"
 #include "mlir/IR/BuiltinOps.h"
 
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
@@ -33,6 +34,7 @@ using ::cim22::execution::ReadbackBinding;
 using ::cim22::execution::StaticWeightSection;
 
 constexpr int64_t kCoreCount = 20;
+constexpr int64_t kColumns = 5;
 constexpr int64_t kCacheRows = 8;
 constexpr int64_t kInputElements = 64;
 constexpr int64_t kOutputLanes = 16;
@@ -46,8 +48,35 @@ using OutputRows = std::array<OutputRow, kCacheRows>;
 using Route = std::array<int32_t, 6>;
 using TestCore = std::array<int32_t, 3>;
 
-// The supplier 4x5 TB uses this fixed multicast expansion from (0,0).
-constexpr Route kMulticastRoute{0, 0, 0, 0, 4, 3};
+using CoreSet = std::array<bool, kCoreCount>;
+
+// The supplier receiver is beyond core (0,4)'s Y- edge, at (-1,4).
+// This is an RTL test profile, independent of the compiler's ingress route.
+TestCore testReturnRoute(int64_t core) {
+  return {0, static_cast<int32_t>(4 - core % kColumns),
+          static_cast<int32_t>(-1 - core / kColumns)};
+}
+
+// Merge only contiguous recipients in one row. Holes and row boundaries split
+// packets; an isolated recipient remains onecast. Never broadcast a bounding
+// box.
+SmallVector<Route> targetRoutes(const CoreSet &cores,
+                                const std::array<Route, kCoreCount> &routes) {
+  SmallVector<Route> result;
+  for (int64_t core = 0; core < kCoreCount; ++core) {
+    if (!cores[core])
+      continue;
+    int64_t last = core;
+    while (last + 1 < kCoreCount && (last + 1) / kColumns == core / kColumns &&
+           cores[last + 1])
+      ++last;
+    Route route = routes[core];
+    route[4] = static_cast<int32_t>(last - core);
+    result.push_back(route);
+    core = last;
+  }
+  return result;
+}
 
 struct WorkArtifact {
   const CIMWork *work = nullptr;
@@ -146,7 +175,8 @@ FailureOr<OutputRows> computeExpected(ModuleOp module, const InputRows &inputs,
         sum += static_cast<int64_t>(inputs[row][k]) *
                static_cast<int64_t>(weight.values[lane * kInputElements + k]);
       if (sum < kInt21Min || sum > kInt21Max)
-        return module.emitError("INT8 RTL expected output exceeds signed 21 bits");
+        return module.emitError(
+            "INT8 RTL expected output exceeds signed 21 bits");
       outputs[row][lane] = sum;
     }
   return outputs;
@@ -174,37 +204,39 @@ uint64_t workFrame(const Route &route, uint64_t run) {
   return (uint64_t{0x9} << 60) | encodeRoute(route) | run;
 }
 
-uint64_t testReturnRouteFrame(const Route &route, const TestCore &testCore) {
+uint64_t testReturnRouteFrame(const Route &route, int64_t core) {
+  const TestCore testCore = testReturnRoute(core);
   return (uint64_t{0xa} << 60) | encodeRoute(route) |
+         (static_cast<uint64_t>(core) << 18) |
          (encodeSignedMagnitude6(testCore[0]) << 12) |
          (encodeSignedMagnitude6(testCore[1]) << 6) |
          encodeSignedMagnitude6(testCore[2]);
 }
 
-uint64_t inputHeadFrame(int64_t row) {
-  return (uint64_t{0x1} << 60) | encodeRoute(kMulticastRoute) |
+uint64_t inputHeadFrame(const Route &route, int64_t row) {
+  return (uint64_t{0x1} << 60) | encodeRoute(route) |
          ((uint64_t{0x8} | static_cast<uint64_t>(row)) << 14) | 16;
 }
 
-uint64_t weightHeadFrame() {
-  return (uint64_t{0x2} << 60) | encodeRoute(kMulticastRoute) | 256;
+uint64_t weightHeadFrame(const Route &route) {
+  return (uint64_t{0x2} << 60) | encodeRoute(route) | 256;
 }
 
-uint64_t cacheReadFrame(int64_t address) {
-  return (uint64_t{0x5} << 60) | encodeRoute(kMulticastRoute) |
-         (uint64_t{1} << 23) | (static_cast<uint64_t>(address) << 14);
+uint64_t cacheReadFrame(const Route &route, int64_t address) {
+  return (uint64_t{0x5} << 60) | encodeRoute(route) | (uint64_t{1} << 23) |
+         (static_cast<uint64_t>(address) << 14);
 }
 
-uint64_t cimReadFrame() {
-  return (uint64_t{0x6} << 60) | encodeRoute(kMulticastRoute) |
-         (uint64_t{1} << 23);
+uint64_t cimReadFrame(const Route &route) {
+  return (uint64_t{0x6} << 60) | encodeRoute(route) | (uint64_t{1} << 23);
 }
 
-FailureOr<TransactionArtifact>
-buildArtifacts(ModuleOp module, const CIMTransaction &transaction,
-               StringRef inputCacheFile) {
+FailureOr<TransactionArtifact> buildArtifacts(ModuleOp module,
+                                              const CIMTransaction &transaction,
+                                              StringRef inputCacheFile) {
   if (inputCacheFile.empty())
-    return module.emitError("INT8 RTL artifact export requires input-cache-file");
+    return module.emitError(
+        "INT8 RTL artifact export requires input-cache-file");
   FailureOr<InputRows> inputs = readInputCache(module, inputCacheFile);
   if (failed(inputs))
     return failure();
@@ -219,8 +251,9 @@ buildArtifacts(ModuleOp module, const CIMTransaction &transaction,
     for (const CIMWork &work : group.works) {
       if (work.coreSlot < 0 || work.coreSlot >= kCoreCount ||
           work.macroSlot < 0 || work.macroSlot > 1)
-        return module.emitError("RTL artifact export requires core_idx in [0,19] "
-                                "and macro_idx in [0,1]");
+        return module.emitError(
+            "RTL artifact export requires core_idx in [0,19] "
+            "and macro_idx in [0,1]");
       const StaticWeightSection *weight =
           findWeight(transaction, group.groupId, work.workId);
       const ReadbackBinding *readback =
@@ -229,23 +262,27 @@ buildArtifacts(ModuleOp module, const CIMTransaction &transaction,
         return module.emitError("RTL artifact export lacks binding for work ")
                << work.workId;
       if (weight->words.size() != 256)
-        return module.emitError("INT8 RTL artifact requires 256 CIM weight words");
+        return module.emitError(
+            "INT8 RTL artifact requires 256 CIM weight words");
       if (work.route[3] != 0 || work.route[4] != 0 || work.route[5] != 0)
-        return module.emitError("RTL artifact export requires onecast plan routes");
+        return module.emitError(
+            "RTL artifact export requires onecast plan routes");
       if (seen[work.coreSlot][work.macroSlot])
-        return module.emitError("RTL artifact export rejects duplicate core/macro");
+        return module.emitError(
+            "RTL artifact export rejects duplicate core/macro");
       seen[work.coreSlot][work.macroSlot] = true;
       result.works.push_back(WorkArtifact{&work, weight, readback});
       WorkArtifact *current = &result.works.back();
       if (!result.macro[work.macroSlot])
         result.macro[work.macroSlot] = current;
       else if (result.macro[work.macroSlot]->weight->words != weight->words)
-        return module.emitError(
-            "multicast source mode cannot represent different weights for one Macro");
+        return module.emitError("multicast source mode cannot represent "
+                                "different weights for one Macro");
     }
   }
   if (result.works.empty() || !result.macro[0] || !result.macro[1])
-    return module.emitError("INT8 RTL artifact export requires both active Macros");
+    return module.emitError(
+        "INT8 RTL artifact export requires both active Macros");
 
   for (int64_t macro = 0; macro < 2; ++macro) {
     FailureOr<OutputRows> expected =
@@ -257,43 +294,57 @@ buildArtifacts(ModuleOp module, const CIMTransaction &transaction,
 
   // The supplier TB configures the response route once per core, not once per
   // Macro work.
-  std::array<bool, kCoreCount> configuredCore{};
+  CoreSet configuredCore{};
+  std::array<CoreSet, 2> macroCores{};
+  std::array<Route, kCoreCount> coreRoutes{};
   for (const WorkArtifact &work : result.works) {
+    macroCores[work.work->macroSlot][work.work->coreSlot] = true;
+    coreRoutes[work.work->coreSlot] = work.work->route;
     if (configuredCore[work.work->coreSlot])
       continue;
     configuredCore[work.work->coreSlot] = true;
     result.configFlits.push_back(
-        testReturnRouteFrame(work.work->route, work.readback->testCore));
+        testReturnRouteFrame(work.work->route, work.work->coreSlot));
   }
 
-  // One multicast payload is shared by every core for each selected Macro.
+  // Each Macro's equal payload is sent only to its mapped recipients.
   for (int64_t macro = 0; macro < 2; ++macro) {
     const WorkArtifact &representative = *result.macro[macro];
-    result.configFlits.push_back(controlFrame(kMulticastRoute, macro));
-    for (int64_t row = 0; row < kCacheRows; ++row) {
-      result.configFlits.push_back(inputHeadFrame(row));
-      for (int64_t word = 0; word < 16; ++word) {
-        uint64_t packed = 0;
-        for (int64_t slot = 0; slot < 4; ++slot)
-          packed = (packed << 16) |
-                   static_cast<uint64_t>(static_cast<uint8_t>(
-                       result.inputs[row][word * 4 + slot]));
-        result.configFlits.push_back(packed);
+    for (const Route &route : targetRoutes(macroCores[macro], coreRoutes)) {
+      result.configFlits.push_back(controlFrame(route, macro));
+      for (int64_t row = 0; row < kCacheRows; ++row) {
+        result.configFlits.push_back(inputHeadFrame(route, row));
+        for (int64_t word = 0; word < 16; ++word) {
+          uint64_t packed = 0;
+          for (int64_t slot = 0; slot < 4; ++slot)
+            packed =
+                (packed << 16) | static_cast<uint64_t>(static_cast<uint8_t>(
+                                     result.inputs[row][word * 4 + slot]));
+          result.configFlits.push_back(packed);
+        }
       }
+      result.configFlits.push_back(weightHeadFrame(route));
+      for (auto [address, word] : llvm::enumerate(representative.weight->words))
+        result.configFlits.push_back(
+            (uint64_t{0x2} << 60) |
+            encodeCIMWeightPayload(static_cast<uint32_t>(word),
+                                   static_cast<uint8_t>(address)));
     }
-    result.configFlits.push_back(weightHeadFrame());
-    for (int32_t word : representative.weight->words)
-      result.configFlits.push_back(static_cast<uint64_t>(static_cast<uint32_t>(word)));
   }
 
-  result.workFlits.push_back(workFrame(kMulticastRoute, 1));
-  result.workFlits.push_back(workFrame(kMulticastRoute, 0));
+  const auto workRoutes = targetRoutes(configuredCore, coreRoutes);
+  for (const Route &route : workRoutes)
+    result.workFlits.push_back(workFrame(route, 1));
+  for (const Route &route : workRoutes)
+    result.workFlits.push_back(workFrame(route, 0));
 
   for (int64_t macro = 0; macro < 2; ++macro) {
-    result.readbackFlits.push_back(controlFrame(kMulticastRoute, macro));
-    for (int64_t address = 0; address < kCacheRows; ++address)
-      result.readbackFlits.push_back(cacheReadFrame(address));
-    result.readbackFlits.push_back(cimReadFrame());
+    for (const Route &route : targetRoutes(macroCores[macro], coreRoutes)) {
+      result.readbackFlits.push_back(controlFrame(route, macro));
+      for (int64_t address = 0; address < kCacheRows; ++address)
+        result.readbackFlits.push_back(cacheReadFrame(route, address));
+      result.readbackFlits.push_back(cimReadFrame(route));
+    }
   }
   return result;
 }
@@ -361,8 +412,8 @@ LogicalResult writeExpectedOutput(ModuleOp module, StringRef filePath,
 
 LogicalResult writeArtifacts(ModuleOp module, StringRef outputDir,
                              const TransactionArtifact &artifact) {
-  std::error_code error = llvm::sys::fs::create_directories(
-      joinPath(outputDir, {"sources"}));
+  std::error_code error =
+      llvm::sys::fs::create_directories(joinPath(outputDir, {"sources"}));
   if (error)
     return module.emitError("cannot create INT8 RTL artifact directories: ")
            << error.message();
@@ -383,18 +434,54 @@ LogicalResult writeArtifacts(ModuleOp module, StringRef outputDir,
                          *artifact.macro[0]->weight)) ||
       failed(writeWeight(module, joinPath(outputDir, {"sources", "cim2_w.txt"}),
                          *artifact.macro[1]->weight)) ||
-      failed(writeInputs(module, joinPath(outputDir, {"sources", "cache1_in.txt"}),
+      failed(writeInputs(module,
+                         joinPath(outputDir, {"sources", "cache1_in.txt"}),
                          artifact.inputs)) ||
-      failed(writeInputs(module, joinPath(outputDir, {"sources", "cache2_in.txt"}),
+      failed(writeInputs(module,
+                         joinPath(outputDir, {"sources", "cache2_in.txt"}),
                          artifact.inputs)) ||
-      failed(writeExpectedOutput(module,
-                                 joinPath(outputDir, {"expected", "output_1.txt"}),
-                                 artifact.expected[0])) ||
-      failed(writeExpectedOutput(module,
-                                 joinPath(outputDir, {"expected", "output_2.txt"}),
-                                 artifact.expected[1])))
+      failed(writeExpectedOutput(
+          module, joinPath(outputDir, {"expected", "output_1.txt"}),
+          artifact.expected[0])) ||
+      failed(writeExpectedOutput(
+          module, joinPath(outputDir, {"expected", "output_2.txt"}),
+          artifact.expected[1])))
     return failure();
-  return success();
+  return writeFile(
+      module, joinPath(outputDir, {"README.md"}),
+      [&](llvm::raw_ostream &stream) {
+        CoreSet active{};
+        for (const WorkArtifact &work : artifact.works)
+          active[work.work->coreSlot] = true;
+        stream
+            << "# INT8 RTL replay artifacts\n\n"
+            << "Active cores: " << llvm::count(active, true) << ".\n\n"
+            << "Coordinates are (row,col). Ingress: (0,0), XY- port. "
+               "Response destination: (-1,4), beyond (0,4)'s Y- port.\n\n"
+            << "| Core / response idx | Coordinate | Macro | Return XY,X,Y |\n"
+            << "| --- | --- | --- | --- |\n";
+        for (const WorkArtifact &work : artifact.works) {
+          const int64_t core = work.work->coreSlot;
+          const TestCore route = testReturnRoute(core);
+          stream << "| " << core << " | (" << core / kColumns << ','
+                 << core % kColumns << ") | " << work.work->macroSlot << " | "
+                 << route[0] << ',' << route[1] << ',' << route[2] << " |\n";
+        }
+        stream
+            << "\nReplay 01_config, 02_work, then 03_readback unchanged, "
+               "with the TB's computation/readback synchronization. "
+               "Each listed Macro reads all eight Cache rows and 256 CIM "
+               "words. "
+               "No request targets an unlisted core/Macro.\n\n"
+            << "sources/cim1_w.txt and cim2_w.txt describe Macro 0 and 1; "
+               "cache1_in.txt and cache2_in.txt use the same numbering. "
+               "expected/output_1.txt and output_2.txt are shared by the "
+               "listed "
+               "cores for that Macro; identify responses by the five-bit "
+               "idx.\n\n"
+            << "Software-checked artifacts only. Frozen RTL replay and board "
+               "execution are not established by export or compiler tests.\n";
+      });
 }
 
 class ExportCIMRTLArtifacts final

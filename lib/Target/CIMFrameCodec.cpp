@@ -57,6 +57,10 @@ bool isOnecastRoute(ArrayRef<int32_t> route) {
 }
 } // namespace
 
+uint64_t encodeCIMWeightPayload(uint32_t word, uint8_t address) {
+  return (static_cast<uint64_t>(word) << 8) | address;
+}
+
 FailureOr<SmallVector<uint64_t>> encodeCIMFrameInt8Packets(ModuleOp module) {
   if (failed(verify(module)) || failed(cimframe::verifyCIMFrameModule(module)))
     return failure();
@@ -125,9 +129,8 @@ FailureOr<SmallVector<uint64_t>> encodeCIMFrameInt8Packets(ModuleOp module) {
                       kCIMWordCount);
       for (auto [address, word] :
            llvm::enumerate(weight.getWords().getValues<int32_t>())) {
-        const uint64_t data =
-            static_cast<uint64_t>(llvm::bit_cast<uint32_t>(word)) << 8;
-        flits.push_back(data | static_cast<uint64_t>(address));
+        flits.push_back(encodeCIMWeightPayload(llvm::bit_cast<uint32_t>(word),
+                                               static_cast<uint8_t>(address)));
       }
     }
   }
