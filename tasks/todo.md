@@ -7,7 +7,8 @@
 - [x] Add independent artifact regression checks and demonstrate baseline failure.
 - [x] Fix weight bodies, per-core return configuration, and exact target sets.
 - [x] Run regressions, regenerate the demo, and review code/test/docs agreement.
-- [ ] Commit, push, and open a PR against `main`.
+- [x] Commit, push, and open a PR against `main`:
+  https://github.com/PAICookers/mlir-cim22/pull/1
 
 Review: the independent checker rejects the original four-core artifact in
 three separate runs: duplicate CIM address 168, non-off-chip return, and inactive
@@ -19,3 +20,5 @@ replay logs are not in this checkout; software tests cannot establish RTL PASS
 or board deployability.
 Existing Git credential authentication is available for PR creation. CI work
 is isolated on `ci/cpp-checks` and will not be included in this PR.
+The fix is submitted from the personal fork because the current identity has
+read-only access to the upstream repository. The BF16 worktree is unchanged.
