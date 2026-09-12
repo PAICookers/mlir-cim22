@@ -49,6 +49,40 @@ struct TileIdentity {
   int64_t k;
 };
 
+template <typename T>
+DenseElementsAttr
+sliceDenseTensor(DenseElementsAttr source, RankedTensorType resultType,
+                 RankedTensorType sourceType, ArrayRef<int64_t> offsets,
+                 ArrayRef<int64_t> sizes, ArrayRef<int64_t> strides) {
+  auto sourceValues = source.getValues<T>();
+  SmallVector<T> resultValues;
+  resultValues.reserve(resultType.getNumElements());
+  int64_t sourceColumns = sourceType.getDimSize(1);
+  for (int64_t row = 0; row < sizes[0]; ++row)
+    for (int64_t column = 0; column < sizes[1]; ++column) {
+      int64_t sourceRow = offsets[0] + row * strides[0];
+      int64_t sourceColumn = offsets[1] + column * strides[1];
+      resultValues.push_back(
+          sourceValues.begin()[sourceRow * sourceColumns + sourceColumn]);
+    }
+  return DenseElementsAttr::get(resultType, resultValues);
+}
+
+template <typename T>
+DenseElementsAttr
+padDenseTensor(DenseElementsAttr source, RankedTensorType resultType,
+               RankedTensorType sourceType, ArrayRef<int64_t> low, T padding) {
+  SmallVector<T> sourceValues(source.getValues<T>());
+  SmallVector<T> resultValues(resultType.getNumElements(), padding);
+  int64_t sourceColumns = sourceType.getDimSize(1);
+  int64_t resultColumns = resultType.getDimSize(1);
+  for (int64_t row = 0; row < sourceType.getDimSize(0); ++row)
+    for (int64_t column = 0; column < sourceColumns; ++column)
+      resultValues[(row + low[0]) * resultColumns + column + low[1]] =
+          sourceValues[row * sourceColumns + column];
+  return DenseElementsAttr::get(resultType, resultValues);
+}
+
 FailureOr<DenseElementsAttr> evaluateDenseTensor(Value value) {
   if (auto constant = value.getDefiningOp<arith::ConstantOp>())
     if (auto elements = dyn_cast<DenseElementsAttr>(constant.getValue()))
@@ -82,18 +116,13 @@ FailureOr<DenseElementsAttr> evaluateDenseTensor(Value value) {
         llvm::is_contained(strides, ShapedType::kDynamic))
       return failure();
 
-    auto sourceValues = (*source).getValues<APInt>();
-    SmallVector<APInt> resultValues;
-    resultValues.reserve(resultType.getNumElements());
-    int64_t sourceColumns = sourceType.getDimSize(1);
-    for (int64_t row = 0; row < sizes[0]; ++row)
-      for (int64_t column = 0; column < sizes[1]; ++column) {
-        int64_t sourceRow = offsets[0] + row * strides[0];
-        int64_t sourceColumn = offsets[1] + column * strides[1];
-        resultValues.push_back(sourceValues.begin()[sourceRow * sourceColumns +
-                                                     sourceColumn]);
-      }
-    return DenseElementsAttr::get(resultType, resultValues);
+    if (sourceType.getElementType().isIntOrIndex())
+      return sliceDenseTensor<APInt>(*source, resultType, sourceType, offsets,
+                                     sizes, strides);
+    if (isa<FloatType>(sourceType.getElementType()))
+      return sliceDenseTensor<APFloat>(*source, resultType, sourceType, offsets,
+                                       sizes, strides);
+    return failure();
   }
 
   if (auto pad = value.getDefiningOp<tensor::PadOp>()) {
@@ -107,24 +136,19 @@ FailureOr<DenseElementsAttr> evaluateDenseTensor(Value value) {
     Value padding = pad.getConstantPaddingValue();
     auto constant = padding ? padding.getDefiningOp<arith::ConstantOp>()
                             : arith::ConstantOp{};
-    auto scalar =
-        constant ? dyn_cast<IntegerAttr>(constant.getValue()) : IntegerAttr{};
     if (!resultType || !sourceType || resultType.getRank() != 2 ||
         sourceType.getRank() != 2 || low.size() != 2 || high.size() != 2 ||
         llvm::is_contained(low, ShapedType::kDynamic) ||
-        llvm::is_contained(high, ShapedType::kDynamic) || !scalar)
+        llvm::is_contained(high, ShapedType::kDynamic) || !constant)
       return failure();
 
-    SmallVector<APInt> sourceValues((*source).getValues<APInt>());
-    SmallVector<APInt> resultValues(resultType.getNumElements(),
-                                    scalar.getValue());
-    int64_t sourceColumns = sourceType.getDimSize(1);
-    int64_t resultColumns = resultType.getDimSize(1);
-    for (int64_t row = 0; row < sourceType.getDimSize(0); ++row)
-      for (int64_t column = 0; column < sourceColumns; ++column)
-        resultValues[(row + low[0]) * resultColumns + column + low[1]] =
-            sourceValues[row * sourceColumns + column];
-    return DenseElementsAttr::get(resultType, resultValues);
+    if (auto integer = dyn_cast<IntegerAttr>(constant.getValue()))
+      return padDenseTensor<APInt>(*source, resultType, sourceType, low,
+                                   integer.getValue());
+    if (auto floating = dyn_cast<FloatAttr>(constant.getValue()))
+      return padDenseTensor<APFloat>(*source, resultType, sourceType, low,
+                                     floating.getValue());
+    return failure();
   }
   return failure();
 }
@@ -200,8 +224,13 @@ bool isZeroSplat(Value value) {
   auto constant = value.getDefiningOp<arith::ConstantOp>();
   auto elements = constant ? dyn_cast<DenseElementsAttr>(constant.getValue())
                            : DenseElementsAttr{};
-  return elements && elements.isSplat() &&
-         elements.getSplatValue<APInt>().isZero();
+  if (!elements || !elements.isSplat())
+    return false;
+  if (elements.getElementType().isIntOrIndex())
+    return elements.getSplatValue<APInt>().isZero();
+  if (isa<FloatType>(elements.getElementType()))
+    return elements.getSplatValue<APFloat>().isZero();
+  return false;
 }
 
 bool isEvaluatedZeroSplat(Value value) {
@@ -264,16 +293,23 @@ bool hasCanonicalMatmulIndexingMaps(linalg::MatmulOp op) {
   return maps == expectedMaps;
 }
 
-// Linalg i21 arithmetic wraps on overflow, while CIM22 overflow behavior is
-// not part of the current execution evidence. These software-only conversions
-// assume every 64-term partial and final mathematical accumulation is exactly
-// representable as signed i21.
+constexpr int64_t kOutputTileSize = 16;
+constexpr int64_t kReductionTileSize = 64;
+
+// Supplier BF16 prealignment/reconstruction is not equivalent to Linalg
+// floating-point arithmetic, even for zero or unit operands. Only explicit
+// BF16 cim.vmm operations may enter that software-only hardware profile.
 bool isConvertible(linalg::MatvecOp op) {
   auto inputs = op.getDpsInputs();
   auto inits = op.getDpsInits();
   if (op->hasAttr(CIMDialect::getMatMulIntegerAttrName()) ||
       inputs.size() != 2 || inits.size() != 1 || op->getNumResults() != 1)
     return false;
+
+  // Linalg i21 arithmetic wraps on overflow, while CIM22 overflow behavior is
+  // not part of the current execution evidence. These software-only
+  // conversions assume every 64-term partial and final mathematical
+  // accumulation is exactly representable as signed i21.
 
   auto weightType = dyn_cast<RankedTensorType>(inputs[0].getType());
   if (!weightType || weightType.getRank() != 2)
@@ -322,9 +358,6 @@ bool isConvertible(linalg::MatmulOp op) {
          hasCanonicalInt8ContractionBody(op.getRegion(), 21) &&
          hasCanonicalMatmulIndexingMaps(op);
 }
-
-constexpr int64_t kOutputTileSize = 16;
-constexpr int64_t kReductionTileSize = 64;
 
 enum class MatMulIntegerStatus { valid, invalid, partialRangeOverflow };
 
@@ -597,7 +630,7 @@ public:
           if (!zero)
             zero = arith::ConstantOp::create(
                 rewriter, location,
-                rewriter.getIntegerAttr(weightType.getElementType(), 0));
+                rewriter.getZeroAttr(weightType.getElementType()));
           SmallVector<OpFoldResult> low{rewriter.getIndexAttr(0)};
           SmallVector<OpFoldResult> high{
               rewriter.getIndexAttr(64 - tileReductionSize)};
@@ -609,7 +642,7 @@ public:
           if (!zero)
             zero = arith::ConstantOp::create(
                 rewriter, location,
-                rewriter.getIntegerAttr(weightType.getElementType(), 0));
+                rewriter.getZeroAttr(weightType.getElementType()));
           SmallVector<OpFoldResult> low{rewriter.getIndexAttr(0),
                                         rewriter.getIndexAttr(0)};
           SmallVector<OpFoldResult> high{
@@ -696,8 +729,7 @@ public:
     auto expandedResultType =
         RankedTensorType::get({outputSize, 1}, resultType.getElementType());
     auto zeroAttr = DenseElementsAttr::get(
-        columnResultType,
-        rewriter.getIntegerAttr(resultType.getElementType(), 0));
+        columnResultType, rewriter.getZeroAttr(resultType.getElementType()));
     Value zero = arith::ConstantOp::create(rewriter, location, columnResultType,
                                            zeroAttr);
     SmallVector<ReassociationIndices> reassociation{{0, 1}};
@@ -1437,7 +1469,7 @@ public:
     ModuleOp module = getOperation();
     struct WorkPlan {
       VMMOp vmm;
-      DenseIntElementsAttr weight;
+      DenseElementsAttr weight;
       int64_t transactionIdx;
       int64_t workId;
       int64_t groupId;
@@ -1523,14 +1555,8 @@ public:
               "constant weight tile");
           return signalPassFailure();
         }
-        auto intWeight = dyn_cast<DenseIntElementsAttr>(*weight);
-        if (!intWeight) {
-          vmm.emitOpError("materialize-cim-execution-plan requires INT8 weight "
-                          "elements");
-          return signalPassFailure();
-        }
-        plan.works.push_back({vmm, intWeight, *transactionIdx, *workId,
-                              *groupId, *coreIdx, *macroIdx});
+        plan.works.push_back({vmm, *weight, *transactionIdx, *workId, *groupId,
+                              *coreIdx, *macroIdx});
       }
 
       // A logical schedule may reuse the 20 physical cores for later groups.

@@ -25,6 +25,7 @@ tool_dirs = [
 llvm_config.add_tool_substitutions(
     [
         "FileCheck",
+        "mlir-cim22-bf16-support-test",
         "mlir-cim22-cimframe-codec-test",
         "mlir-cim22-cim-executable-test",
         "mlir-cim22-matmulinteger-importer-test",

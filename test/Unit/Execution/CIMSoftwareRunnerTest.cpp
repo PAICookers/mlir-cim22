@@ -1,10 +1,17 @@
 //===- CIMSoftwareRunnerTest.cpp - CIM22 software runner tests -*- C++ -*-===//
 
 #include "CIM22/Execution/CIMRunner.h"
+#include "CIM22/Support/BF16Support.h"
+
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -95,8 +102,52 @@ CIMTransaction makeExecutable(FixtureFault fault = FixtureFault::None) {
     readbacks.back().outputCacheAddress = 8;
 
   return CIMTransaction("cim22-4x5-v1", 1, 1, std::move(groups),
-                       std::move(weights), std::move(packets),
-                       std::move(inputs), std::move(readbacks), {});
+                        std::move(weights), std::move(packets),
+                        std::move(inputs), std::move(readbacks), {});
+}
+
+CIMTransaction
+makeBF16Executable(bool withExponent = true, int8_t weightMantissa = 0,
+                   const StaticWeightSection *fixture = nullptr) {
+  const int64_t macro = fixture ? fixture->macroSlot : 0;
+  CIMGroup group;
+  group.groupId = 0;
+  group.works.push_back({0, 0, macro, {}});
+
+  StaticWeightSection weight;
+  weight.groupId = 0;
+  weight.workId = 0;
+  weight.coreSlot = 0;
+  weight.macroSlot = 0;
+  weight.dataType = CIMDataType::BF16;
+  weight.values.fill(weightMantissa);
+  weight.exponents.fill(0);
+  if (fixture)
+    weight = *fixture;
+
+  DynamicInputBinding input{0, 0, macro, 0, CIMDataType::BF16};
+  ReadbackBinding readback{0, 0, macro, 0, {}, {}, CIMDataType::BF16};
+  std::vector<CIMFramePacket> packets;
+  auto add = [&](CIMPacketKind kind) {
+    CIMFramePacket packet{kind};
+    packet.groupId = 0;
+    packet.workId = 0;
+    packet.macroSlot = macro;
+    if (kind == CIMPacketKind::OutputCacheRead)
+      packet.cacheAddress = 0;
+    packet.dataType = CIMDataType::BF16;
+    packets.push_back(packet);
+  };
+  add(CIMPacketKind::InputCacheWrite);
+  if (withExponent)
+    add(CIMPacketKind::WeightExponent);
+  add(CIMPacketKind::Weight);
+  add(CIMPacketKind::ReturnRoute);
+  add(CIMPacketKind::Control);
+  add(CIMPacketKind::OutputCacheRead);
+  return CIMTransaction("cim22-4x5-v1", 1, 1, {std::move(group)},
+                        {std::move(weight)}, std::move(packets), {input},
+                        {readback}, {});
 }
 
 int32_t expectedValue(const StaticWeightSection &weight,
@@ -106,6 +157,111 @@ int32_t expectedValue(const StaticWeightSection &weight,
     sum += static_cast<int32_t>(weight.values[row * kCIMInputElements + k]) *
            static_cast<int32_t>(input[k]);
   return sum;
+}
+
+// The Python adapter only parses supplier snapshots. Each expected stage is
+// independent of the production helper/runner evaluated here.
+template <typename T, size_t N>
+std::array<T, N> fixtureArray(const llvm::json::Object &object,
+                              llvm::StringRef field) {
+  std::array<T, N> values{};
+  const llvm::json::Array *array = object.getArray(field);
+  if (!array || array->size() != N)
+    llvm::report_fatal_error("invalid BF16 fixture array: " + field);
+  for (size_t index = 0; index < N; ++index) {
+    if constexpr (std::is_unsigned_v<T>)
+      values[index] = static_cast<T>((*array)[index].getAsUINT64().value());
+    else
+      values[index] = static_cast<T>((*array)[index].getAsInteger().value());
+  }
+  return values;
+}
+
+bool replayBF16Fixtures() {
+  auto buffer = llvm::MemoryBuffer::getSTDIN();
+  if (!buffer) {
+    llvm::errs() << buffer.getError().message() << '\n';
+    return false;
+  }
+  auto json = llvm::json::parse((*buffer)->getBuffer());
+  if (!json) {
+    llvm::errs() << llvm::toString(json.takeError()) << '\n';
+    return false;
+  }
+  const llvm::json::Array *rows = json->getAsArray();
+  if (!rows || rows->empty())
+    return false;
+  CIMSoftwareRunner runner;
+  for (const llvm::json::Value &value : *rows) {
+    const llvm::json::Object &row = *value.getAsObject();
+    auto checkStage = [&](bool matches, llvm::StringRef stage) {
+      if (!matches)
+        llvm::errs() << "FAIL " << row.getString("case").value()
+                     << " row=" << row.getInteger("row").value()
+                     << " stage=" << stage << '\n';
+      return matches;
+    };
+    StaticWeightSection weight;
+    weight.groupId = weight.workId = weight.coreSlot = 0;
+    weight.macroSlot = row.getInteger("macro").value();
+    weight.dataType = CIMDataType::BF16;
+    weight.values = fixtureArray<int8_t, 1024>(row, "weight");
+    weight.exponents = fixtureArray<uint8_t, 16>(row, "weight_exponents");
+    const auto input = fixtureArray<uint16_t, 64>(row, "input");
+    const auto aligned = mlir::cim22::prealignBF16Vector(input);
+    if (!checkStage(aligned.exponent == row.getInteger("input_exponent"),
+                    "input_exponent") ||
+        !checkStage(aligned.mantissas ==
+                        fixtureArray<int8_t, 64>(row, "aligned"),
+                    "aligned") ||
+        !checkStage(mlir::cim22::packBF16InputCacheRow(input) ==
+                        fixtureArray<uint64_t, 16>(row, "input_words"),
+                    "input_words") ||
+        !checkStage(mlir::cim22::packBF16WeightExponents(weight.exponents) ==
+                        fixtureArray<uint64_t, 2>(row, "exponent_words"),
+                    "exponent_words"))
+      return false;
+
+    const auto intermediate = fixtureArray<int32_t, 16>(row, "intermediate");
+    const auto expected = fixtureArray<uint16_t, 16>(row, "output");
+    for (size_t lane = 0; lane < 16; ++lane) {
+      const int32_t sum = expectedValue(weight, aligned.mantissas, lane);
+      if (!checkStage(sum == intermediate[lane] && sum >= kCIMI21Min &&
+                          sum < kCIMI21MaxExclusive,
+                      "intermediate") ||
+          !checkStage(mlir::cim22::int21ToBF16(
+                          intermediate[lane], weight.exponents[lane],
+                          aligned.exponent) == expected[lane],
+                      "output"))
+        return false;
+    }
+    if (!checkStage(mlir::cim22::decodeBF16OutputCacheResponse(
+                        fixtureArray<uint64_t, 6>(row, "response")) == expected,
+                    "response"))
+      return false;
+
+    auto executable = makeBF16Executable(true, 0, &weight);
+    std::array<uint16_t, 16> actual{};
+    CIMInputView inputView{{}, input};
+    CIMOutputView outputView{{}, actual};
+    CIMRunInputs inputs{llvm::ArrayRef<CIMInputView>(&inputView, 1)};
+    CIMRunOutputs outputs{llvm::MutableArrayRef<CIMOutputView>(&outputView, 1)};
+    // Reuse the transaction with distinct invocations, exercising both supplier
+    // Macro identities without treating the packet list as a hardware relay.
+    for (int repeat = 0; repeat < 2; ++repeat) {
+      actual.fill(0xdead);
+      if (auto error = runner.run(executable, inputs, outputs)) {
+        llvm::errs() << llvm::toString(std::move(error)) << '\n';
+        return false;
+      }
+      if (!checkStage(actual == expected, "runner"))
+        return false;
+    }
+  }
+  llvm::outs() << "PASS supplier-fixture-match BF16 rows=" << rows->size()
+               << " inputs=" << rows->size() * 64
+               << " outputs=" << rows->size() * 16 << '\n';
+  return true;
 }
 
 const StaticWeightSection &weightFor(const CIMTransaction &executable,
@@ -154,7 +310,9 @@ void checkRun(CIMSoftwareRunner &runner, const CIMTransaction &executable,
 }
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+  if (argc == 2 && llvm::StringRef(argv[1]) == "--bf16-fixtures")
+    return replayBF16Fixtures() ? 0 : 1;
   CIMTransaction executable = makeExecutable();
   CIMSoftwareRunner runner;
   VectorTrace trace;
@@ -202,6 +360,60 @@ int main() {
     CIMRunOutputs outputs{llvm::MutableArrayRef<CIMOutputView>(outputViews)};
     expectError(runner.run(faulty, inputs, outputs));
   }
+
+  CIMTransaction bf16 = makeBF16Executable();
+  std::array<uint16_t, kCIMInputElements> bf16InputStorage{};
+  bf16InputStorage.fill(0x3f80);
+  std::array<uint16_t, kCIMOutputElements> bf16OutputStorage{};
+  CIMInputView bf16InputView;
+  bf16InputView.bf16Values = llvm::ArrayRef<uint16_t>(bf16InputStorage);
+  CIMOutputView bf16OutputView;
+  bf16OutputView.bf16Values =
+      llvm::MutableArrayRef<uint16_t>(bf16OutputStorage);
+  CIMRunInputs bf16Inputs{llvm::ArrayRef<CIMInputView>(&bf16InputView, 1)};
+  CIMRunOutputs bf16Outputs{
+      llvm::MutableArrayRef<CIMOutputView>(&bf16OutputView, 1)};
+  assert(!runner.run(bf16, bf16Inputs, bf16Outputs));
+  for (uint16_t value : bf16OutputStorage)
+    assert(value == 0x4000);
+
+  // With input mantissa 64, 64 prealigned unit weights sum to 4096.
+  // The supplier reconstruction with weight exponent 0 produces 0x4280.
+  assert(!runner.run(makeBF16Executable(true, 1), bf16Inputs, bf16Outputs));
+  for (uint16_t value : bf16OutputStorage)
+    assert(value == 0x4280);
+  assert(!runner.run(makeBF16Executable(true, -1), bf16Inputs, bf16Outputs));
+  for (uint16_t value : bf16OutputStorage)
+    assert(value == 0xc280);
+
+  // Supplier negative zero aligns to -128. Reject the positive INT21
+  // overflow corner instead of letting BF16 reconstruction hide it.
+  bf16InputStorage.fill(0x8000);
+  llvm::Error overflow =
+      runner.run(makeBF16Executable(true, -128), bf16Inputs, bf16Outputs);
+  assert(overflow && "negative-zero BF16 overflow must fail");
+  std::string overflowMessage = llvm::toString(std::move(overflow));
+  assert(overflowMessage == "CIM software result exceeds signed i21 range");
+  bf16InputStorage.fill(0x3f80);
+
+  bf16InputStorage[0] = 0x7f80;
+  expectError(runner.run(bf16, bf16Inputs, bf16Outputs));
+  bf16InputStorage[0] = 0x7fc1;
+  expectError(runner.run(bf16, bf16Inputs, bf16Outputs));
+  bf16InputStorage[0] = 0x3f80;
+  expectError(runner.run(makeBF16Executable(false), bf16Inputs, bf16Outputs));
+
+  DynamicInputBinding mixedInput{0, 0, 0, 0, CIMDataType::Int8};
+  std::vector<CIMFramePacket> mixedPackets(bf16.getPackets().begin(),
+                                           bf16.getPackets().end());
+  std::vector<CIMGroup> mixedGroups(bf16.getGroups().begin(),
+                                    bf16.getGroups().end());
+  CIMTransaction mixed("cim22-4x5-v1", 1, 1, std::move(mixedGroups),
+                       {bf16.getStaticWeights().front()},
+                       std::move(mixedPackets), {mixedInput},
+                       {bf16.getReadbacks().front()}, {});
+  bf16InputStorage[0] = 0x3f80;
+  expectError(runner.run(mixed, bf16Inputs, bf16Outputs));
 
   CIMUartRunner uartRunner;
   std::array<std::array<int8_t, kCIMInputElements>, 4> inputStorage{};

@@ -28,6 +28,12 @@ add_executable(mlir-cim22-int8-weight-layout-test EXCLUDE_FROM_ALL
 target_link_libraries(mlir-cim22-int8-weight-layout-test PRIVATE
   MLIRCIM22Support
 )
+add_executable(mlir-cim22-bf16-support-test EXCLUDE_FROM_ALL
+  Unit/Support/BF16SupportTest.cpp
+)
+target_link_libraries(mlir-cim22-bf16-support-test PRIVATE
+  MLIRCIM22Support
+)
 add_executable(mlir-cim22-matmulinteger-importer-test EXCLUDE_FROM_ALL
   Unit/Frontend/ONNX/MatMulIntegerImporterTest.cpp
 )
@@ -77,6 +83,7 @@ target_link_libraries(mlir-cim22-cim-executable-runner-test PRIVATE
 target_compile_options(mlir-cim22-cim-executable-runner-test PRIVATE -fno-rtti)
 set(MLIRCIM22_TEST_DEPENDS
   FileCheck
+  mlir-cim22-bf16-support-test
   mlir-cim22-cimframe-codec-test
   mlir-cim22-cim-executable-test
   mlir-cim22-matmulinteger-importer-test

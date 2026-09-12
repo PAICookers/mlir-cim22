@@ -31,6 +31,7 @@
 using namespace mlir;
 using namespace mlir::cimframe;
 using mlir::cim22::target::encodeCIMFrameInt8Packets;
+using mlir::cim22::target::encodeCIMFramePackets;
 
 using Route = std::array<int32_t, 6>;
 
@@ -75,6 +76,21 @@ static void addWeight(OpBuilder &Builder, ModuleOp Module, const Route &Route,
                       ArrayRef<int32_t> Words) {
   Builder.setInsertionPointToEnd(Module.getBody());
   CIMInt8WeightPacketOp::create(Builder, Builder.getUnknownLoc(),
+                                routeAttr(Builder, Route),
+                                wordsAttr(Builder, Words));
+}
+
+static void addBF16Weight(OpBuilder &Builder, ModuleOp Module,
+                          const Route &Route, ArrayRef<int64_t> Exponents,
+                          ArrayRef<int32_t> Words) {
+  Builder.setInsertionPointToEnd(Module.getBody());
+  ControlBF16PacketOp::create(Builder, Builder.getUnknownLoc(),
+                              routeAttr(Builder, Route),
+                              Builder.getI32IntegerAttr(1));
+  WeightExponentPacketOp::create(Builder, Builder.getUnknownLoc(),
+                                 routeAttr(Builder, Route),
+                                 Builder.getDenseI64ArrayAttr(Exponents));
+  CIMBF16WeightPacketOp::create(Builder, Builder.getUnknownLoc(),
                                 routeAttr(Builder, Route),
                                 wordsAttr(Builder, Words));
 }
@@ -199,6 +215,34 @@ static bool testMixedPairOrder(OpBuilder &Builder) {
                "mixed weight head follows control");
 }
 
+static bool testBF16WeightPacket(OpBuilder &Builder) {
+  constexpr Route Route{3, 1, 0, 0, 0, 0};
+  constexpr std::array<int64_t, 2> Exponents{INT64_C(0x0706050403020100),
+                                             INT64_C(0x0f0e0d0c0b0a0908)};
+  std::array<int32_t, 256> Words{};
+  Words.front() = -1;
+  Words.back() = std::numeric_limits<int32_t>::min();
+
+  auto Module = makeModule(Builder);
+  addBF16Weight(Builder, *Module, Route, Exponents, Words);
+  auto Flits = encodeCIMFramePackets(*Module);
+  return check(succeeded(Flits), "BF16 weight encoding succeeds") &&
+         check(Flits->size() == 261,
+               "BF16 control/Weight_EXP/CIM emits 261 flits") &&
+         check((*Flits)[0] == UINT64_C(0x80c1000000000003),
+               "BF16 control selects mode and Macro") &&
+         check((*Flits)[1] == UINT64_C(0x30c1000000000002),
+               "Weight_EXP head encodes two body flits") &&
+         check((*Flits)[2] == UINT64_C(0x0706050403020100) &&
+                   (*Flits)[3] == UINT64_C(0x0f0e0d0c0b0a0908),
+               "Weight_EXP body uses little-endian lanes") &&
+         check((*Flits)[4] == UINT64_C(0x20c1000000000100),
+               "BF16 mantissas reuse the CIM head") &&
+         check((*Flits)[5] == UINT64_C(0x000000ffffffff00) &&
+                   (*Flits)[260] == UINT64_C(0x00000080000000ff),
+               "BF16 mantissas reuse the CIM body layout");
+}
+
 static bool testInputAndReadbackPackets(OpBuilder &Builder) {
   constexpr Route ZeroRoute{};
   constexpr std::array<int32_t, 3> TestCore{1, -2, 3};
@@ -237,6 +281,39 @@ static bool testInputAndReadbackPackets(OpBuilder &Builder) {
                "readback control selects Macro 1") &&
          check((*ReadbackFlits)[2] == UINT64_C(0x500000000081c000),
                "0101 encodes output Cache address 7");
+}
+
+static bool testBF16InputAndReadbackPackets(OpBuilder &Builder) {
+  constexpr Route ZeroRoute{};
+  auto Module = makeModule(Builder);
+  Builder.setInsertionPointToEnd(Module->getBody());
+  auto RouteAttr = routeAttr(Builder, ZeroRoute);
+  std::array<int64_t, 16> Words{};
+  Words.front() = INT64_C(0x3f80bf0000018000);
+  Words.back() = INT64_MIN;
+  ControlBF16PacketOp::create(Builder, Builder.getUnknownLoc(), RouteAttr,
+                              Builder.getI32IntegerAttr(1));
+  WriteInputCacheBF16PacketOp::create(
+      Builder, Builder.getUnknownLoc(), RouteAttr, Builder.getI32IntegerAttr(1),
+      Builder.getI32IntegerAttr(2), Builder.getDenseI64ArrayAttr(Words));
+  addReturnRoute(Builder, *Module, ZeroRoute, {1, -2, 3});
+  ControlBF16PacketOp::create(Builder, Builder.getUnknownLoc(), RouteAttr,
+                              Builder.getI32IntegerAttr(1));
+  ReadOutputCacheBF16PacketOp::create(Builder, Builder.getUnknownLoc(),
+                                      RouteAttr, Builder.getI32IntegerAttr(7));
+  auto Flits = encodeCIMFramePackets(*Module);
+  return check(succeeded(Flits), "BF16 input and readback encoding succeeds") &&
+         check(Flits->size() == 21, "BF16 input and readback flit count") &&
+         check((*Flits)[0] == UINT64_C(0x8000000000000003) &&
+                   (*Flits)[1] == UINT64_C(0x1000000000028010),
+               "BF16 input uses mode 1, Macro 1 and Cache row 2") &&
+         check((*Flits)[2] == UINT64_C(0x3f80bf0000018000) &&
+                   (*Flits)[17] == UINT64_C(0x8000000000000000),
+               "BF16 Cache words preserve all payload bits") &&
+         check((*Flits)[18] == UINT64_C(0xa000000000001883) &&
+                   (*Flits)[19] == UINT64_C(0x8000000000000003) &&
+                   (*Flits)[20] == UINT64_C(0x500000000081c000),
+               "BF16 readback keeps the route and output Cache address");
 }
 
 static bool testInvalidStages(OpBuilder &Builder) {
@@ -407,8 +484,10 @@ int main(int Argc, char **Argv) {
     return emitPacketSummary(Argv[1], Context) ? 0 : 1;
   OpBuilder Builder(&Context);
   return testControlAndWork(Builder) && testMacroAndRouteBoundaries(Builder) &&
-                 testWeightPacket(Builder) && testMixedPairOrder(Builder) &&
+                 testWeightPacket(Builder) && testBF16WeightPacket(Builder) &&
+                 testMixedPairOrder(Builder) &&
                  testInputAndReadbackPackets(Builder) &&
+                 testBF16InputAndReadbackPackets(Builder) &&
                  testInvalidStages(Builder)
              ? 0
              : 1;

@@ -22,7 +22,7 @@ func.func @input_dynamic_k(%input: tensor<?xi8>, %weight: tensor<16x64xi8>) {
 
 // VMM-N03: input dtype.
 func.func @input_dtype(%input: tensor<64xi16>, %weight: tensor<16x64xi8>) {
-  // expected-error@+1 {{operand #0 must be ranked tensor of 8-bit signless integer values}}
+  // expected-error@+1 {{expects INT8 x INT8 -> i21 or BF16 x BF16 -> BF16 element types}}
   %0 = "cim.vmm"(%input, %weight) : (tensor<64xi16>, tensor<16x64xi8>) -> tensor<16xi21>
   return
 }
@@ -49,7 +49,7 @@ func.func @weight_axes(%input: tensor<64xi8>, %weight: tensor<64x16xi8>) {
 
 // VMM-N06: weight dtype.
 func.func @weight_dtype(%input: tensor<64xi8>, %weight: tensor<16x64xi16>) {
-  // expected-error@+1 {{operand #1 must be ranked tensor of 8-bit signless integer values}}
+  // expected-error@+1 {{expects INT8 x INT8 -> i21 or BF16 x BF16 -> BF16 element types}}
   %0 = "cim.vmm"(%input, %weight) : (tensor<64xi8>, tensor<16x64xi16>) -> tensor<16xi21>
   return
 }
@@ -67,8 +67,17 @@ func.func @result_shape(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
 
 // VMM-N08: result dtype.
 func.func @result_dtype(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {
-  // expected-error@+1 {{result #0 must be ranked tensor of 21-bit signless integer values}}
+  // expected-error@+1 {{expects INT8 x INT8 -> i21 or BF16 x BF16 -> BF16 element types}}
   %0 = "cim.vmm"(%input, %weight) : (tensor<64xi8>, tensor<16x64xi8>) -> tensor<16xi32>
+  return
+}
+
+// -----
+
+// BF16 operands cannot use the INT8/i21 result signature.
+func.func @mixed_bf16_signature(%input: tensor<64xbf16>, %weight: tensor<16x64xbf16>) {
+  // expected-error@+1 {{expects INT8 x INT8 -> i21 or BF16 x BF16 -> BF16 element types}}
+  %0 = "cim.vmm"(%input, %weight) : (tensor<64xbf16>, tensor<16x64xbf16>) -> tensor<16xi21>
   return
 }
 

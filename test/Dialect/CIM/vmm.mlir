@@ -11,6 +11,15 @@ func.func @vmm(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) -> tensor<16xi2
   return %result : tensor<16xi21>
 }
 
+// CHECK-LABEL: func.func @bf16_vmm(
+// CHECK-SAME: %[[INPUT:.*]]: tensor<64xbf16>, %[[WEIGHT:.*]]: tensor<16x64xbf16>
+// CHECK: %[[RESULT:.*]] = cim.vmm %[[INPUT]], %[[WEIGHT]] : tensor<64xbf16>, tensor<16x64xbf16> -> tensor<16xbf16>
+// CHECK: return %[[RESULT]] : tensor<16xbf16>
+func.func @bf16_vmm(%input: tensor<64xbf16>, %weight: tensor<16x64xbf16>) -> tensor<16xbf16> {
+  %result = cim.vmm %input, %weight : tensor<64xbf16>, tensor<16x64xbf16> -> tensor<16xbf16>
+  return %result : tensor<16xbf16>
+}
+
 // CHECK-LABEL: func.func @identified_vmm(
 // CHECK: cim.vmm {{.*}} {cim.transaction_idx = 0 : i64, k_tile = 2 : i64, m_tile = 0 : i64, n_tile = 1 : i64}
 func.func @identified_vmm(%input: tensor<64xi8>, %weight: tensor<16x64xi8>) {

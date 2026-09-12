@@ -2,6 +2,8 @@
 
 #include "CIM22/Execution/CIMRunner.h"
 
+#include "CIM22/Support/BF16Support.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
@@ -24,6 +26,9 @@ llvm::Error runnerError(const llvm::Twine &message) {
 struct MacroState {
   std::array<int8_t, kCIMInputElements> input{};
   std::array<int8_t, kCIMWeightElements> weight{};
+  uint8_t inputExponent = 0;
+  std::array<uint8_t, kCIMOutputElements> weightExponents{};
+  // Store the final lane payload: signed INT21 or zero-extended BF16 bits.
   std::array<std::array<int32_t, kCIMOutputElements>, kCIMCacheRows>
       outputCache{};
 };
@@ -84,12 +89,15 @@ bool hasReadbackSequence(const CIMTransaction &executable,
     if (route.groupId != binding.groupId || route.workId != binding.workId ||
         route.macroSlot != binding.macroSlot || route.route != binding.route ||
         route.testCore != binding.testCore ||
+        route.dataType != binding.dataType ||
         control.groupId != binding.groupId ||
         control.workId != binding.workId ||
         control.macroSlot != binding.macroSlot ||
-        control.route != binding.route || read.groupId != binding.groupId ||
-        read.workId != binding.workId || read.macroSlot != binding.macroSlot ||
-        read.route != binding.route ||
+        control.route != binding.route ||
+        control.dataType != binding.dataType ||
+        read.groupId != binding.groupId || read.workId != binding.workId ||
+        read.macroSlot != binding.macroSlot || read.route != binding.route ||
+        read.dataType != binding.dataType ||
         read.cacheAddress != binding.outputCacheAddress)
       continue;
     packetIndex = index;
@@ -103,17 +111,20 @@ bool hasInputPacket(const CIMTransaction &executable,
   for (const CIMFramePacket &packet : executable.getPackets())
     if (packet.kind == CIMPacketKind::InputCacheWrite &&
         packet.groupId == binding.groupId && packet.workId == binding.workId &&
-        packet.macroSlot == binding.macroSlot)
+        packet.macroSlot == binding.macroSlot &&
+        packet.dataType == binding.dataType)
       return true;
   return false;
 }
 
 bool hasWeightPacket(const CIMTransaction &executable,
-                     const StaticWeightSection &weight) {
+                     const StaticWeightSection &weight,
+                     CIMPacketKind kind = CIMPacketKind::Weight) {
   for (const CIMFramePacket &packet : executable.getPackets())
-    if (packet.kind == CIMPacketKind::Weight &&
-        packet.groupId == weight.groupId && packet.workId == weight.workId &&
-        packet.macroSlot == weight.macroSlot)
+    if (packet.kind == kind && packet.groupId == weight.groupId &&
+        packet.workId == weight.workId &&
+        packet.macroSlot == weight.macroSlot &&
+        packet.dataType == weight.dataType)
       return true;
   return false;
 }
@@ -139,18 +150,30 @@ llvm::Error validateBindings(const CIMTransaction &executable,
     return runnerError("CIM input count does not match executable bindings");
   if (outputs.values.size() != executable.getReadbacks().size())
     return runnerError("CIM output count does not match executable bindings");
-  for (const CIMInputView &input : inputs.values)
-    if (input.values.size() != kCIMInputElements)
+  for (auto [index, input] : llvm::enumerate(inputs.values)) {
+    const DynamicInputBinding &binding = executable.getDynamicInputs()[index];
+    if (binding.dataType == CIMDataType::Int8 &&
+        input.values.size() != kCIMInputElements)
       return runnerError("CIM input view must contain exactly 64 INT8 values");
-  for (const CIMOutputView &output : outputs.values)
-    if (output.values.size() != kCIMOutputElements)
+    if (binding.dataType == CIMDataType::BF16 &&
+        input.bf16Values.size() != kCIMInputElements)
+      return runnerError("CIM input view must contain exactly 64 BF16 values");
+  }
+  for (auto [index, output] : llvm::enumerate(outputs.values)) {
+    const ReadbackBinding &binding = executable.getReadbacks()[index];
+    if (binding.dataType == CIMDataType::Int8 &&
+        output.values.size() != kCIMOutputElements)
       return runnerError(
           "CIM output view must contain exactly 16 INT32 values");
+    if (binding.dataType == CIMDataType::BF16 &&
+        output.bf16Values.size() != kCIMOutputElements)
+      return runnerError("CIM output view must contain exactly 16 BF16 values");
+  }
   for (const ReadbackBinding &binding : executable.getReadbacks())
     if (binding.macroSlot < 0 || binding.macroSlot >= kCIMMacroCount ||
         binding.outputCacheAddress < 0 ||
         binding.outputCacheAddress >= kCIMCacheRows)
-      return runnerError("CIM readback binding is outside the INT8 profile");
+      return runnerError("CIM readback binding is outside the target profile");
   return llvm::Error::success();
 }
 } // namespace
@@ -198,10 +221,16 @@ llvm::Error CIMSoftwareRunner::run(const CIMTransaction &executable,
         return fail("CIM input binding has no input Cache packet");
       if (!hasWeightPacket(executable, *weight))
         return fail("CIM weight section has no weight packet");
+      if (weight->dataType == CIMDataType::BF16 &&
+          !hasWeightPacket(executable, *weight, CIMPacketKind::WeightExponent))
+        return fail("CIM BF16 weight section has no Weight_EXP packet");
       const ReadbackBinding *readback =
           findReadback(executable, group.groupId, work.workId, work.macroSlot);
       if (!readback)
         return fail("CIM work has no readback binding");
+      if (input->dataType != weight->dataType ||
+          readback->dataType != input->dataType)
+        return fail("CIM work has inconsistent data mode");
       MacroState &macro = macros[macroIndex(work.coreSlot, work.macroSlot)];
       size_t inputPosition = 0;
       bool foundInput = false;
@@ -215,9 +244,26 @@ llvm::Error CIMSoftwareRunner::run(const CIMTransaction &executable,
       }
       if (!foundInput)
         return fail("CIM work input binding is not addressable");
-      std::copy(inputs.values[inputPosition].values.begin(),
-                inputs.values[inputPosition].values.end(), macro.input.begin());
+      if (input->dataType == CIMDataType::BF16) {
+        std::array<uint16_t, kCIMInputElements> bf16Input{};
+        std::copy(inputs.values[inputPosition].bf16Values.begin(),
+                  inputs.values[inputPosition].bf16Values.end(),
+                  bf16Input.begin());
+        if (llvm::any_of(bf16Input, [](uint16_t value) {
+              return ((value >> 7) & 0xff) == 0xff;
+            }))
+          return fail("CIM BF16 input does not support NaN or infinity");
+        const mlir::cim22::BF16PrealignedVector prealigned =
+            mlir::cim22::prealignBF16Vector(bf16Input);
+        macro.input = prealigned.mantissas;
+        macro.inputExponent = prealigned.exponent;
+      } else {
+        std::copy(inputs.values[inputPosition].values.begin(),
+                  inputs.values[inputPosition].values.end(),
+                  macro.input.begin());
+      }
       macro.weight = weight->values;
+      macro.weightExponents = weight->exponents;
       emitTrace(trace, sequence, CIMTraceEventKind::ConfigureInput,
                 group.groupId, work.workId, work.macroSlot);
       emitTrace(trace, sequence, CIMTraceEventKind::ConfigureWeight,
@@ -235,7 +281,11 @@ llvm::Error CIMSoftwareRunner::run(const CIMTransaction &executable,
               static_cast<int32_t>(macro.input[k]);
         if (sum < kCIMI21Min || sum >= kCIMI21MaxExclusive)
           return fail("CIM software result exceeds signed i21 range");
-        result[row] = sum;
+        result[row] =
+            input->dataType == CIMDataType::BF16
+                ? mlir::cim22::int21ToBF16(sum, macro.weightExponents[row],
+                                           macro.inputExponent)
+                : sum;
       }
       macro.outputCache[readback->outputCacheAddress] = result;
     }
@@ -260,9 +310,16 @@ llvm::Error CIMSoftwareRunner::run(const CIMTransaction &executable,
                 binding.workId, binding.macroSlot,
                 static_cast<int64_t>(packetIndex + 2),
                 binding.outputCacheAddress);
-      std::copy(macro.outputCache[binding.outputCacheAddress].begin(),
-                macro.outputCache[binding.outputCacheAddress].end(),
-                outputs.values[index].values.begin());
+      if (binding.dataType == CIMDataType::BF16) {
+        llvm::transform(
+            macro.outputCache[binding.outputCacheAddress],
+            outputs.values[index].bf16Values.begin(),
+            [](int32_t value) { return static_cast<uint16_t>(value); });
+      } else {
+        std::copy(macro.outputCache[binding.outputCacheAddress].begin(),
+                  macro.outputCache[binding.outputCacheAddress].end(),
+                  outputs.values[index].values.begin());
+      }
     }
   }
 

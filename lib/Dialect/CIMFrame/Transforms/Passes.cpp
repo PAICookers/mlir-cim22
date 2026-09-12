@@ -11,6 +11,7 @@
 #include "CIM22/Dialect/CIM/IR/CIMDialect.h"
 #include "CIM22/Dialect/CIM/IR/CIMOps.h"
 #include "CIM22/Dialect/CIMFrame/IR/CIMFrameDialect.h"
+#include "CIM22/Support/BF16Support.h"
 #include "CIM22/Support/Int8WeightLayout.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -39,6 +40,8 @@ struct StaticWeightCommandPlan {
   DenseI32ArrayAttr route;
   IntegerAttr macro;
   DenseIntElementsAttr words;
+  DenseI64ArrayAttr exponentWords;
+  bool bf16 = false;
   DictionaryAttr planBinding;
 };
 
@@ -94,6 +97,11 @@ planStaticWeightCommand(cim::ConfigureWeightOp op, func::FuncOp function,
   }
   cim::StaticWeightOp weight =
       SymbolTable::lookupNearestSymbolFrom<cim::StaticWeightOp>(op, resource);
+  auto int8Weight = dyn_cast<DenseIntElementsAttr>(weight.getValue());
+  auto bf16Weight = dyn_cast<DenseFPElementsAttr>(weight.getValue());
+  if (!int8Weight && !bf16Weight)
+    return op.emitOpError("materialize-cim-static-weight-section expects an "
+                          "INT8 or BF16 static weight");
 
   SmallVector<IntegerAttr> integers;
   integers.reserve(7);
@@ -108,9 +116,31 @@ planStaticWeightCommand(cim::ConfigureWeightOp op, func::FuncOp function,
                   [](int64_t value) { return static_cast<int32_t>(value); });
 
   std::array<uint8_t, 16 * 64> bytes{};
-  for (auto [index, value] :
-       llvm::enumerate(weight.getValue().getValues<APInt>()))
-    bytes[index] = static_cast<uint8_t>(value.getZExtValue());
+  DenseI64ArrayAttr exponentWords;
+  bool isBF16 = static_cast<bool>(bf16Weight);
+  if (int8Weight) {
+    for (auto [index, value] :
+         llvm::enumerate(int8Weight.getValues<APInt>()))
+      bytes[index] = static_cast<uint8_t>(value.getZExtValue());
+  } else {
+    std::array<uint16_t, 16 * 64> values{};
+    for (auto [index, value] :
+         llvm::enumerate(bf16Weight.getValues<APFloat>())) {
+      values[index] = static_cast<uint16_t>(value.bitcastToAPInt().getZExtValue());
+      if (((values[index] >> 7) & 0xff) == 0xff)
+        return op.emitOpError(
+            "materialize-cim-static-weight-section does not support BF16 "
+            "NaN or infinity weights");
+    }
+    const cim22::BF16PrealignedWeightTile prealigned =
+        cim22::prealignBF16WeightTile(values);
+    for (auto [index, value] : llvm::enumerate(prealigned.mantissas))
+      bytes[index] = static_cast<uint8_t>(value);
+    const auto exponents = cim22::packBF16WeightExponents(prealigned.exponents);
+    exponentWords = builder.getDenseI64ArrayAttr(
+        {llvm::bit_cast<int64_t>(exponents[0]),
+         llvm::bit_cast<int64_t>(exponents[1])});
+  }
 
   // HWSRC-046 accepts the logical tile mapping exercised by
   // materialize-static-weight-section.mlir.
@@ -137,6 +167,7 @@ planStaticWeightCommand(cim::ConfigureWeightOp op, func::FuncOp function,
       builder.getI32IntegerAttr(static_cast<int32_t>(macroSlot.getInt())),
       DenseIntElementsAttr::get(
           RankedTensorType::get({256}, builder.getI32Type()), words),
+      exponentWords, isBF16,
       builder.getDictionaryAttr(planBinding)};
 }
 
@@ -185,8 +216,17 @@ public:
     auto firstFunction = *module.getOps<func::FuncOp>().begin();
     builder.setInsertionPoint(firstFunction);
     for (const StaticWeightCommandPlan &plan : plans) {
-      WriteInt8WeightsOp command = WriteInt8WeightsOp::create(
-          builder, plan.location, plan.route, plan.macro, plan.words);
+      Operation *command = nullptr;
+      if (plan.bf16) {
+        command = WriteBF16WeightsOp::create(
+            builder, plan.location, plan.route, plan.macro, plan.words,
+            plan.exponentWords)
+                       .getOperation();
+      } else {
+        command = WriteInt8WeightsOp::create(
+                      builder, plan.location, plan.route, plan.macro, plan.words)
+                      .getOperation();
+      }
       command->setAttr(cim::CIMDialect::getPlanBindingAttrName(),
                        plan.planBinding);
     }
@@ -230,6 +270,31 @@ public:
   }
 };
 
+class LowerWriteBF16Weights final
+    : public OpConversionPattern<WriteBF16WeightsOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(WriteBF16WeightsOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    ControlBF16PacketOp control = ControlBF16PacketOp::create(
+        rewriter, op.getLoc(), adaptor.getRoute(), adaptor.getMacro());
+    WeightExponentPacketOp exponent = WeightExponentPacketOp::create(
+        rewriter, op.getLoc(), adaptor.getRoute(), adaptor.getExponentWords());
+    CIMBF16WeightPacketOp weight = CIMBF16WeightPacketOp::create(
+        rewriter, op.getLoc(), adaptor.getRoute(), adaptor.getWords());
+    if (Attribute planBinding =
+            op->getAttr(cim::CIMDialect::getPlanBindingAttrName())) {
+      control->setAttr(cim::CIMDialect::getPlanBindingAttrName(), planBinding);
+      exponent->setAttr(cim::CIMDialect::getPlanBindingAttrName(), planBinding);
+      weight->setAttr(cim::CIMDialect::getPlanBindingAttrName(), planBinding);
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 class LowerCIMFrameCommandsToPackets final
     : public impl::LowerCIMFrameCommandsToPacketsBase<
           LowerCIMFrameCommandsToPackets> {
@@ -239,15 +304,21 @@ public:
   void runOnOperation() override {
     ConversionTarget target(getContext());
     target.addIllegalDialect<CIMFrameDialect>();
-    target.addLegalOp<ControlInt8PacketOp, WorkOncePacketOp,
-                      CIMInt8WeightPacketOp>();
+    target.addLegalOp<ControlInt8PacketOp, ControlBF16PacketOp, WorkOncePacketOp,
+                      CIMInt8WeightPacketOp, WeightExponentPacketOp,
+                      CIMBF16WeightPacketOp, WriteInputCacheInt8PacketOp,
+                      WriteInputCacheBF16PacketOp,
+                      ConfigureTestReturnRoutePacketOp,
+                      ReadOutputCacheInt8PacketOp,
+                      ReadOutputCacheBF16PacketOp>();
     target.markUnknownOpDynamicallyLegal([](Operation *op) {
       return op->getName().getDialectNamespace() !=
              CIMFrameDialect::getDialectNamespace();
     });
 
     RewritePatternSet patterns(&getContext());
-    patterns.add<LowerStartInt8Once, LowerWriteInt8Weights>(&getContext());
+    patterns.add<LowerStartInt8Once, LowerWriteInt8Weights,
+                 LowerWriteBF16Weights>(&getContext());
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
       signalPassFailure();

@@ -19,10 +19,12 @@ inline constexpr int32_t kCIMI21MaxExclusive = 1 << 20;
 
 struct CIMInputView {
   llvm::ArrayRef<int8_t> values;
+  llvm::ArrayRef<uint16_t> bf16Values;
 };
 
 struct CIMOutputView {
   llvm::MutableArrayRef<int32_t> values;
+  llvm::MutableArrayRef<uint16_t> bf16Values;
 };
 
 struct CIMRunInputs {

@@ -16,11 +16,18 @@ include "mlir/IR/SymbolInterfaces.td"
 def CIM_I21 : I<21>;
 
 def CIM_VMMOp : CIM_Op<"vmm", [Pure]> {
-  let summary = "Compute one logical INT8 VMM tile";
+  let summary = "Compute one logical INT8 or BF16 VMM tile";
   let description = [{
     Computes 16 independent dot products between a 64-element input vector and
-    the rows of a 16x64 weight tensor. Operands are interpreted as signed INT8
-    values and each result is represented by a signless `i21` value.
+    the rows of a 16x64 weight tensor. The supported signatures are signed INT8
+    operands with signless `i21` results, or BF16 operands with BF16 results.
+    BF16 explicitly selects the provisional supplier software model:
+    prealign inputs and per-lane weights, accumulate signed INT21, then
+    reconstruct the output bit pattern. It is not IEEE BF16 multiplication
+    and addition, and must not replace ordinary BF16 Linalg contractions.
+    Zero results and saturated exponents follow the supplier bit-level rules.
+    Raw weight exponent interpretation remains provisional under CTQ-028;
+    RTL artifact export and board execution are not supported for BF16.
 
     Before M5 scheduling this operation may carry zero-based `m_tile`,
     `n_tile`, and `k_tile` identity. M5 adds logical `work_id` and `group_id`.
@@ -33,9 +40,8 @@ def CIM_VMMOp : CIM_Op<"vmm", [Pure]> {
     execution evidence owned by CTQ-020.
   }];
 
-  let arguments = (ins RankedTensorOf<[I8]>:$input,
-      RankedTensorOf<[I8]>:$weight);
-  let results = (outs RankedTensorOf<[CIM_I21]>:$result);
+  let arguments = (ins AnyRankedTensor:$input, AnyRankedTensor:$weight);
+  let results = (outs AnyRankedTensor:$result);
 
   let assemblyFormat = [{
     $input `,` $weight attr-dict `:` type($input) `,` type($weight)
@@ -46,9 +52,9 @@ def CIM_VMMOp : CIM_Op<"vmm", [Pure]> {
 
 def CIM_StaticWeightOp
     : CIM_Op<"static_weight", [HasParent<"ModuleOp">, Symbol]> {
-  let summary = "Define one immutable INT8 VMM weight tile";
+  let summary = "Define one immutable INT8 or BF16 VMM weight tile";
   let arguments = (ins SymbolNameAttr:$sym_name,
-      SignlessIntElementsAttr<8>:$value);
+      ElementsAttr:$value);
   let assemblyFormat = "$sym_name `=` $value attr-dict";
   let hasVerifier = 1;
 }
@@ -76,7 +82,7 @@ def CIM_YieldOp : CIM_Op<"yield", [Terminator, HasParent<"TransactionOp">]> {
 def CIM_ConfigureInputOp
     : CIM_Op<"configure_input"> {
   let summary = "Configure one mapped Macro input tile";
-  let arguments = (ins RankedTensorOf<[I8]>:$input);
+  let arguments = (ins AnyRankedTensor:$input);
   let assemblyFormat = "$input attr-dict `:` type($input)";
   let hasVerifier = 1;
 }
@@ -102,8 +108,8 @@ def CIM_OnceOp : CIM_Op<"once"> {
 }
 
 def CIM_ReadbackOp : CIM_Op<"readback"> {
-  let summary = "Read back one mapped i21 VMM partial";
-  let results = (outs RankedTensorOf<[CIM_I21]>:$result);
+  let summary = "Read back one mapped VMM partial";
+  let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "attr-dict `:` type($result)";
   let hasVerifier = 1;
 }

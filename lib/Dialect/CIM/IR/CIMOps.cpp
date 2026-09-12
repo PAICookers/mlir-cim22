@@ -117,6 +117,18 @@ LogicalResult VMMOp::verify() {
   if (resultType.getShape() != llvm::ArrayRef<int64_t>{16})
     return emitOpError("expects result shape [16], but got ") << resultType;
 
+  Type inputElementType = inputType.getElementType();
+  Type weightElementType = weightType.getElementType();
+  Type resultElementType = resultType.getElementType();
+  bool int8Signature = inputElementType.isSignlessInteger(8) &&
+                       weightElementType.isSignlessInteger(8) &&
+                       resultElementType.isSignlessInteger(21);
+  bool bf16Signature = inputElementType.isBF16() &&
+                       weightElementType.isBF16() && resultElementType.isBF16();
+  if (!int8Signature && !bf16Signature)
+    return emitOpError(
+        "expects INT8 x INT8 -> i21 or BF16 x BF16 -> BF16 element types");
+
   unsigned tileAttrCount = countPresent(getOperation(), kTileAttrs);
   if (tileAttrCount != 0 && tileAttrCount != std::size(kTileAttrs))
     return emitOpError("requires m_tile, n_tile, and k_tile together");
@@ -148,9 +160,12 @@ LogicalResult VMMOp::verify() {
 
 LogicalResult StaticWeightOp::verify() {
   RankedTensorType type = dyn_cast<RankedTensorType>(getValue().getType());
-  if (!type || type.getShape() != llvm::ArrayRef<int64_t>{16, 64} ||
-      !type.getElementType().isSignlessInteger(8))
-    return emitOpError("expects value type tensor<16x64xi8>");
+  Type elementType = type ? type.getElementType() : Type{};
+  if (!isa<DenseElementsAttr>(getValue()) || !type ||
+      type.getShape() != llvm::ArrayRef<int64_t>{16, 64} ||
+      (!elementType.isSignlessInteger(8) && !elementType.isBF16()))
+    return emitOpError(
+        "expects dense tensor<16x64xi8> or tensor<16x64xbf16> value");
   if (countPresent(getOperation(), kExecutionPlanIdentityAttrs) != 0)
     return emitOpError("must not carry per-work execution-plan identity");
   return success();
@@ -159,8 +174,9 @@ LogicalResult StaticWeightOp::verify() {
 LogicalResult ConfigureInputOp::verify() {
   RankedTensorType type = getInput().getType();
   if (type.getShape() != llvm::ArrayRef<int64_t>{64} ||
-      !type.getElementType().isSignlessInteger(8))
-    return emitOpError("expects input type tensor<64xi8>");
+      (!type.getElementType().isSignlessInteger(8) &&
+       !type.getElementType().isBF16()))
+    return emitOpError("expects input type tensor<64xi8> or tensor<64xbf16>");
   return verifyFullExecutionPlanIdentity(getOperation());
 }
 
@@ -185,8 +201,9 @@ LogicalResult OnceOp::verify() {
 LogicalResult ReadbackOp::verify() {
   RankedTensorType type = getResult().getType();
   if (type.getShape() != llvm::ArrayRef<int64_t>{16} ||
-      !type.getElementType().isSignlessInteger(21))
-    return emitOpError("expects result type tensor<16xi21>");
+      (!type.getElementType().isSignlessInteger(21) &&
+       !type.getElementType().isBF16()))
+    return emitOpError("expects result type tensor<16xi21> or tensor<16xbf16>");
   return verifyFullExecutionPlanIdentity(getOperation());
 }
 

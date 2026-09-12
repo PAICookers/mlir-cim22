@@ -1,7 +1,7 @@
 // RUN: mlir-cim22-opt %s -split-input-file -verify-diagnostics
 
 module {
-  // expected-error@+1 {{expects value type tensor<16x64xi8>}}
+  // expected-error@+1 {{expects dense tensor<16x64xi8> or tensor<16x64xbf16> value}}
   cim.static_weight @bad = dense<0> : tensor<8x64xi8>
 }
 
@@ -56,7 +56,7 @@ module {
 
 module {
   func.func @wrong_readback() {
-    // expected-error@+1 {{must be ranked tensor of 21-bit signless integer values}}
+    // expected-error@+1 {{expects result type tensor<16xi21> or tensor<16xbf16>}}
     %0 = cim.readback {cim.transaction_idx = 0 : i64, cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}, core_idx = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_idx = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64} : tensor<16xi32>
     return
   }

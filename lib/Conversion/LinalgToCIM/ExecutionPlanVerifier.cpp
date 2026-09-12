@@ -23,6 +23,10 @@ int64_t getI64(Operation *op, StringRef name) {
   return cast<IntegerAttr>(op->getAttr(name)).getInt();
 }
 
+Type getElementType(Value value) {
+  return cast<ShapedType>(value.getType()).getElementType();
+}
+
 LogicalResult requireSame(Operation *expected, Operation *actual,
                           ArrayRef<StringRef> attributes) {
   for (StringRef name : attributes)
@@ -94,9 +98,20 @@ LogicalResult verifyTransaction(TransactionOp transaction) {
           !isa<ConfigureWeightOp>(operations[cursor]))
         return rejectExpected(transaction, operations, cursor,
                               "cim.configure_weight");
-      Operation *weight = operations[cursor++];
-      if (failed(requireSame(input, weight, kWorkIdentityAttrs)))
+      auto configureWeight = cast<ConfigureWeightOp>(operations[cursor++]);
+      if (failed(requireSame(input, configureWeight, kWorkIdentityAttrs)))
         return failure();
+      auto staticWeight = SymbolTable::lookupNearestSymbolFrom<StaticWeightOp>(
+          configureWeight, configureWeight.getResourceAttr());
+      if (!staticWeight)
+        return configureWeight.emitOpError(
+            "expects resource to reference cim.static_weight");
+      Type inputElementType = getElementType(input.getInput());
+      Type weightElementType =
+          cast<ShapedType>(staticWeight.getValue().getType()).getElementType();
+      if (inputElementType != weightElementType)
+        return configureWeight.emitOpError(
+            "expects static weight element type to match configured input");
       const int64_t macro = getI64(input, "macro_idx");
       if (getI64(input, "work_id") != expectedWork ||
           macro != static_cast<int64_t>(group.inputs.size()))
@@ -110,6 +125,10 @@ LogicalResult verifyTransaction(TransactionOp transaction) {
           failed(requireSame(group.inputs.front(), input,
                              kGroupIdentityAttrs)))
         return failure();
+      if (!group.inputs.empty() &&
+          getElementType(group.inputs.front().getInput()) != inputElementType)
+        return input.emitOpError(
+            "expects both Macros in one core group to use the same data type");
       group.inputs.push_back(input);
       ++expectedWork;
     }
@@ -156,6 +175,13 @@ LogicalResult verifyTransaction(TransactionOp transaction) {
       auto readback = cast<ReadbackOp>(operations[cursor++]);
       if (failed(requireSame(input, readback, kWorkIdentityAttrs)))
         return failure();
+      Type inputElementType = getElementType(input.getInput());
+      Type resultElementType = getElementType(readback.getResult());
+      if ((inputElementType.isBF16() && !resultElementType.isBF16()) ||
+          (inputElementType.isSignlessInteger(8) &&
+           !resultElementType.isSignlessInteger(21)))
+        return readback.emitOpError(
+            "result element type does not match configured data mode");
       expectedResults.push_back(readback.getResult());
     }
     if (cursor >= operations.size() ||

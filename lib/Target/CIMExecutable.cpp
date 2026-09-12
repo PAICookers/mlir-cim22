@@ -27,6 +27,7 @@
 
 namespace mlir::cim22::target {
 using ::cim22::execution::CIMTransaction;
+using ::cim22::execution::CIMDataType;
 using ::cim22::execution::CIMFramePacket;
 using ::cim22::execution::CIMGroup;
 using ::cim22::execution::CIMPacketKind;
@@ -134,12 +135,13 @@ FailureOr<CIMWork *> findWork(CIMGroup &group, int64_t workId) {
   return &*it;
 }
 
-FailureOr<StaticWeightSection>
-buildStaticWeight(cimframe::CIMInt8WeightPacketOp packet) {
+FailureOr<StaticWeightSection> buildStaticWeight(Operation *packet,
+                                                 DenseIntElementsAttr wordsAttr,
+                                                 CIMDataType dataType) {
   auto planBinding = packet->getAttrOfType<DictionaryAttr>(
       cim::CIMDialect::getPlanBindingAttrName());
   if (!planBinding)
-    return packet.emitError(
+    return packet->emitError(
         "CIM executable requires cim.plan_binding on weight packet");
   auto get = [&](StringRef name) -> FailureOr<int64_t> {
     auto value = planBinding.getAs<IntegerAttr>(name);
@@ -154,13 +156,12 @@ buildStaticWeight(cimframe::CIMInt8WeightPacketOp packet) {
   auto resource = planBinding.getAs<FlatSymbolRefAttr>("resource");
   if (failed(group) || failed(work) || failed(core) || failed(macro) ||
       !resource)
-    return packet.emitError(
+    return packet->emitError(
         "CIM executable requires complete weight plan binding");
-  std::vector<int32_t> words(packet.getWords().getValues<int32_t>().begin(),
-                             packet.getWords().getValues<int32_t>().end());
+  std::vector<int32_t> words(wordsAttr.getValues<int32_t>().begin(),
+                             wordsAttr.getValues<int32_t>().end());
   std::array<uint32_t, 256> rawWords{};
-  for (auto [index, word] :
-       llvm::enumerate(packet.getWords().getValues<int32_t>()))
+  for (auto [index, word] : llvm::enumerate(wordsAttr.getValues<int32_t>()))
     rawWords[index] = llvm::bit_cast<uint32_t>(word);
   const std::array<uint8_t, 16 * 64> bytes =
       mlir::cim22::unmapCIMWordsToInt8WeightTile(rawWords);
@@ -170,7 +171,21 @@ buildStaticWeight(cimframe::CIMInt8WeightPacketOp packet) {
       {},     std::move(words)};
   for (auto [index, byte] : llvm::enumerate(bytes))
     result.values[index] = static_cast<int8_t>(byte);
+  result.dataType = dataType;
   return result;
+}
+
+void readPlanBinding(Operation *op, CIMFramePacket &packet) {
+  auto planBinding = op->getAttrOfType<DictionaryAttr>(
+      cim::CIMDialect::getPlanBindingAttrName());
+  if (!planBinding)
+    return;
+  if (auto group = planBinding.getAs<IntegerAttr>("group_id"))
+    packet.groupId = group.getInt();
+  if (auto work = planBinding.getAs<IntegerAttr>("work_id"))
+    packet.workId = work.getInt();
+  if (auto macro = planBinding.getAs<IntegerAttr>("macro_idx"))
+    packet.macroSlot = macro.getInt();
 }
 } // namespace
 
@@ -229,13 +244,18 @@ FailureOr<CIMTransaction> compileCIMTransaction(ModuleOp module) {
       for (auto [index, value] : llvm::enumerate(control.getRoute()))
         packet.route[index] = value;
       packet.macroSlot = control.getMacro();
-      if (auto planBinding = control->getAttrOfType<DictionaryAttr>(
-              cim::CIMDialect::getPlanBindingAttrName())) {
-        if (auto group = planBinding.getAs<IntegerAttr>("group_id"))
-          packet.groupId = group.getInt();
-        if (auto work = planBinding.getAs<IntegerAttr>("work_id"))
-          packet.workId = work.getInt();
-      }
+      readPlanBinding(control, packet);
+      packets.push_back(packet);
+      hasPacket = true;
+      continue;
+    }
+    if (auto control = dyn_cast<cimframe::ControlBF16PacketOp>(op)) {
+      CIMFramePacket packet{CIMPacketKind::Control};
+      for (auto [index, value] : llvm::enumerate(control.getRoute()))
+        packet.route[index] = value;
+      packet.macroSlot = control.getMacro();
+      packet.dataType = CIMDataType::BF16;
+      readPlanBinding(control, packet);
       packets.push_back(packet);
       hasPacket = true;
       continue;
@@ -248,8 +268,20 @@ FailureOr<CIMTransaction> compileCIMTransaction(ModuleOp module) {
       hasPacket = true;
       continue;
     }
+    if (auto exponent = dyn_cast<cimframe::WeightExponentPacketOp>(op)) {
+      CIMFramePacket packet{CIMPacketKind::WeightExponent};
+      for (auto [index, value] : llvm::enumerate(exponent.getRoute()))
+        packet.route[index] = value;
+      packet.dataType = CIMDataType::BF16;
+      readPlanBinding(exponent, packet);
+      packets.push_back(packet);
+      hasPacket = true;
+      continue;
+    }
     if (auto packet = dyn_cast<cimframe::CIMInt8WeightPacketOp>(op)) {
-      FailureOr<StaticWeightSection> weight = buildStaticWeight(packet);
+      FailureOr<StaticWeightSection> weight =
+          buildStaticWeight(packet.getOperation(), packet.getWords(),
+                            CIMDataType::Int8);
       if (failed(weight))
         return failure();
       auto route = packet.getRoute();
@@ -264,15 +296,45 @@ FailureOr<CIMTransaction> compileCIMTransaction(ModuleOp module) {
       hasPacket = true;
       continue;
     }
+    if (auto packet = dyn_cast<cimframe::CIMBF16WeightPacketOp>(op)) {
+      FailureOr<StaticWeightSection> weight =
+          buildStaticWeight(packet.getOperation(), packet.getWords(),
+                            CIMDataType::BF16);
+      if (failed(weight))
+        return failure();
+      auto exponent =
+          cast<cimframe::WeightExponentPacketOp>(op.getPrevNode());
+      for (auto [wordIndex, rawWord] :
+           llvm::enumerate(exponent.getExponentWords())) {
+        const uint64_t word = llvm::bit_cast<uint64_t>(rawWord);
+        for (size_t byte = 0; byte < 8; ++byte)
+          (*weight).exponents[wordIndex * 8 + byte] =
+              static_cast<uint8_t>(word >> (byte * 8));
+      }
+      for (auto [index, value] : llvm::enumerate(packet.getRoute()))
+        (*weight).route[index] = value;
+      weights.push_back(std::move(*weight));
+      packets.push_back(CIMFramePacket{CIMPacketKind::Weight});
+      packets.back().route = weights.back().route;
+      packets.back().groupId = weights.back().groupId;
+      packets.back().workId = weights.back().workId;
+      packets.back().macroSlot = weights.back().macroSlot;
+      packets.back().dataType = CIMDataType::BF16;
+      hasPacket = true;
+      continue;
+    }
     if (isa<cimframe::WriteInputCacheInt8PacketOp,
+            cimframe::WriteInputCacheBF16PacketOp,
             cimframe::ConfigureTestReturnRoutePacketOp,
-            cimframe::ReadOutputCacheInt8PacketOp>(op)) {
+            cimframe::ReadOutputCacheInt8PacketOp,
+            cimframe::ReadOutputCacheBF16PacketOp>(op)) {
       op.emitOpError(
           "compile-cim-executable consumes these as semantic bindings; "
           "do not mix explicit target packet input with an execution plan");
       return failure();
     }
-    if (isa<cimframe::StartInt8OnceOp, cimframe::WriteInt8WeightsOp>(op)) {
+    if (isa<cimframe::StartInt8OnceOp, cimframe::WriteInt8WeightsOp,
+            cimframe::WriteBF16WeightsOp>(op)) {
       op.emitOpError("compile-cim-executable requires packet-stage input, "
                      "not commands");
       return failure();
@@ -289,7 +351,7 @@ FailureOr<CIMTransaction> compileCIMTransaction(ModuleOp module) {
                      "static packet stage");
     return failure();
   }
-  auto encoded = encodeCIMFrameInt8Packets(module);
+  auto encoded = encodeCIMFramePackets(module);
   if (failed(encoded))
     return failure();
   flits = std::move(*encoded);
@@ -310,11 +372,15 @@ FailureOr<CIMTransaction> compileCIMTransaction(ModuleOp module) {
         return failure();
       auto type = dyn_cast<RankedTensorType>(input.getInput().getType());
       if (!type || type.getRank() != 1 || type.getDimSize(0) != 64 ||
-          !type.getElementType().isSignlessInteger(8)) {
+          (!type.getElementType().isSignlessInteger(8) &&
+           !type.getElementType().isBF16())) {
         input.emitError(
-            "CIM executable requires dynamic INT8 input tensor<64xi8>");
+            "CIM executable requires input tensor<64xi8> or tensor<64xbf16>");
         return failure();
       }
+      const CIMDataType dataType = type.getElementType().isBF16()
+                                       ? CIMDataType::BF16
+                                       : CIMDataType::Int8;
       auto route = readRoute(input, "cim.mapping");
       if (failed(route))
         return failure();
@@ -343,12 +409,14 @@ FailureOr<CIMTransaction> compileCIMTransaction(ModuleOp module) {
           return input.emitError("CIM executable requires input_slot >= 0");
         inputSlot = attr.getInt();
       }
-      inputs.push_back(DynamicInputBinding{*group, *work, *macro, inputSlot});
+      inputs.push_back(
+          DynamicInputBinding{*group, *work, *macro, inputSlot, dataType});
       packets.push_back(CIMFramePacket{CIMPacketKind::InputCacheWrite});
       packets.back().route = *route;
       packets.back().groupId = *group;
       packets.back().workId = *work;
       packets.back().macroSlot = *macro;
+      packets.back().dataType = dataType;
       continue;
     }
     if (auto readback = dyn_cast<cim::ReadbackOp>(op)) {
@@ -362,10 +430,16 @@ FailureOr<CIMTransaction> compileCIMTransaction(ModuleOp module) {
             "CIM executable requires macro_idx in [0, 1]");
       auto type = dyn_cast<RankedTensorType>(readback.getResult().getType());
       if (!type || type.getRank() != 1 || type.getDimSize(0) != 16 ||
-          !type.getElementType().isSignlessInteger(21)) {
-        readback.emitError("CIM executable requires readback tensor<16xi21>");
+          (!type.getElementType().isSignlessInteger(21) &&
+           !type.getElementType().isBF16())) {
+        readback.emitError(
+            "CIM executable requires readback tensor<16xi21> or "
+            "tensor<16xbf16>");
         return failure();
       }
+      const CIMDataType dataType = type.getElementType().isBF16()
+                                       ? CIMDataType::BF16
+                                       : CIMDataType::Int8;
       auto route = readRoute(readback, "cim.mapping");
       auto testCore = readTestCore(readback.getOperation());
       auto address = readOutputAddress(readback);
@@ -376,25 +450,28 @@ FailureOr<CIMTransaction> compileCIMTransaction(ModuleOp module) {
         readback.emitError("CIM executable readback references unknown work");
         return failure();
       }
-      readbacks.push_back(
-          ReadbackBinding{*group, *work, *macro, *address, *route, *testCore});
+      readbacks.push_back(ReadbackBinding{*group, *work, *macro, *address,
+                                         *route, *testCore, dataType});
       packets.push_back(CIMFramePacket{CIMPacketKind::ReturnRoute});
       packets.back().route = *route;
       packets.back().groupId = *group;
       packets.back().workId = *work;
       packets.back().macroSlot = *macro;
       packets.back().testCore = *testCore;
+      packets.back().dataType = dataType;
       packets.push_back(CIMFramePacket{CIMPacketKind::Control});
       packets.back().route = *route;
       packets.back().groupId = *group;
       packets.back().workId = *work;
       packets.back().macroSlot = *macro;
+      packets.back().dataType = dataType;
       packets.push_back(CIMFramePacket{CIMPacketKind::OutputCacheRead});
       packets.back().route = *route;
       packets.back().groupId = *group;
       packets.back().workId = *work;
       packets.back().macroSlot = *macro;
       packets.back().cacheAddress = *address;
+      packets.back().dataType = dataType;
       continue;
     }
     if (auto once = dyn_cast<cim::OnceOp>(op)) {
@@ -416,11 +493,26 @@ FailureOr<CIMTransaction> compileCIMTransaction(ModuleOp module) {
   }
   for (const CIMGroup &group : groups)
     for (const CIMWork &work : group.works)
-      if (failed(findWeight(weights, group.groupId, work.workId))) {
+      if (auto weight = findWeight(weights, group.groupId, work.workId);
+          failed(weight)) {
         function.emitError(
             "CIM executable is missing a static weight for work ")
             << work.workId;
         return failure();
+      } else {
+        auto input = llvm::find_if(inputs, [&](const DynamicInputBinding &item) {
+          return item.groupId == group.groupId && item.workId == work.workId;
+        });
+        auto readback = llvm::find_if(readbacks, [&](const ReadbackBinding &item) {
+          return item.groupId == group.groupId && item.workId == work.workId;
+        });
+        if (input == inputs.end() || readback == readbacks.end() ||
+            input->dataType != (**weight).dataType ||
+            readback->dataType != (**weight).dataType) {
+          function.emitError("CIM executable data mode mismatch for work ")
+              << work.workId;
+          return failure();
+        }
       }
 
   return CIMTransaction(profile.getValue().str(), profileVersion.getInt(),

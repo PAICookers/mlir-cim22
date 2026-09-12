@@ -56,6 +56,19 @@ def CIMFrame_WriteInt8WeightsOp
   let hasVerifier = 1;
 }
 
+def CIMFrame_WriteBF16WeightsOp
+    : CIMFrame_Op<"write_bf16_weights", [HasParent<"ModuleOp">]> {
+  let summary = "Submit one prealigned BF16 weight tile and its exponents";
+  let description = [{
+    An effectful command carrying the 256 CIM words produced from prealigned
+    signed 8-bit BF16 weight mantissas and two little-endian Weight_EXP words.
+  }];
+  let arguments = (ins DenseI32ArrayAttr:$route, I32Attr:$macro,
+      AnyI32ElementsAttr:$words, DenseI64ArrayAttr:$exponent_words);
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
 def CIMFrame_ControlInt8PacketOp
     : CIMFrame_Op<"control_int8_packet", [HasParent<"ModuleOp">]> {
   let summary = "Represent one typed INT8 control packet";
@@ -63,6 +76,14 @@ def CIMFrame_ControlInt8PacketOp
     A semantic single-flit control packet corresponding provisionally to type
     `1000`, INT8 mode, and the selected Macro. It does not contain raw bits.
   }];
+  let arguments = (ins DenseI32ArrayAttr:$route, I32Attr:$macro);
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+def CIMFrame_ControlBF16PacketOp
+    : CIMFrame_Op<"control_bf16_packet", [HasParent<"ModuleOp">]> {
+  let summary = "Represent one typed BF16 control packet";
   let arguments = (ins DenseI32ArrayAttr:$route, I32Attr:$macro);
   let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
@@ -97,6 +118,22 @@ def CIMFrame_CIMInt8WeightPacketOp
   let hasVerifier = 1;
 }
 
+def CIMFrame_WeightExponentPacketOp
+    : CIMFrame_RoutedOp<"weight_exponent_packet"> {
+  let summary = "Represent one two-body Weight_EXP configuration packet";
+  let arguments = (ins DenseI32ArrayAttr:$route,
+      DenseI64ArrayAttr:$exponent_words);
+}
+
+def CIMFrame_CIMBF16WeightPacketOp
+    : CIMFrame_Op<"cim_bf16_weight_packet", [HasParent<"ModuleOp">]> {
+  let summary = "Represent one prealigned BF16 CIM weight packet";
+  let arguments = (ins DenseI32ArrayAttr:$route,
+      AnyI32ElementsAttr:$words);
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
 def CIMFrame_WriteInputCacheInt8PacketOp
     : CIMFrame_Op<"write_input_cache_int8_packet", [HasParent<"ModuleOp">]> {
   let summary = "Represent one INT8 input Cache configuration packet";
@@ -106,6 +143,15 @@ def CIMFrame_WriteInputCacheInt8PacketOp
     The operation contains semantic words only; transport byte order is not
     part of this operation.
   }];
+  let arguments = (ins DenseI32ArrayAttr:$route, I32Attr:$macro,
+      I32Attr:$cache_row, DenseI64ArrayAttr:$words);
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+def CIMFrame_WriteInputCacheBF16PacketOp
+    : CIMFrame_Op<"write_input_cache_bf16_packet", [HasParent<"ModuleOp">]> {
+  let summary = "Represent one BF16 input Cache configuration packet";
   let arguments = (ins DenseI32ArrayAttr:$route, I32Attr:$macro,
       I32Attr:$cache_row, DenseI64ArrayAttr:$words);
   let assemblyFormat = "attr-dict";
@@ -135,6 +181,12 @@ def CIMFrame_ReadOutputCacheInt8PacketOp
   let arguments = (ins DenseI32ArrayAttr:$route, I32Attr:$cache_address);
   let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
+}
+
+def CIMFrame_ReadOutputCacheBF16PacketOp
+    : CIMFrame_RoutedOp<"read_output_cache_bf16_packet"> {
+  let summary = "Represent one single-flit BF16 output Cache read request";
+  let arguments = (ins DenseI32ArrayAttr:$route, I32Attr:$cache_address);
 }
 
 #endif // CIM22_DIALECT_CIMFRAME_IR_CIMFRAMEOPS

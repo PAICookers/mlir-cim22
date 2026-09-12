@@ -20,9 +20,12 @@
 
 namespace cim22::execution {
 
+enum class CIMDataType { Int8, BF16 };
+
 enum class CIMPacketKind {
   Control,
   Weight,
+  WeightExponent,
   Work,
   InputCacheWrite,
   ReturnRoute,
@@ -37,6 +40,7 @@ struct CIMFramePacket {
   int64_t macroSlot = -1;
   int64_t cacheAddress = -1;
   std::array<int32_t, 3> testCore{};
+  CIMDataType dataType = CIMDataType::Int8;
 };
 
 struct StaticWeightSection {
@@ -48,6 +52,8 @@ struct StaticWeightSection {
   std::array<int32_t, 6> route{};
   std::vector<int32_t> words;
   std::array<int8_t, 16 * 64> values{};
+  std::array<uint8_t, 16> exponents{};
+  CIMDataType dataType = CIMDataType::Int8;
 };
 
 struct DynamicInputBinding {
@@ -55,6 +61,7 @@ struct DynamicInputBinding {
   int64_t workId = -1;
   int64_t macroSlot = -1;
   int64_t inputSlot = -1;
+  CIMDataType dataType = CIMDataType::Int8;
 };
 
 struct ReadbackBinding {
@@ -64,6 +71,7 @@ struct ReadbackBinding {
   int64_t outputCacheAddress = -1;
   std::array<int32_t, 6> route{};
   std::array<int32_t, 3> testCore{};
+  CIMDataType dataType = CIMDataType::Int8;
 };
 
 struct CIMWork {

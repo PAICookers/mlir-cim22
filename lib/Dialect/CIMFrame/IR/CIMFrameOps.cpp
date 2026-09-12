@@ -48,6 +48,12 @@ LogicalResult verifyInputWords(Operation *op, ArrayRef<int64_t> words) {
   return success();
 }
 
+LogicalResult verifyExponentWords(Operation *op, ArrayRef<int64_t> words) {
+  if (words.size() != 2)
+    return op->emitOpError("expects exactly two Weight_EXP i64 values");
+  return success();
+}
+
 LogicalResult verifyWords(Operation *op, DenseIntElementsAttr words) {
   if (!words.getElementType().isSignlessInteger(32) ||
       words.getNumElements() != 256)
@@ -100,7 +106,24 @@ LogicalResult WriteInt8WeightsOp::verify() {
   return verifyWords(getOperation(), getWords());
 }
 
+LogicalResult WriteBF16WeightsOp::verify() {
+  if (failed(verifyRoutedOperation(
+          getOperation(), getRoute(),
+          {"route", "macro", "words", "exponent_words"})) ||
+      failed(verifyMacro(getOperation(), getMacro())) ||
+      failed(verifyWords(getOperation(), getWords())))
+    return failure();
+  return verifyExponentWords(getOperation(), getExponentWords());
+}
+
 LogicalResult ControlInt8PacketOp::verify() {
+  if (failed(verifyRoutedOperation(getOperation(), getRoute(),
+                                   {"route", "macro"})))
+    return failure();
+  return verifyMacro(getOperation(), getMacro());
+}
+
+LogicalResult ControlBF16PacketOp::verify() {
   if (failed(verifyRoutedOperation(getOperation(), getRoute(),
                                    {"route", "macro"})))
     return failure();
@@ -118,7 +141,31 @@ LogicalResult CIMInt8WeightPacketOp::verify() {
   return verifyWords(getOperation(), getWords());
 }
 
+LogicalResult WeightExponentPacketOp::verify() {
+  if (failed(verifyRoutedOperation(getOperation(), getRoute(),
+                                   {"route", "exponent_words"})))
+    return failure();
+  return verifyExponentWords(getOperation(), getExponentWords());
+}
+
+LogicalResult CIMBF16WeightPacketOp::verify() {
+  if (failed(verifyRoutedOperation(getOperation(), getRoute(),
+                                   {"route", "words"})))
+    return failure();
+  return verifyWords(getOperation(), getWords());
+}
+
 LogicalResult WriteInputCacheInt8PacketOp::verify() {
+  if (failed(verifyRoutedOperation(getOperation(), getRoute(),
+                                   {"route", "macro", "cache_row", "words"})))
+    return failure();
+  if (failed(verifyMacro(getOperation(), getMacro())) ||
+      failed(verifyCacheRow(getOperation(), getCacheRow())))
+    return failure();
+  return verifyInputWords(getOperation(), getWords());
+}
+
+LogicalResult WriteInputCacheBF16PacketOp::verify() {
   if (failed(verifyRoutedOperation(getOperation(), getRoute(),
                                    {"route", "macro", "cache_row", "words"})))
     return failure();
@@ -142,16 +189,26 @@ LogicalResult ReadOutputCacheInt8PacketOp::verify() {
   return verifyCacheAddress(getOperation(), getCacheAddress());
 }
 
+LogicalResult ReadOutputCacheBF16PacketOp::verify() {
+  if (failed(verifyRoutedOperation(getOperation(), getRoute(),
+                                   {"route", "cache_address"})))
+    return failure();
+  return verifyCacheAddress(getOperation(), getCacheAddress());
+}
+
 LogicalResult mlir::cimframe::verifyCIMFrameModule(ModuleOp module) {
   Block::OpListType &operations = module.getBody()->getOperations();
   Operation *firstCommand = nullptr;
   Operation *firstPacket = nullptr;
   for (Operation &op : operations) {
-    if (isa<StartInt8OnceOp, WriteInt8WeightsOp>(op))
+    if (isa<StartInt8OnceOp, WriteInt8WeightsOp, WriteBF16WeightsOp>(op))
       firstCommand = firstCommand ? firstCommand : &op;
-    if (isa<ControlInt8PacketOp, WorkOncePacketOp, CIMInt8WeightPacketOp,
-            WriteInputCacheInt8PacketOp, ConfigureTestReturnRoutePacketOp,
-            ReadOutputCacheInt8PacketOp>(op))
+    if (isa<ControlInt8PacketOp, ControlBF16PacketOp, WorkOncePacketOp,
+            CIMInt8WeightPacketOp, WeightExponentPacketOp,
+            CIMBF16WeightPacketOp, WriteInputCacheInt8PacketOp,
+            WriteInputCacheBF16PacketOp,
+            ConfigureTestReturnRoutePacketOp, ReadOutputCacheInt8PacketOp,
+            ReadOutputCacheBF16PacketOp>(op))
       firstPacket = firstPacket ? firstPacket : &op;
   }
 
@@ -201,10 +258,67 @@ LogicalResult mlir::cimframe::verifyCIMFrameModule(ModuleOp module) {
       }
       continue;
     }
+    if (auto control = dyn_cast<ControlBF16PacketOp>(op)) {
+      Operation *next = op.getNextNode();
+      if (auto work = dyn_cast_or_null<WorkOncePacketOp>(next)) {
+        if (control.getRoute() != work.getRoute()) {
+          work.emitOpError("expects control/work routes to match");
+          invalid = true;
+        }
+      } else if (auto exponent =
+                     dyn_cast_or_null<WeightExponentPacketOp>(next)) {
+        if (control.getRoute() != exponent.getRoute()) {
+          exponent.emitOpError("expects control/Weight_EXP routes to match");
+          invalid = true;
+        }
+      } else if (auto input =
+                     dyn_cast_or_null<WriteInputCacheBF16PacketOp>(next)) {
+        if (control.getRoute() != input.getRoute() ||
+            control.getMacro() != input.getMacro()) {
+          input.emitOpError("expects control/input route and Macro to match");
+          invalid = true;
+        }
+      } else if (auto read =
+                     dyn_cast_or_null<ReadOutputCacheBF16PacketOp>(next)) {
+        auto previous = dyn_cast_or_null<ConfigureTestReturnRoutePacketOp>(
+            op.getPrevNode());
+        if (!previous || previous.getRoute() != control.getRoute() ||
+            read.getRoute() != control.getRoute()) {
+          control.emitOpError("expects test return route, control and output "
+                              "read routes to match");
+          invalid = true;
+        }
+      } else {
+        control.emitOpError("expects a matching BF16 work, weight, input, or "
+                            "readback packet sequence");
+        invalid = true;
+      }
+      continue;
+    }
     if (auto work = dyn_cast<WorkOncePacketOp>(op)) {
-      if (!isa_and_nonnull<ControlInt8PacketOp>(op.getPrevNode())) {
-        work.emitOpError("expects work_once_packet immediately preceded by "
-                         "control_int8_packet");
+      if (!isa_and_nonnull<ControlInt8PacketOp, ControlBF16PacketOp>(
+              op.getPrevNode())) {
+        work.emitOpError("expects work_once_packet immediately preceded by a "
+                         "typed control packet");
+        invalid = true;
+      }
+      continue;
+    }
+    if (auto exponent = dyn_cast<WeightExponentPacketOp>(op)) {
+      auto control = dyn_cast_or_null<ControlBF16PacketOp>(op.getPrevNode());
+      auto weight = dyn_cast_or_null<CIMBF16WeightPacketOp>(op.getNextNode());
+      if (!control || !weight || control.getRoute() != exponent.getRoute() ||
+          weight.getRoute() != exponent.getRoute()) {
+        exponent.emitOpError("expects control_bf16_packet before and "
+                             "cim_bf16_weight_packet after Weight_EXP");
+        invalid = true;
+      }
+      continue;
+    }
+    if (auto weight = dyn_cast<CIMBF16WeightPacketOp>(op)) {
+      if (!isa_and_nonnull<WeightExponentPacketOp>(op.getPrevNode())) {
+        weight.emitOpError("expects cim_bf16_weight_packet immediately "
+                           "preceded by weight_exponent_packet");
         invalid = true;
       }
       continue;
@@ -227,8 +341,16 @@ LogicalResult mlir::cimframe::verifyCIMFrameModule(ModuleOp module) {
       }
       continue;
     }
+    if (auto input = dyn_cast<WriteInputCacheBF16PacketOp>(op)) {
+      if (!isa_and_nonnull<ControlBF16PacketOp>(op.getPrevNode())) {
+        input.emitOpError("expects write_input_cache_bf16_packet immediately "
+                          "preceded by control_bf16_packet");
+        invalid = true;
+      }
+      continue;
+    }
     if (auto route = dyn_cast<ConfigureTestReturnRoutePacketOp>(op)) {
-      if (!isa_and_nonnull<ControlInt8PacketOp>(
+      if (!isa_and_nonnull<ControlInt8PacketOp, ControlBF16PacketOp>(
               route.getOperation()->getNextNode())) {
         route.emitOpError("expects configure_test_return_route_packet "
                           "immediately followed by "
@@ -246,6 +368,19 @@ LogicalResult mlir::cimframe::verifyCIMFrameModule(ModuleOp module) {
         read.emitOpError("expects read_output_cache_int8_packet after "
                          "configure_test_return_route_packet "
                          "and control_int8_packet");
+        invalid = true;
+      }
+      continue;
+    }
+    if (auto read = dyn_cast<ReadOutputCacheBF16PacketOp>(op)) {
+      auto control = dyn_cast_or_null<ControlBF16PacketOp>(op.getPrevNode());
+      auto route = control ? dyn_cast_or_null<ConfigureTestReturnRoutePacketOp>(
+                                 control->getPrevNode())
+                           : nullptr;
+      if (!control || !route) {
+        read.emitOpError("expects read_output_cache_bf16_packet after "
+                         "configure_test_return_route_packet and "
+                         "control_bf16_packet");
         invalid = true;
       }
     }

@@ -234,6 +234,13 @@ uint64_t cimReadFrame(const Route &route) {
 FailureOr<TransactionArtifact> buildArtifacts(ModuleOp module,
                                               const CIMTransaction &transaction,
                                               StringRef inputCacheFile) {
+  // Executable compilation also accepts the supplier BF16 software model;
+  // this exporter still encodes only INT8 control, payloads and expected data.
+  if (llvm::any_of(transaction.getStaticWeights(), [](const auto &weight) {
+        return weight.dataType != ::cim22::execution::CIMDataType::Int8;
+      }))
+    return module.emitError(
+        "RTL artifact export does not support BF16 transactions");
   if (inputCacheFile.empty())
     return module.emitError(
         "INT8 RTL artifact export requires input-cache-file");

@@ -26,6 +26,7 @@
 #include <array>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 
 using namespace mlir;
 using namespace mlir::cimframe;
@@ -97,6 +98,44 @@ static bool addPacketStage(ModuleOp module) {
           RankedTensorType::get({256}, builder.getI32Type()), words));
   weight->setAttr("cim.plan_binding", builder.getDictionaryAttr(planBinding));
   return control && weight;
+}
+
+static bool addBF16PacketStage(ModuleOp module) {
+  OpBuilder builder(module.getContext());
+  builder.setInsertionPointToStart(module.getBody());
+  const std::array<int32_t, 6> route{};
+  auto routeAttr = builder.getDenseI32ArrayAttr(route);
+  auto control = ControlBF16PacketOp::create(
+      builder, builder.getUnknownLoc(), routeAttr,
+      builder.getI32IntegerAttr(0));
+
+  SmallVector<NamedAttribute> planBinding;
+  planBinding.push_back(builder.getNamedAttr(
+      "function", FlatSymbolRefAttr::get(builder.getContext(), "invoke")));
+  planBinding.push_back(builder.getNamedAttr(
+      "resource", FlatSymbolRefAttr::get(builder.getContext(), "weight")));
+  for (StringRef name : {"group_id", "work_id", "core_idx", "macro_idx"})
+    planBinding.push_back(
+        builder.getNamedAttr(name, builder.getI64IntegerAttr(0)));
+  auto mapping = builder.getDictionaryAttr({builder.getNamedAttr(
+      "route", builder.getDenseI64ArrayAttr({0, 0, 0, 0, 0, 0}))});
+  planBinding.push_back(builder.getNamedAttr("mapping", mapping));
+  DictionaryAttr binding = builder.getDictionaryAttr(planBinding);
+
+  constexpr std::array<int64_t, 2> exponents{
+      INT64_C(0x0706050403020100), INT64_C(0x0f0e0d0c0b0a0908)};
+  auto exponent = WeightExponentPacketOp::create(
+      builder, builder.getUnknownLoc(), routeAttr,
+      builder.getDenseI64ArrayAttr(exponents));
+  SmallVector<int32_t, 256> words(256, 0);
+  auto weight = CIMBF16WeightPacketOp::create(
+      builder, builder.getUnknownLoc(), routeAttr,
+      DenseIntElementsAttr::get(
+          RankedTensorType::get({256}, builder.getI32Type()), words));
+  for (Operation *op :
+       {control.getOperation(), exponent.getOperation(), weight.getOperation()})
+    op->setAttr("cim.plan_binding", binding);
+  return control && exponent && weight;
 }
 
 static bool testConstruction(MLIRContext &context) {
@@ -193,12 +232,62 @@ static bool testRejectsMissingReadbackBinding(MLIRContext &context) {
                "missing output Cache binding is rejected");
 }
 
+static bool testBF16Construction(MLIRContext &context) {
+  auto module = parseSourceString<ModuleOp>(R"mlir(
+module {
+  cim.static_weight @weight = dense<0.0> : tensor<16x64xbf16>
+  func.func @invoke(%input: tensor<64xbf16>) attributes {
+      cim.execution_plan_schema_version = 1 : i64,
+      cim.placement_policy = "core-major-dual-macro-v1",
+      cim.route_policy = "lower-left-maximal-xy-v1",
+      cim.target_profile = "cim22-4x5-v1",
+      cim.target_profile_version = 1 : i64} {
+    %transaction = "cim.transaction"(%input) ({
+    ^bb0(%transaction_input: tensor<64xbf16>):
+      cim.configure_input %transaction_input {cim.mapping = {route = array<i64: 0, 0, 0, 0, 0, 0>}, core_idx = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_idx = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64} : tensor<64xbf16>
+      cim.configure_weight @weight {cim.mapping = {route = array<i64: 0, 0, 0, 0, 0, 0>}, core_idx = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_idx = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64}
+      cim.dispatch {cim.mapping = {route = array<i64: 0, 0, 0, 0, 0, 0>}, core_idx = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_idx = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64}
+      cim.once {cim.mapping = {route = array<i64: 0, 0, 0, 0, 0, 0>}, core_idx = 0 : i64, group_id = 0 : i64}
+      %read = cim.readback {cim.mapping = {route = array<i64: 0, 0, 0, 0, 0, 0>}, core_idx = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_idx = 0 : i64, n_tile = 0 : i64, output_cache_address = 7 : i64, test_core_xy = 0 : i64, test_core_x = 0 : i64, test_core_y = 0 : i64, work_id = 0 : i64} : tensor<16xbf16>
+      cim.group_barrier {group_id = 0 : i64}
+      "cim.yield"(%read) : (tensor<16xbf16>) -> ()
+    }) {cim.transaction_idx = 0 : i64} : (tensor<64xbf16>) -> tensor<16xbf16>
+    return
+  }
+}
+)mlir", &context);
+  if (!check(static_cast<bool>(module), "BF16 plan fixture parses"))
+    return false;
+  if (!check(addBF16PacketStage(*module),
+             "BF16 packet stage is materialized"))
+    return false;
+  auto executable = compileCIMTransaction(*module);
+  if (!check(succeeded(executable), "BF16 executable construction succeeds"))
+    return false;
+  const auto &value = *executable;
+  const auto &weight = value.getStaticWeights().front();
+  return check(weight.dataType == ::cim22::execution::CIMDataType::BF16,
+               "BF16 weight mode is preserved") &&
+         check(weight.exponents.front() == 0 && weight.exponents.back() == 15,
+               "Weight_EXP lanes are unpacked little-endian") &&
+         check(value.getDynamicInputs().front().dataType ==
+                   ::cim22::execution::CIMDataType::BF16 &&
+                   value.getReadbacks().front().dataType ==
+                       ::cim22::execution::CIMDataType::BF16,
+               "BF16 dynamic bindings preserve their mode") &&
+         check(value.getPackets().size() == 8,
+               "BF16 semantic packets include Weight_EXP") &&
+         check(value.getFlits().size() == 261,
+               "BF16 static packet flits include Weight_EXP body");
+}
+
 int main() {
   MLIRContext context;
   context.loadDialect<cim::CIMDialect, CIMFrameDialect, arith::ArithDialect,
                       func::FuncDialect, tensor::TensorDialect>();
   return testConstruction(context) && testRejectsMultipleTransactions(context) &&
-                 testRejectsMissingReadbackBinding(context)
+                 testRejectsMissingReadbackBinding(context) &&
+                 testBF16Construction(context)
              ? 0
              : 1;
 }

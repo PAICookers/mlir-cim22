@@ -1,0 +1,4 @@
+// RUN: %python %S/bf16_fixture_replay.py %S/../../Inputs/CIM22 mlir-cim22-cim-software-runner-test | FileCheck %s
+
+// CHECK: PASS supplier-fixture-match BF16 rows=32 inputs=2048 outputs=512
+// CHECK: PASS BF16 stage mutations=7

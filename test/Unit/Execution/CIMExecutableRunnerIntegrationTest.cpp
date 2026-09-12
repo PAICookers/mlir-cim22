@@ -21,6 +21,7 @@
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <vector>
 
@@ -57,13 +58,54 @@ size_t inputIndex(const CIMTransaction &executable,
   assert(false && "missing dynamic input binding");
   return 0;
 }
+
+bool runBF16(const CIMTransaction &executable) {
+  if (executable.getGroups().size() != 1 ||
+      executable.getStaticWeights().size() != 2 ||
+      executable.getDynamicInputs().size() != 2 ||
+      executable.getReadbacks().size() != 2)
+    return false;
+
+  // Independent fixed inputs: supplier prealignment gives [64, -96] and
+  // [32, -64]. The MLIR fixture supplies distinct weights for both Macros.
+  std::array<std::array<uint16_t, kCIMInputElements>, 2> inputStorage{};
+  inputStorage[0][0] = 0x3f80;
+  inputStorage[0][1] = 0xbf00;
+  inputStorage[1][0] = 0x3f00;
+  inputStorage[1][1] = 0xbf80;
+  std::array<std::array<uint16_t, kCIMOutputElements>, 2> outputStorage{};
+  std::array<CIMInputView, 2> inputViews{};
+  std::array<CIMOutputView, 2> outputViews{};
+  for (size_t index = 0; index < 2; ++index) {
+    inputViews[index].bf16Values = inputStorage[index];
+    outputViews[index].bf16Values = outputStorage[index];
+  }
+  CIMRunInputs inputs{inputViews};
+  CIMRunOutputs outputs{outputViews};
+  CIMSoftwareRunner runner;
+  for (int run = 0; run < 2; ++run) {
+    if (llvm::Error error = runner.run(executable, inputs, outputs)) {
+      llvm::logAllUnhandledErrors(std::move(error), llvm::errs(), "FAIL: ");
+      return false;
+    }
+    for (size_t macro = 0; macro < 2; ++macro) {
+      std::cout << "BF16 run=" << run << " macro=" << macro << std::hex
+                << std::setfill('0');
+      for (uint16_t value : outputStorage[macro])
+        std::cout << ' ' << std::setw(4) << value;
+      std::cout << std::dec << '\n';
+    }
+  }
+  return true;
+}
 } // namespace
 
 int main(int argc, char **argv) {
   const bool batch2 = argc == 3 && std::string(argv[2]) == "batch2";
-  if (argc != 2 && !batch2) {
+  const bool bf16 = argc == 3 && std::string(argv[2]) == "bf16";
+  if (argc != 2 && !batch2 && !bf16) {
     std::cerr << "usage: mlir-cim22-cim-executable-runner-test <plan.mlir> "
-                 "[batch2]\n";
+                 "[batch2|bf16]\n";
     return 1;
   }
 
@@ -90,6 +132,8 @@ int main(int argc, char **argv) {
     return 1;
   }
   const CIMTransaction &value = *executable;
+  if (bf16)
+    return runBF16(value) ? 0 : 1;
   const size_t expectedGroups = batch2 ? 4 : 20;
   const size_t expectedWorks = batch2 ? 8 : 40;
   if (value.getGroups().size() != expectedGroups ||

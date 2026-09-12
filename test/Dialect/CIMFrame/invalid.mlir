@@ -109,7 +109,7 @@ module {
 
 module {
   // CF-N06: orphan work packet.
-  // expected-error@+1 {{expects work_once_packet immediately preceded by control_int8_packet}}
+  // expected-error@+1 {{expects work_once_packet immediately preceded by a typed control packet}}
   cimframe.work_once_packet {route = array<i32: 0, 0, 0, 0, 0, 0>}
 }
 
@@ -117,7 +117,7 @@ module {
 
 module {
   // CF-N06: reversed pair.
-  // expected-error@+1 {{expects work_once_packet immediately preceded by control_int8_packet}}
+  // expected-error@+1 {{expects work_once_packet immediately preceded by a typed control packet}}
   cimframe.work_once_packet {route = array<i32: 0, 0, 0, 0, 0, 0>}
   // expected-error@+1 {{expects control_int8_packet immediately followed by work_once_packet or cim_int8_weight_packet}}
   cimframe.control_int8_packet {route = array<i32: 0, 0, 0, 0, 0, 0>, macro = 0 : i32}
@@ -130,7 +130,7 @@ module {
   // expected-error@+1 {{expects control_int8_packet immediately followed by work_once_packet or cim_int8_weight_packet}}
   cimframe.control_int8_packet {route = array<i32: 0, 0, 0, 0, 0, 0>, macro = 0 : i32}
   func.func private @separator()
-  // expected-error@+1 {{expects work_once_packet immediately preceded by control_int8_packet}}
+  // expected-error@+1 {{expects work_once_packet immediately preceded by a typed control packet}}
   cimframe.work_once_packet {route = array<i32: 0, 0, 0, 0, 0, 0>}
 }
 

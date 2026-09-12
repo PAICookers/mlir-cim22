@@ -18,6 +18,17 @@ module {
 
 #mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}
 module {
+  cim.static_weight @weight = dense<0.0> : tensor<16x64xbf16>
+  func.func @bf16_weight() attributes {cim.execution_plan_schema_version = 1 : i64, cim.placement_policy = "core-major-dual-macro-v1", cim.route_policy = "lower-left-maximal-xy-v1", cim.target_profile = "cim22-4x5-v1", cim.target_profile_version = 1 : i64} {
+    cim.configure_weight @weight {cim.transaction_idx = 0 : i64, cim.mapping = #mapping, core_idx = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_idx = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64}
+    return
+  }
+}
+
+// -----
+
+#mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}
+module {
   cim.static_weight @weight = dense<0> : tensor<16x64xi8>
   // expected-error@+1 {{materialize-cim-static-weight-section requires cim.execution_plan_schema_version = 1 : i64}}
   func.func @missing_schema() attributes {cim.placement_policy = "core-major-dual-macro-v1", cim.route_policy = "lower-left-maximal-xy-v1", cim.target_profile = "cim22-4x5-v1", cim.target_profile_version = 1 : i64} {

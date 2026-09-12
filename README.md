@@ -6,6 +6,7 @@ implementation is software-only and is not a hardware deployment tool.
 ## Current scope
 
 - `cim.vmm` logical lowering
+- Explicit BF16 VMM compilation and supplier-model execution (software-only)
 - Quantized ONNX `MatMulInteger` import
 - Provisional typed CIM frame planning
 - INT8 weight-layout helper
@@ -56,8 +57,15 @@ uv lock --check
 
 ## Not implemented
 
-There is no general ONNX operator coverage, raw flit codec, board runtime, or
-deployable artifact flow yet.
+There is no general ONNX operator coverage, board runtime, or deployable
+BF16 artifact flow yet. The BF16 software-only path starts at an explicit
+`cim.vmm` and covers exponent prealignment, per-lane Weight_EXP, Cache/frame
+packing, executable compilation, and the software runner. Ordinary BF16
+`linalg.matvec` and `linalg.matmul` remain on the Host: the supplier model is
+not equivalent to standard BF16 arithmetic, including zero and unit inputs.
+Its raw-weight exponent interpretation remains provisional (CTQ-028/037).
+RTL artifact export rejects BF16 transactions; software tests are not board
+verification.
 
 ## License
 
