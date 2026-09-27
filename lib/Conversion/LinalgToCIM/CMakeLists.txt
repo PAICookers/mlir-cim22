@@ -1,5 +1,6 @@
 add_mlir_library(MLIRCIM22LinalgToCIM
   CIMSegments.cpp
+  BindParameters.cpp
   Passes.cpp
   ExecutionPlanVerifier.cpp
 
@@ -20,6 +21,8 @@ add_mlir_library(MLIRCIM22LinalgToCIM
   MLIRLinalgTransforms
   MLIRMemRefDialect
   MLIRPass
+  MLIRParser
+  MLIRSCFDialect
   MLIRTensorDialect
   MLIRTransforms
 )

@@ -1,0 +1,19 @@
+// RUN: %python %S/../../python/CIM22/bf16_reference_case.py input > %t.input
+// RUN: mlir-cim22-opt %S/bf16-runner.mlir --pass-pipeline='builtin.module(func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section,lower-cimframe-commands-to-packets,verify-cimframe)' -o %t.packet
+// RUN: rm -rf %t.artifacts %t.inf.artifacts %t.overflow.artifacts
+// RUN: mlir-cim22-opt %t.packet --export-cim-rtl-artifacts='bf16-reference=true output-dir=%t.artifacts input-cache-file=%t.input' -o /dev/null
+// RUN: %python %S/../../python/CIM22/verify_rtl_artifacts.py %t.artifacts --cores 1 --bf16
+// RUN: %python %S/../../python/CIM22/bf16_reference_case.py verify %t.artifacts
+// RUN: test $(wc -l < %t.artifacts/01_config.frames.txt) -eq 795
+// RUN: test $(wc -l < %t.artifacts/02_work.frames.txt) -eq 2
+// RUN: test $(wc -l < %t.artifacts/03_readback.frames.txt) -eq 20
+// RUN: %python %S/../../python/CIM22/bf16_reference_case.py input inf > %t.inf.input
+// RUN: not mlir-cim22-opt %t.packet --export-cim-rtl-artifacts='bf16-reference=true output-dir=%t.inf.artifacts input-cache-file=%t.inf.input' -o /dev/null 2>&1 | FileCheck %s --check-prefix=INF
+// RUN: test ! -e %t.inf.artifacts
+// RUN: sed 's/dense<1.0>/dense<0xBFFF>/' %S/bf16-rtl-export-invalid.mlir | mlir-cim22-opt --pass-pipeline='builtin.module(func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section,lower-cimframe-commands-to-packets,verify-cimframe)' -o %t.overflow.packet
+// RUN: %python %S/../../python/CIM22/bf16_reference_case.py input overflow > %t.overflow.input
+// RUN: not mlir-cim22-opt %t.overflow.packet --export-cim-rtl-artifacts='bf16-reference=true output-dir=%t.overflow.artifacts input-cache-file=%t.overflow.input' -o /dev/null 2>&1 | FileCheck %s --check-prefix=OVERFLOW
+// RUN: test ! -e %t.overflow.artifacts
+
+// INF: BF16 reference input does not support NaN/Inf
+// OVERFLOW: RTL reference output exceeds signed 21 bits

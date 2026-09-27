@@ -17,6 +17,7 @@ config.substitutions = [
     if substitution[0] != "%python"
 ]
 config.substitutions.append(("%python", f'"{config.python_executable}"'))
+config.substitutions.append(("%mlir_c_runner_utils", f'"{config.mlir_c_runner_utils}"'))
 
 tool_dirs = [
     os.path.join(config.mlir_cim22_obj_root, "bin"),
@@ -25,6 +26,7 @@ tool_dirs = [
 llvm_config.add_tool_substitutions(
     [
         "FileCheck",
+        "mlir-runner",
         "mlir-cim22-bf16-support-test",
         "mlir-cim22-cimframe-codec-test",
         "mlir-cim22-cim-executable-test",

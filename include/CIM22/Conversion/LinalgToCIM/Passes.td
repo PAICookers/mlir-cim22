@@ -11,10 +11,58 @@
 
 include "mlir/Pass/PassBase.td"
 
+def BindCIMParameters : Pass<"bind-cim-parameters", "::mlir::ModuleOp"> {
+  let summary = "Specialize entry arguments using an explicit typed constant manifest";
+  let options = [Option<"parameterFile", "file", "std::string", "\"\"",
+                        "MLIR module containing cim.parameters function/arg dictionaries">];
+  let dependentDialects = ["::mlir::arith::ArithDialect",
+                           "::mlir::func::FuncDialect"];
+}
+
 def NormalizeCIMConv : Pass<"normalize-cim-conv", "::mlir::ModuleOp"> {
-  let summary = "Normalize marked batch-one ConvInteger for CIM lowering";
+  let summary = "Normalize marked INT8 Conv and static BF16 2D convolution families";
+  let description = [{
+    BF16 ordinary, grouped and depthwise 2D named convolutions are normalized
+    to independent weight-first MatMuls per group. Static batch/spatial axes
+    become matrix columns; positive strides and dilations are preserved.
+    Weights must be constant and the accumulator must start at positive zero.
+    The explicit allow-bias-epilogue opt-in additionally moves FP32 NCHW
+    channel-broadcast initializers to a Host epilogue for BF16 preparation.
+    Padding remains an explicit tensor.pad on the Host. The marked INT8
+    ConvInteger profile retains its batch-one, unit-dilation restrictions.
+  }];
+  let options = [Option<"allowF32", "allow-f32", "bool", "false",
+                        "Also normalize FP32 geometry without changing precision">,
+                 Option<"allowBiasEpilogue", "allow-bias-epilogue", "bool", "false",
+                        "Opt into FP32 broadcast-init reassociation for BF16 offload">];
   let dependentDialects = ["::mlir::arith::ArithDialect",
                            "::mlir::linalg::LinalgDialect",
+                           "::mlir::tensor::TensorDialect"];
+}
+
+def NormalizeCIMLinear : Pass<"normalize-cim-linear", "::mlir::ModuleOp"> {
+  let summary = "Normalize BF16 activation-first Linear matmul for CIM lowering";
+  let options = [Option<"allowF32", "allow-f32", "bool", "false",
+                        "Also normalize FP32 Linear without changing precision">];
+  let dependentDialects = ["::mlir::arith::ArithDialect",
+                           "::mlir::linalg::LinalgDialect",
+                           "::mlir::tensor::TensorDialect"];
+}
+
+def PrepareCIMBF16 : Pass<"prepare-cim-bf16", "::mlir::ModuleOp"> {
+  let summary = "Convert eligible constant-weight FP32 contractions to BF16 with Host casts";
+  let dependentDialects = ["::mlir::arith::ArithDialect",
+                           "::mlir::linalg::LinalgDialect"];
+}
+
+def OutlineCIMBF16 : Pass<"outline-cim-bf16", "::mlir::ModuleOp"> {
+  let summary = "Split constant-weight BF16 kernels and Host code using standard Func calls";
+  let options = [Option<"maxKernelColumns", "max-kernel-columns", "int64_t", "32",
+                        "Stream larger matrices through one-column kernels on Host">];
+  let dependentDialects = ["::mlir::arith::ArithDialect",
+                           "::mlir::func::FuncDialect",
+                           "::mlir::linalg::LinalgDialect",
+                           "::mlir::scf::SCFDialect",
                            "::mlir::tensor::TensorDialect"];
 }
 

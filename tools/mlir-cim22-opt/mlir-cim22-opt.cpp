@@ -21,18 +21,23 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
+void registerCIM22Pipelines();
+
 int main(int argc, char **argv) {
   mlir::cim::registerPasses();
   mlir::cimframe::registerPasses();
   mlir::cim22::target::registerPasses();
   mlir::registerAllPasses();
+  registerCIM22Pipelines();
 
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect,
@@ -40,12 +45,14 @@ int main(int argc, char **argv) {
                   mlir::cf::ControlFlowDialect, mlir::cim::CIMDialect,
                   mlir::cimframe::CIMFrameDialect, mlir::func::FuncDialect,
                   mlir::linalg::LinalgDialect, mlir::LLVM::LLVMDialect,
-                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect,
+                  mlir::memref::MemRefDialect, mlir::math::MathDialect,
+                  mlir::scf::SCFDialect,
                   mlir::tensor::TensorDialect>();
   mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
       registry);
   mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, "mlir-cim22 optimizer driver\n", registry));

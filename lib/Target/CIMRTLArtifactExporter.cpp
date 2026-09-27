@@ -1,8 +1,9 @@
-//===- CIMRTLArtifactExporter.cpp - INT8 RTL artifacts --------*- C++ -*-===//
+//===- CIMRTLArtifactExporter.cpp - RTL reference artifacts ---*- C++ -*-===//
 
 #include "CIM22/Target/Passes.h"
 
 #include "CIM22/Execution/CIMExecutable.h"
+#include "CIM22/Support/BF16Support.h"
 #include "CIM22/Target/CIMExecutable.h"
 #include "CIM22/Target/CIMFrameCodec.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -28,6 +29,7 @@ namespace mlir::cim22::target {
 #include "CIM22/Target/Passes.h.inc"
 
 namespace {
+using ::cim22::execution::CIMDataType;
 using ::cim22::execution::CIMTransaction;
 using ::cim22::execution::CIMWork;
 using ::cim22::execution::ReadbackBinding;
@@ -41,7 +43,8 @@ constexpr int64_t kOutputLanes = 16;
 constexpr int64_t kInt21Min = -(int64_t{1} << 20);
 constexpr int64_t kInt21Max = (int64_t{1} << 20) - 1;
 
-using InputRow = std::array<int8_t, kInputElements>;
+// Preserve the raw 16-bit TB slots; INT8 occupies each slot's low byte.
+using InputRow = std::array<uint16_t, kInputElements>;
 using InputRows = std::array<InputRow, kCacheRows>;
 using OutputRow = std::array<int64_t, kOutputLanes>;
 using OutputRows = std::array<OutputRow, kCacheRows>;
@@ -85,10 +88,12 @@ struct WorkArtifact {
 };
 
 struct TransactionArtifact {
+  bool bf16 = false;
   InputRows inputs{};
   std::vector<WorkArtifact> works;
   const WorkArtifact *macro[2] = {nullptr, nullptr};
   std::array<OutputRows, 2> expected{};
+  std::array<OutputRows, 2> intermediate{};
   llvm::SmallVector<uint64_t> configFlits;
   llvm::SmallVector<uint64_t> workFlits;
   llvm::SmallVector<uint64_t> readbackFlits;
@@ -121,7 +126,8 @@ const ReadbackBinding *findReadback(const CIMTransaction &transaction,
   return it == transaction.getReadbacks().end() ? nullptr : &*it;
 }
 
-FailureOr<InputRows> readInputCache(ModuleOp module, StringRef filePath) {
+FailureOr<InputRows> readInputCache(ModuleOp module, StringRef filePath,
+                                    bool bf16) {
   auto buffer = llvm::MemoryBuffer::getFile(filePath);
   if (!buffer)
     return module.emitError("cannot read input cache file '")
@@ -150,13 +156,16 @@ FailureOr<InputRows> readInputCache(ModuleOp module, StringRef filePath) {
       return module.emitError("input cache row must contain exactly 1024 bits");
     for (int64_t element = 0; element < kInputElements; ++element) {
       StringRef slot = bits.substr(element * 16, 16);
-      if (slot.substr(0, 8) != "00000000")
+      if (!bf16 && slot.substr(0, 8) != "00000000")
         return module.emitError(
             "input cache uses the TB 8-bit value in the low byte of each slot");
       uint64_t value = 0;
-      if (slot.substr(8).getAsInteger(2, value))
-        return module.emitError("invalid input cache byte");
-      inputs[address][element] = static_cast<int8_t>(value);
+      if (slot.getAsInteger(2, value))
+        return module.emitError("invalid input cache slot");
+      if (bf16 && (value & 0x7f80) == 0x7f80)
+        return module.emitError(
+            "BF16 reference input does not support NaN/Inf");
+      inputs[address][element] = static_cast<uint16_t>(value);
     }
     seen[address] = true;
   }
@@ -168,17 +177,24 @@ FailureOr<InputRows> readInputCache(ModuleOp module, StringRef filePath) {
 FailureOr<OutputRows> computeExpected(ModuleOp module, const InputRows &inputs,
                                       const StaticWeightSection &weight) {
   OutputRows outputs{};
-  for (int64_t row = 0; row < kCacheRows; ++row)
+  for (int64_t row = 0; row < kCacheRows; ++row) {
+    std::array<int8_t, kInputElements> mantissas{};
+    if (weight.dataType == CIMDataType::BF16)
+      mantissas = prealignBF16Vector(inputs[row]).mantissas;
+    else
+      llvm::transform(inputs[row], mantissas.begin(), [](uint16_t value) {
+        return static_cast<int8_t>(value);
+      });
     for (int64_t lane = 0; lane < kOutputLanes; ++lane) {
       int64_t sum = 0;
       for (int64_t k = 0; k < kInputElements; ++k)
-        sum += static_cast<int64_t>(inputs[row][k]) *
+        sum += static_cast<int64_t>(mantissas[k]) *
                static_cast<int64_t>(weight.values[lane * kInputElements + k]);
       if (sum < kInt21Min || sum > kInt21Max)
-        return module.emitError(
-            "INT8 RTL expected output exceeds signed 21 bits");
+        return module.emitError("RTL reference output exceeds signed 21 bits");
       outputs[row][lane] = sum;
     }
+  }
   return outputs;
 }
 
@@ -195,8 +211,8 @@ uint64_t encodeRoute(const Route &route) {
   return encoded;
 }
 
-uint64_t controlFrame(const Route &route, int64_t macro) {
-  return (uint64_t{0x8} << 60) | encodeRoute(route) |
+uint64_t controlFrame(const Route &route, int64_t macro, bool bf16) {
+  return (uint64_t{0x8} << 60) | encodeRoute(route) | (bf16 ? uint64_t{2} : 0) |
          static_cast<uint64_t>(macro);
 }
 
@@ -233,22 +249,32 @@ uint64_t cimReadFrame(const Route &route) {
 
 FailureOr<TransactionArtifact> buildArtifacts(ModuleOp module,
                                               const CIMTransaction &transaction,
-                                              StringRef inputCacheFile) {
-  // Executable compilation also accepts the supplier BF16 software model;
-  // this exporter still encodes only INT8 control, payloads and expected data.
-  if (llvm::any_of(transaction.getStaticWeights(), [](const auto &weight) {
-        return weight.dataType != ::cim22::execution::CIMDataType::Int8;
-      }))
+                                              StringRef inputCacheFile,
+                                              bool bf16Reference) {
+  // BF16 is an explicit comparison profile, not a claim of board validation.
+  const CIMDataType dataType =
+      bf16Reference ? CIMDataType::BF16 : CIMDataType::Int8;
+  if (llvm::any_of(transaction.getStaticWeights(),
+                   [](const auto &weight) {
+                     return weight.dataType == CIMDataType::BF16;
+                   }) &&
+      !bf16Reference)
     return module.emitError(
         "RTL artifact export does not support BF16 transactions");
-  if (inputCacheFile.empty())
+  if (llvm::any_of(transaction.getStaticWeights(), [&](const auto &weight) {
+        return weight.dataType != dataType;
+      }))
     return module.emitError(
-        "INT8 RTL artifact export requires input-cache-file");
-  FailureOr<InputRows> inputs = readInputCache(module, inputCacheFile);
+        "RTL reference mode must match all transaction weights");
+  if (inputCacheFile.empty())
+    return module.emitError("RTL artifact export requires input-cache-file");
+  FailureOr<InputRows> inputs =
+      readInputCache(module, inputCacheFile, bf16Reference);
   if (failed(inputs))
     return failure();
 
   TransactionArtifact result;
+  result.bf16 = bf16Reference;
   result.inputs = *inputs;
   result.works.reserve(transaction.getReadbacks().size());
   std::array<std::array<bool, 2>, kCoreCount> seen{};
@@ -269,8 +295,7 @@ FailureOr<TransactionArtifact> buildArtifacts(ModuleOp module,
         return module.emitError("RTL artifact export lacks binding for work ")
                << work.workId;
       if (weight->words.size() != 256)
-        return module.emitError(
-            "INT8 RTL artifact requires 256 CIM weight words");
+        return module.emitError("RTL artifact requires 256 CIM weight words");
       if (work.route[3] != 0 || work.route[4] != 0 || work.route[5] != 0)
         return module.emitError(
             "RTL artifact export requires onecast plan routes");
@@ -282,14 +307,15 @@ FailureOr<TransactionArtifact> buildArtifacts(ModuleOp module,
       WorkArtifact *current = &result.works.back();
       if (!result.macro[work.macroSlot])
         result.macro[work.macroSlot] = current;
-      else if (result.macro[work.macroSlot]->weight->words != weight->words)
+      else if (result.macro[work.macroSlot]->weight->words != weight->words ||
+               result.macro[work.macroSlot]->weight->exponents !=
+                   weight->exponents)
         return module.emitError("multicast source mode cannot represent "
                                 "different weights for one Macro");
     }
   }
   if (result.works.empty() || !result.macro[0] || !result.macro[1])
-    return module.emitError(
-        "INT8 RTL artifact export requires both active Macros");
+    return module.emitError("RTL artifact export requires both active Macros");
 
   for (int64_t macro = 0; macro < 2; ++macro) {
     FailureOr<OutputRows> expected =
@@ -297,6 +323,17 @@ FailureOr<TransactionArtifact> buildArtifacts(ModuleOp module,
     if (failed(expected))
       return failure();
     result.expected[macro] = *expected;
+    if (result.bf16) {
+      result.intermediate[macro] = *expected;
+      for (int64_t row = 0; row < kCacheRows; ++row) {
+        const uint8_t inputExponent =
+            prealignBF16Vector(result.inputs[row]).exponent;
+        for (int64_t lane = 0; lane < kOutputLanes; ++lane)
+          result.expected[macro][row][lane] = int21ToBF16(
+              static_cast<int32_t>((*expected)[row][lane]),
+              result.macro[macro]->weight->exponents[lane], inputExponent);
+      }
+    }
   }
 
   // The supplier TB configures the response route once per core, not once per
@@ -318,17 +355,19 @@ FailureOr<TransactionArtifact> buildArtifacts(ModuleOp module,
   for (int64_t macro = 0; macro < 2; ++macro) {
     const WorkArtifact &representative = *result.macro[macro];
     for (const Route &route : targetRoutes(macroCores[macro], coreRoutes)) {
-      result.configFlits.push_back(controlFrame(route, macro));
+      result.configFlits.push_back(controlFrame(route, macro, result.bf16));
+      if (result.bf16) {
+        result.configFlits.push_back((uint64_t{0x3} << 60) |
+                                     encodeRoute(route) | 2);
+        for (uint64_t word :
+             packBF16WeightExponents(representative.weight->exponents))
+          result.configFlits.push_back(word);
+      }
       for (int64_t row = 0; row < kCacheRows; ++row) {
         result.configFlits.push_back(inputHeadFrame(route, row));
-        for (int64_t word = 0; word < 16; ++word) {
-          uint64_t packed = 0;
-          for (int64_t slot = 0; slot < 4; ++slot)
-            packed =
-                (packed << 16) | static_cast<uint64_t>(static_cast<uint8_t>(
-                                     result.inputs[row][word * 4 + slot]));
-          result.configFlits.push_back(packed);
-        }
+        // Both TB profiles transmit four raw 16-bit slots per body flit.
+        for (uint64_t word : packBF16InputCacheRow(result.inputs[row]))
+          result.configFlits.push_back(word);
       }
       result.configFlits.push_back(weightHeadFrame(route));
       for (auto [address, word] : llvm::enumerate(representative.weight->words))
@@ -347,7 +386,7 @@ FailureOr<TransactionArtifact> buildArtifacts(ModuleOp module,
 
   for (int64_t macro = 0; macro < 2; ++macro) {
     for (const Route &route : targetRoutes(macroCores[macro], coreRoutes)) {
-      result.readbackFlits.push_back(controlFrame(route, macro));
+      result.readbackFlits.push_back(controlFrame(route, macro, result.bf16));
       for (int64_t address = 0; address < kCacheRows; ++address)
         result.readbackFlits.push_back(cacheReadFrame(route, address));
       result.readbackFlits.push_back(cimReadFrame(route));
@@ -393,9 +432,8 @@ LogicalResult writeInputs(ModuleOp module, StringRef filePath,
   return writeFile(module, filePath, [&](llvm::raw_ostream &stream) {
     for (auto [address, row] : llvm::enumerate(inputs)) {
       stream << address << ',';
-      for (int8_t value : row)
-        stream << "00000000"
-               << std::bitset<8>(static_cast<uint8_t>(value)).to_string();
+      for (uint16_t value : row)
+        stream << std::bitset<16>(value).to_string();
       stream << '\n';
     }
   });
@@ -422,11 +460,11 @@ LogicalResult writeArtifacts(ModuleOp module, StringRef outputDir,
   std::error_code error =
       llvm::sys::fs::create_directories(joinPath(outputDir, {"sources"}));
   if (error)
-    return module.emitError("cannot create INT8 RTL artifact directories: ")
+    return module.emitError("cannot create RTL artifact directories: ")
            << error.message();
   error = llvm::sys::fs::create_directories(joinPath(outputDir, {"expected"}));
   if (error)
-    return module.emitError("cannot create INT8 RTL expected directory: ")
+    return module.emitError("cannot create RTL expected directory: ")
            << error.message();
 
   if (failed(writeFlits(module, joinPath(outputDir, {"01_config.frames.txt"}),
@@ -454,6 +492,24 @@ LogicalResult writeArtifacts(ModuleOp module, StringRef outputDir,
           module, joinPath(outputDir, {"expected", "output_2.txt"}),
           artifact.expected[1])))
     return failure();
+  if (artifact.bf16) {
+    for (int64_t macro = 0; macro < 2; ++macro) {
+      const std::string suffix = std::to_string(macro + 1);
+      if (failed(writeFile(
+              module,
+              joinPath(outputDir, {"sources", "cim" + suffix + "_w_exp.txt"}),
+              [&](llvm::raw_ostream &stream) {
+                for (uint8_t exponent :
+                     artifact.macro[macro]->weight->exponents)
+                  stream << std::bitset<8>(exponent).to_string() << '\n';
+              })) ||
+          failed(writeExpectedOutput(
+              module,
+              joinPath(outputDir, {"expected", "int21_" + suffix + ".txt"}),
+              artifact.intermediate[macro])))
+        return failure();
+    }
+  }
   return writeFile(
       module, joinPath(outputDir, {"README.md"}),
       [&](llvm::raw_ostream &stream) {
@@ -461,7 +517,8 @@ LogicalResult writeArtifacts(ModuleOp module, StringRef outputDir,
         for (const WorkArtifact &work : artifact.works)
           active[work.work->coreSlot] = true;
         stream
-            << "# INT8 RTL replay artifacts\n\n"
+            << (artifact.bf16 ? "# BF16 reference replay artifacts\n\n"
+                              : "# INT8 RTL replay artifacts\n\n")
             << "Active cores: " << llvm::count(active, true) << ".\n\n"
             << "Coordinates are (row,col). Ingress: (0,0), XY- port. "
                "Response destination: (-1,4), beyond (0,4)'s Y- port.\n\n"
@@ -488,6 +545,17 @@ LogicalResult writeArtifacts(ModuleOp module, StringRef outputDir,
                "idx.\n\n"
             << "Software-checked artifacts only. Frozen RTL replay and board "
                "execution are not established by export or compiler tests.\n";
+        if (artifact.bf16)
+          stream << "\nExplicit supplier BF16 model (CTQ-028/037), not IEEE "
+                    "BF16 matmul. Raw weight preprocessing and the final "
+                    "response layout still need hardware comparison. "
+                    "Weight_EXP uses lane 0 in bits [7:0] of the first word. "
+                    "Expected outputs put BF16 bits in each 21-bit token's "
+                    "low 16 bits, lane 15 first, with 48 low padding bits "
+                    "in the provisional 384-bit Cache row. "
+                    "int21_1/2.txt hold the intermediate sums. "
+                    "Exponent saturation retains the fraction; zero follows "
+                    "the exponent path.\n";
       });
 }
 
@@ -511,7 +579,7 @@ public:
     if (failed(transaction))
       return signalPassFailure();
     FailureOr<TransactionArtifact> artifact =
-        buildArtifacts(module, *transaction, inputCacheFile);
+        buildArtifacts(module, *transaction, inputCacheFile, bf16Reference);
     if (failed(artifact) ||
         failed(writeArtifacts(module, outputDir, *artifact)))
       signalPassFailure();
