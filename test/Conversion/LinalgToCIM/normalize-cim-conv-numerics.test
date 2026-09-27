@@ -1,0 +1,3 @@
+// RUN: %python %S/../../python/CIM22/verify_bf16_conv_normalization.py --opt mlir-cim22-opt --runner mlir-runner --runner-utils %mlir_c_runner_utils --work-dir %t | FileCheck %s
+
+// CHECK: PASS 12 convolution cases: original and normalized CPU results match

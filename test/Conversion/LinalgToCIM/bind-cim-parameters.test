@@ -1,0 +1,2 @@
+// RUN: %python %S/../../python/CIM22/verify_parameter_bindings.py --opt mlir-cim22-opt --work-dir %t | FileCheck %s
+// CHECK: PASS entry parameter types, specialization, callers and strict offload

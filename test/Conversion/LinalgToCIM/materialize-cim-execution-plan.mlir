@@ -13,9 +13,13 @@ module {
     %weight1 = arith.constant dense<2> : tensor<16x64xi8>
     %partial0 = cim.vmm %input0, %weight0 {cim.transaction_idx = 0 : i64, cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}, core_idx = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_idx = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
     %extended0 = arith.extsi %partial0 : tensor<16xi21> to tensor<16xi32>
+    // A Host consumer between the two VMMs also uses a late Host operand.
+    // Materialization must not move this consumer ahead of the bias constant.
+    %bias = arith.constant dense<3> : tensor<16xi32>
+    %biased0 = arith.addi %extended0, %bias : tensor<16xi32>
     %partial1 = cim.vmm %input1, %weight1 {cim.transaction_idx = 0 : i64, cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}, core_idx = 0 : i64, group_id = 0 : i64, k_tile = 1 : i64, m_tile = 0 : i64, macro_idx = 1 : i64, n_tile = 0 : i64, work_id = 1 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
     %extended1 = arith.extsi %partial1 : tensor<16xi21> to tensor<16xi32>
-    %sum = arith.addi %extended0, %extended1 : tensor<16xi32>
+    %sum = arith.addi %biased0, %extended1 : tensor<16xi32>
     return %sum : tensor<16xi32>
   }
 }
@@ -39,6 +43,8 @@ module {
 // CHECK-NEXT: cim.group_barrier {group_id = 0 : i64}
 // CHECK-NEXT: "cim.yield"(%[[READ0]], %[[READ1]])
 // CHECK: %[[EXT0:.*]] = arith.extsi %[[TX]]#0
+// CHECK-NEXT: %[[BIAS:.*]] = arith.constant dense<3> : tensor<16xi32>
+// CHECK-NEXT: %[[BIASED0:.*]] = arith.addi %[[EXT0]], %[[BIAS]]
 // CHECK: %[[EXT1:.*]] = arith.extsi %[[TX]]#1
-// CHECK: arith.addi %[[EXT0]], %[[EXT1]]
+// CHECK: arith.addi %[[BIASED0]], %[[EXT1]]
 // CHECK-NOT: cim.vmm

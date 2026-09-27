@@ -16,9 +16,12 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -35,6 +38,9 @@ namespace mlir::cim {
 #define GEN_PASS_DEF_MATERIALIZECIMEXECUTIONPLAN
 #define GEN_PASS_DEF_MATERIALIZECIMSCHEDULE
 #define GEN_PASS_DEF_NORMALIZECIMCONV
+#define GEN_PASS_DEF_NORMALIZECIMLINEAR
+#define GEN_PASS_DEF_PREPARECIMBF16
+#define GEN_PASS_DEF_OUTLINECIMBF16
 #define GEN_PASS_DEF_PARTITIONCIMPROGRAM
 #define GEN_PASS_DEF_VERIFYCIMEXECUTIONPLAN
 #include "CIM22/Conversion/LinalgToCIM/Passes.h.inc"
@@ -87,6 +93,51 @@ FailureOr<DenseElementsAttr> evaluateDenseTensor(Value value) {
   if (auto constant = value.getDefiningOp<arith::ConstantOp>())
     if (auto elements = dyn_cast<DenseElementsAttr>(constant.getValue()))
       return elements;
+
+  // Frontends commonly cast checkpoint weights before the convolution.
+  // Arith only folds lossless casts; explicit f32 -> bf16 nearest-even casts
+  // can also be evaluated with LLVM APFloat, preserving their rounding rule.
+  if (auto trunc = value.getDefiningOp<arith::TruncFOp>()) {
+    FailureOr<DenseElementsAttr> source = evaluateDenseTensor(trunc.getIn());
+    SmallVector<OpFoldResult> folded;
+    if (succeeded(source) &&
+        succeeded(trunc->fold(ArrayRef<Attribute>{*source}, folded)) &&
+        folded.size() == 1)
+      if (auto attr = dyn_cast_if_present<DenseElementsAttr>(
+              dyn_cast<Attribute>(folded.front())))
+        return attr;
+    auto type = dyn_cast<RankedTensorType>(trunc.getType());
+    if (succeeded(source) && type && type.getElementType().isBF16() &&
+        (*source).getElementType().isF32() &&
+        trunc.getRoundingmode().value_or(arith::RoundingMode::to_nearest_even) ==
+            arith::RoundingMode::to_nearest_even)
+      return (*source).mapValues(type.getElementType(), [](const APFloat &value) {
+        APFloat rounded = value;
+        bool losesInfo;
+        rounded.convert(APFloat::BFloat(), APFloat::rmNearestTiesToEven,
+                        &losesInfo);
+        return rounded.bitcastToAPInt();
+      });
+    return failure();
+  }
+
+  if (auto fill = value.getDefiningOp<linalg::FillOp>()) {
+    auto scalar = fill.getInputs()[0].getDefiningOp<arith::ConstantOp>();
+    auto type = dyn_cast<RankedTensorType>(value.getType());
+    if (scalar && type && type.hasStaticShape() &&
+        isa<FloatAttr, IntegerAttr>(scalar.getValue()))
+      return DenseElementsAttr::get(type, scalar.getValue());
+    return failure();
+  }
+
+  if (auto expand = value.getDefiningOp<tensor::ExpandShapeOp>()) {
+    FailureOr<DenseElementsAttr> source = evaluateDenseTensor(expand.getSrc());
+    auto resultType = dyn_cast<RankedTensorType>(expand.getType());
+    if (failed(source) || !resultType || !resultType.hasStaticShape() ||
+        (*source).getNumElements() != resultType.getNumElements())
+      return failure();
+    return (*source).reshape(resultType);
+  }
 
   if (auto collapse = value.getDefiningOp<tensor::CollapseShapeOp>()) {
     FailureOr<DenseElementsAttr> source =
@@ -220,6 +271,11 @@ bool hasType(Value value, ArrayRef<int64_t> shape, unsigned bitWidth) {
          elementType.getWidth() == bitWidth && elementType.isSignless();
 }
 
+bool hasBF16Type(Value value, ArrayRef<int64_t> shape) {
+  auto type = dyn_cast<RankedTensorType>(value.getType());
+  return type && type.getShape() == shape && type.getElementType().isBF16();
+}
+
 bool isZeroSplat(Value value) {
   auto constant = value.getDefiningOp<arith::ConstantOp>();
   auto elements = constant ? dyn_cast<DenseElementsAttr>(constant.getValue())
@@ -231,6 +287,19 @@ bool isZeroSplat(Value value) {
   if (isa<FloatType>(elements.getElementType()))
     return elements.getSplatValue<APFloat>().isZero();
   return false;
+}
+
+bool isPositiveFloatZeroSplat(Value value, Type type) {
+  FailureOr<DenseElementsAttr> elements = evaluateDenseTensor(value);
+  if (failed(elements) || !(*elements).isSplat() ||
+      (*elements).getElementType() != type)
+    return false;
+  const APFloat zero = (*elements).getSplatValue<APFloat>();
+  return zero.isZero() && !zero.isNegative();
+}
+
+bool isPositiveBF16ZeroSplat(Value value) {
+  return isPositiveFloatZeroSplat(value, BFloat16Type::get(value.getContext()));
 }
 
 bool isEvaluatedZeroSplat(Value value) {
@@ -277,6 +346,36 @@ bool hasCanonicalInt8ContractionBody(Region &region,
          yield.getValues().front() == add.getResult();
 }
 
+bool hasCanonicalFloatContractionBody(Region &region, Type type) {
+  if (!region.hasOneBlock())
+    return false;
+
+  Block &block = region.front();
+  if (block.getNumArguments() != 3 ||
+      !llvm::all_of(block.getArguments(),
+                    [&](BlockArgument arg) { return arg.getType() == type; }) ||
+      block.getOperations().size() != 3)
+    return false;
+
+  auto operation = block.begin();
+  auto multiply = dyn_cast<arith::MulFOp>(&*operation++);
+  auto add = dyn_cast<arith::AddFOp>(&*operation++);
+  auto yield = dyn_cast<linalg::YieldOp>(&*operation);
+  if (!multiply || !add || !yield)
+    return false;
+  return multiply.getLhs() == block.getArgument(0) &&
+         multiply.getRhs() == block.getArgument(1) &&
+         add.getLhs() == block.getArgument(2) &&
+         add.getRhs() == multiply.getResult() &&
+         yield.getValues().size() == 1 &&
+         yield.getValues().front() == add.getResult();
+}
+
+bool hasCanonicalBF16ContractionBody(Region &region) {
+  return hasCanonicalFloatContractionBody(
+      region, BFloat16Type::get(region.getContext()));
+}
+
 bool hasCanonicalMatvecIndexingMaps(linalg::MatvecOp op) {
   SmallVector<AffineMap> maps = op.getIndexingMapsArray();
   MLIRContext *context = op.getContext();
@@ -296,9 +395,9 @@ bool hasCanonicalMatmulIndexingMaps(linalg::MatmulOp op) {
 constexpr int64_t kOutputTileSize = 16;
 constexpr int64_t kReductionTileSize = 64;
 
-// Supplier BF16 prealignment/reconstruction is not equivalent to Linalg
-// floating-point arithmetic, even for zero or unit operands. Only explicit
-// BF16 cim.vmm operations may enter that software-only hardware profile.
+// BF16 Linalg lowering uses the project's conventional-BF16 deployment
+// assumption. Multi-K reductions extend each BF16 tile result to f32 and sum
+// on the Host before rounding the final result back to BF16.
 bool isConvertible(linalg::MatvecOp op) {
   auto inputs = op.getDpsInputs();
   auto inits = op.getDpsInits();
@@ -322,6 +421,14 @@ bool isConvertible(linalg::MatvecOp op) {
   int64_t reductionSize = weightType.getDimSize(1);
   if (reductionSize <= 0)
     return false;
+
+  if (hasBF16Type(inputs[0], {outputSize, reductionSize}) &&
+      hasBF16Type(inputs[1], {reductionSize}) &&
+      hasBF16Type(inits[0], {outputSize}) &&
+      hasBF16Type(op->getResult(0), {outputSize}))
+    return isPositiveBF16ZeroSplat(inits[0]) &&
+           hasCanonicalBF16ContractionBody(op.getRegion()) &&
+           hasCanonicalMatvecIndexingMaps(op);
 
   return hasType(inputs[0], {outputSize, reductionSize}, 8) &&
          hasType(inputs[1], {reductionSize}, 8) &&
@@ -349,6 +456,14 @@ bool isConvertible(linalg::MatmulOp op) {
   int64_t columnCount = inputType.getDimSize(1);
   if (outputSize <= 0 || reductionSize <= 0 || columnCount <= 0)
     return false;
+
+  if (hasBF16Type(inputs[0], {outputSize, reductionSize}) &&
+      hasBF16Type(inputs[1], {reductionSize, columnCount}) &&
+      hasBF16Type(inits[0], {outputSize, columnCount}) &&
+      hasBF16Type(op->getResult(0), {outputSize, columnCount}))
+    return isPositiveBF16ZeroSplat(inits[0]) &&
+           hasCanonicalBF16ContractionBody(op.getRegion()) &&
+           hasCanonicalMatmulIndexingMaps(op);
 
   return hasType(inputs[0], {outputSize, reductionSize}, 8) &&
          hasType(inputs[1], {reductionSize, columnCount}, 8) &&
@@ -574,6 +689,7 @@ public:
     uint64_t tileCount =
         llvm::divideCeil(static_cast<uint64_t>(reductionSize), uint64_t{64});
     unsigned accumulationWidth = 21 + llvm::Log2_64_Ceil(tileCount);
+    bool bf16Profile = weightType.getElementType().isBF16();
     auto inputTileType =
         RankedTensorType::get({64}, weightType.getElementType());
     auto weightTileType =
@@ -581,7 +697,8 @@ public:
     auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
     auto partialType = RankedTensorType::get({16}, resultType.getElementType());
     auto accumulationType = RankedTensorType::get(
-        {16}, IntegerType::get(op.getContext(), accumulationWidth));
+        {16}, bf16Profile ? static_cast<Type>(rewriter.getF32Type())
+                          : IntegerType::get(op.getContext(), accumulationWidth));
     SmallVector<Value> tileResults;
     tileResults.reserve(outputSize / 16 + (outputSize % 16 != 0));
 
@@ -661,14 +778,24 @@ public:
           sum = partial;
           continue;
         }
-        Value extended = arith::ExtSIOp::create(rewriter, location,
+        if (bf16Profile) {
+          Value extended = arith::ExtFOp::create(rewriter, location,
                                                 accumulationType, partial);
-        sum = sum ? arith::AddIOp::create(rewriter, location, sum, extended)
-                  : extended;
+          sum = sum ? arith::AddFOp::create(rewriter, location, sum, extended)
+                    : extended;
+        } else {
+          Value extended = arith::ExtSIOp::create(rewriter, location,
+                                                  accumulationType, partial);
+          sum = sum ? arith::AddIOp::create(rewriter, location, sum, extended)
+                    : extended;
+        }
       }
 
       if (tileCount == 1)
         tileResults.push_back(sum);
+      else if (bf16Profile)
+        tileResults.push_back(
+            arith::TruncFOp::create(rewriter, location, partialType, sum));
       else
         tileResults.push_back(
             arith::TruncIOp::create(rewriter, location, partialType, sum));
@@ -897,8 +1024,295 @@ public:
   }
 };
 
-LogicalResult normalizeCIMConv(linalg::Conv2DNchwFchwOp op,
-                               PatternRewriter &rewriter) {
+// MLIR's im2col helper does not support NCHW depthwise, grouped convolution
+// or dilation. Reuse its dimension inference and the named op's affine maps
+// for these BF16 forms instead of maintaining layout-specific patch formulas.
+struct BF16ConvInfo {
+  SmallVector<int64_t> loopRanges;
+  SmallVector<unsigned> groupDims, rowDims, reductionDims, columnDims;
+  SmallVector<AffineMap> maps;
+  AffineMap normalizedToLoops;
+  DenseElementsAttr weight;
+  int64_t groups = 1, rows = 1, reduction = 1, columns = 1;
+};
+
+SmallVector<int64_t> getConvDimSizes(const BF16ConvInfo &info,
+                                     ArrayRef<unsigned> dims) {
+  return llvm::map_to_vector(
+      dims, [&](unsigned dim) { return info.loopRanges[dim]; });
+}
+
+std::optional<BF16ConvInfo> getBF16ConvInfo(linalg::LinalgOp op,
+                                            bool allowF32 = false,
+                                            bool allowBiasEpilogue = false) {
+  // Keep generic regions, quantized variants and non-2D convolutions on Host.
+  if (!isa<linalg::Conv2DNchwFchwOp, linalg::Conv2DNhwcHwcfOp,
+           linalg::Conv2DNhwcFhwcOp, linalg::Conv2DNgchwFgchwOp,
+           linalg::Conv2DNgchwGfchwOp, linalg::Conv2DNhwgcGfhwcOp,
+           linalg::DepthwiseConv2DNchwChwOp, linalg::DepthwiseConv2DNhwcHwcOp,
+           linalg::DepthwiseConv2DNhwcHwcmOp>(op.getOperation()) ||
+      op->hasAttr(CIMDialect::getConvIntegerAttrName()) ||
+      !op.hasPureTensorSemantics() || op->getNumResults() != 1 ||
+      op.getNumDpsInputs() != 2 || op.getNumDpsInits() != 1)
+    return std::nullopt;
+
+  Type elementType = getElementTypeOrSelf(op->getResult(0).getType());
+  if (!elementType.isBF16() && !(allowF32 && elementType.isF32()))
+    return std::nullopt;
+  for (Value operand : op->getOperands()) {
+    auto type = dyn_cast<RankedTensorType>(operand.getType());
+    if (!type || !type.hasStaticShape() || type.getEncoding() ||
+        type.getElementType() != elementType)
+      return std::nullopt;
+    int64_t elements = 1;
+    for (int64_t size : type.getShape())
+      if (size <= 0 || llvm::MulOverflow(elements, size, elements))
+        return std::nullopt;
+  }
+  bool zeroInit = isPositiveFloatZeroSplat(op.getDpsInits()[0], elementType);
+  auto bias = op.getDpsInits()[0].getDefiningOp<linalg::BroadcastOp>();
+  auto function = op->getParentOfType<func::FuncOp>();
+  bool biasInit =
+      allowBiasEpilogue && elementType.isF32() && bias && function &&
+      function.getBody().hasOneBlock() &&
+      op->getBlock() == &function.getBody().front() &&
+      isa<linalg::Conv2DNchwFchwOp, linalg::DepthwiseConv2DNchwChwOp>(
+          op.getOperation()) &&
+      bias.getDimensions() == ArrayRef<int64_t>({0, 2, 3});
+  if ((!zeroInit && !biasInit) ||
+      !hasCanonicalFloatContractionBody(op->getRegion(0), elementType))
+    return std::nullopt;
+  for (StringRef name : {"strides", "dilations"}) {
+    // Named convolutions default omitted strides/dilations to one.
+    if (!op->hasAttr(name))
+      continue;
+    auto attr = op->getAttrOfType<DenseIntElementsAttr>(name);
+    if (!attr || attr.getNumElements() != 2 ||
+        llvm::any_of(attr.getValues<int64_t>(),
+                     [](int64_t value) { return value <= 0; }))
+      return std::nullopt;
+  }
+
+  FailureOr<linalg::ConvolutionDimensions> dims =
+      linalg::inferConvolutionDims(op);
+  FailureOr<DenseElementsAttr> weight =
+      evaluateDenseTensor(op.getDpsInputs()[1]);
+  if (failed(dims) || failed(weight) || dims->outputImage.size() != 2 ||
+      dims->filterLoop.size() != 2)
+    return std::nullopt;
+
+  BF16ConvInfo info;
+  info.loopRanges = op.getStaticLoopRanges();
+  info.maps = op.getIndexingMapsArray();
+  if (info.maps.size() != 3 || !info.maps[1].isProjectedPermutation() ||
+      !info.maps[2].isProjectedPermutation())
+    return std::nullopt;
+  info.weight = *weight;
+  info.groupDims.assign(dims->depth.begin(), dims->depth.end());
+  info.rowDims.assign(dims->outputChannel.begin(), dims->outputChannel.end());
+  info.reductionDims.append(dims->inputChannel.begin(),
+                            dims->inputChannel.end());
+  info.reductionDims.append(dims->filterLoop.begin(), dims->filterLoop.end());
+  info.columnDims.append(dims->batch.begin(), dims->batch.end());
+  info.columnDims.append(dims->outputImage.begin(), dims->outputImage.end());
+  // Preserve the named op's reduction order, including NHWC's KH/KW/C order.
+  llvm::sort(info.reductionDims);
+  llvm::sort(info.columnDims);
+
+  SmallVector<bool> covered(info.loopRanges.size(), false);
+  auto countDims = [&](ArrayRef<unsigned> positions, int64_t &count) {
+    for (unsigned pos : positions) {
+      if (pos >= info.loopRanges.size() || covered[pos] ||
+          info.loopRanges[pos] <= 0 ||
+          llvm::MulOverflow(count, info.loopRanges[pos], count))
+        return false;
+      covered[pos] = true;
+    }
+    return true;
+  };
+  int64_t size = 0;
+  if (!countDims(info.groupDims, info.groups) ||
+      !countDims(info.rowDims, info.rows) ||
+      !countDims(info.reductionDims, info.reduction) ||
+      !countDims(info.columnDims, info.columns) ||
+      !llvm::all_of(covered, [](bool value) { return value; }) ||
+      llvm::MulOverflow(info.reduction, info.columns, size) ||
+      llvm::MulOverflow(info.groups, info.rows, size) ||
+      llvm::MulOverflow(size, info.columns, size))
+    return std::nullopt;
+
+  // All supported input maps are monotone. Check the largest accessed input
+  // coordinate, including dilation, before building a gather with no guards.
+  for (unsigned i = 0; i < 2; ++i) {
+    int64_t outputOffset, filterOffset, last;
+    if (llvm::MulOverflow(info.loopRanges[dims->outputImage[i]] - 1,
+                          dims->strides[i], outputOffset) ||
+        llvm::MulOverflow(info.loopRanges[dims->filterLoop[i]] - 1,
+                          dims->dilations[i], filterOffset) ||
+        llvm::AddOverflow(outputOffset, filterOffset, last))
+      return std::nullopt;
+  }
+  SmallVector<int64_t> lastLoop = llvm::map_to_vector(
+      info.loopRanges, [](int64_t range) { return range - 1; });
+  for (auto [map, operand] : llvm::zip(info.maps, op->getOperands())) {
+    if (map.getNumSymbols() != 0)
+      return std::nullopt;
+    auto type = cast<RankedTensorType>(operand.getType());
+    for (auto [index, extent] :
+         llvm::zip(map.compose(lastLoop), type.getShape()))
+      if (index < 0 || index >= extent)
+        return std::nullopt;
+  }
+
+  MLIRContext *context = op.getContext();
+  SmallVector<AffineExpr> loops(info.loopRanges.size(),
+                                getAffineConstantExpr(0, context));
+  auto assign = [&](ArrayRef<unsigned> positions, unsigned flatDim) {
+    if (positions.empty())
+      return;
+    auto coordinates =
+        delinearize(getAffineDimExpr(flatDim, context),
+                    computeStrides(getConvDimSizes(info, positions)));
+    for (auto [pos, coordinate] : llvm::zip(positions, coordinates))
+      loops[pos] = coordinate;
+  };
+  assign(info.groupDims, 0);
+  assign(info.rowDims, 1);
+  assign(info.reductionDims, 2);
+  assign(info.columnDims, 3);
+  info.normalizedToLoops = AffineMap::get(4, 0, loops, context);
+  return info;
+}
+
+void normalizeBF16Conv(linalg::LinalgOp op, const BF16ConvInfo &info,
+                       PatternRewriter &rewriter) {
+  Location loc = op.getLoc();
+  MLIRContext *context = op.getContext();
+  Type bf16 = getElementTypeOrSelf(op->getResult(0).getType());
+  Value input = op.getDpsInputs()[0];
+  auto inputType = cast<RankedTensorType>(input.getType());
+  auto outputType = cast<RankedTensorType>(op->getResult(0).getType());
+  auto weightType = RankedTensorType::get({info.rows, info.reduction}, bf16);
+  auto columnType = RankedTensorType::get({info.reduction, info.columns}, bf16);
+  auto matrixType = RankedTensorType::get({info.rows, info.columns}, bf16);
+  auto weightMap = info.maps[1].compose(info.normalizedToLoops);
+  auto weightStrides = computeStrides(info.weight.getType().getShape());
+  auto weightValues = info.weight.getValues<APFloat>();
+  Value zero = arith::ConstantOp::create(
+      rewriter, loc, matrixType,
+      DenseElementsAttr::get(matrixType, rewriter.getZeroAttr(bf16)));
+
+  SmallVector<Value> groups;
+  for (int64_t group = 0; group < info.groups; ++group) {
+    SmallVector<APFloat> values;
+    if (info.weight.isSplat()) {
+      values.push_back(info.weight.getSplatValue<APFloat>());
+    } else {
+      values.reserve(info.rows * info.reduction);
+      for (int64_t row = 0; row < info.rows; ++row)
+        for (int64_t k = 0; k < info.reduction; ++k) {
+          auto indices = weightMap.compose(ArrayRef<int64_t>{group, row, k, 0});
+          values.push_back(
+              weightValues.begin()[linearize(indices, weightStrides)]);
+        }
+    }
+    Value weight = arith::ConstantOp::create(
+        rewriter, loc, weightType, DenseElementsAttr::get(weightType, values));
+
+    Value columns;
+    auto nchw = dyn_cast<linalg::Conv2DNchwFchwOp>(op.getOperation());
+    // For the DVS pointwise layers, N=1 and the full spatial plane is already
+    // contiguous per channel. A reshape avoids materializing duplicate patches.
+    if (nchw && inputType.getDimSize(0) == 1 &&
+        cast<RankedTensorType>(nchw.getInputs()[1].getType()).getDimSize(2) ==
+            1 &&
+        cast<RankedTensorType>(nchw.getInputs()[1].getType()).getDimSize(3) ==
+            1 &&
+        inputType.getDimSize(2) == outputType.getDimSize(2) &&
+        inputType.getDimSize(3) == outputType.getDimSize(3) &&
+        llvm::all_of(nchw.getStrides().getValues<int64_t>(),
+                     [](int64_t stride) { return stride == 1; })) {
+      columns = tensor::CollapseShapeOp::create(
+          rewriter, loc, columnType, input,
+          ArrayRef<ReassociationIndices>{{0, 1}, {2, 3}});
+    } else {
+      AffineMap selectGroup = AffineMap::get(
+          2, 0,
+          {rewriter.getAffineConstantExpr(group),
+           rewriter.getAffineConstantExpr(0), rewriter.getAffineDimExpr(0),
+           rewriter.getAffineDimExpr(1)},
+          context);
+      auto inputMap = simplifyAffineMap(
+          info.maps[0].compose(info.normalizedToLoops).compose(selectGroup));
+      auto empty =
+          tensor::EmptyOp::create(rewriter, loc, columnType.getShape(), bf16);
+      columns =
+          linalg::GenericOp::create(
+              rewriter, loc, TypeRange{columnType}, ValueRange{input},
+              ValueRange{empty},
+              ArrayRef<AffineMap>{inputMap, rewriter.getMultiDimIdentityMap(2)},
+              SmallVector<utils::IteratorType>(2,
+                                               utils::IteratorType::parallel),
+              [](OpBuilder &builder, Location loc, ValueRange args) {
+                linalg::YieldOp::create(builder, loc, args[0]);
+              })
+              .getResult(0);
+    }
+    // Each group has its own input windows and weights. In particular,
+    // depthwise channels must never become lanes sharing one input vector.
+    groups.push_back(
+        linalg::MatmulOp::create(rewriter, loc, TypeRange{matrixType},
+                                 ValueRange{weight, columns}, ValueRange{zero})
+            .getResult(0));
+  }
+
+  Value combined = groups.front();
+  if (groups.size() > 1)
+    combined = tensor::ConcatOp::create(rewriter, loc, 0, groups);
+
+  // Restore the original output layout, including an explicit channel
+  // multiplier axis. Bias and other consumers keep their existing SSA shape.
+  SmallVector<AffineExpr> loops(info.loopRanges.size(),
+                                rewriter.getAffineConstantExpr(0));
+  for (auto [axis, expr] : llvm::enumerate(info.maps[2].getResults()))
+    loops[cast<AffineDimExpr>(expr).getPosition()] =
+        rewriter.getAffineDimExpr(axis);
+  auto flatten = [&](ArrayRef<unsigned> positions) -> AffineExpr {
+    if (positions.empty())
+      return rewriter.getAffineConstantExpr(0);
+    auto coordinates = llvm::map_to_vector(
+        positions, [&](unsigned pos) { return loops[pos]; });
+    return linearize(context, coordinates,
+                     computeStrides(getConvDimSizes(info, positions)));
+  };
+  auto restoreMap = AffineMap::get(
+      outputType.getRank(), 0,
+      {flatten(info.groupDims) * info.rows + flatten(info.rowDims),
+       flatten(info.columnDims)},
+      context);
+  auto empty =
+      tensor::EmptyOp::create(rewriter, loc, outputType.getShape(), bf16);
+  auto restored = linalg::GenericOp::create(
+      rewriter, loc, TypeRange{outputType}, ValueRange{combined},
+      ValueRange{empty},
+      ArrayRef<AffineMap>{
+          restoreMap, rewriter.getMultiDimIdentityMap(outputType.getRank())},
+      SmallVector<utils::IteratorType>(outputType.getRank(),
+                                       utils::IteratorType::parallel),
+      [](OpBuilder &builder, Location loc, ValueRange args) {
+        linalg::YieldOp::create(builder, loc, args[0]);
+      });
+  Value result = restored.getResult(0);
+  if (!isPositiveFloatZeroSplat(op.getDpsInits()[0], bf16)) {
+    // Explicit BF16 opt-in only: preserve the original FP32 broadcast value
+    // (including shared users), adding it after the zero-init contraction.
+    result = arith::AddFOp::create(rewriter, loc, result, op.getDpsInits()[0]);
+  }
+  rewriter.replaceOp(op, result);
+}
+
+LogicalResult normalizeCIMInt8Conv(linalg::Conv2DNchwFchwOp op,
+                                   PatternRewriter &rewriter) {
   Location location = op.getLoc();
   auto reject = [&](StringRef message) {
     emitError(location) << "invalid marked ConvInteger: " << message;
@@ -990,6 +1404,98 @@ LogicalResult normalizeCIMConv(linalg::Conv2DNchwFchwOp op,
                                     matmul.getResult(0), collapseBatch);
   rewriter.replaceOp(contraction, expanded.getResult());
   return success();
+}
+
+bool isBF16LinearCandidate(linalg::MatmulOp op, bool allowF32 = false) {
+  if (op->hasAttr(CIMDialect::getMatMulIntegerAttrName()) ||
+      (!isa<linalg::MatmulTransposeBOp>(op.getOperation()) &&
+       !hasCanonicalMatmulIndexingMaps(op)))
+    return false;
+  auto inputs = op.getDpsInputs();
+  auto inits = op.getDpsInits();
+  Type elementType = getElementTypeOrSelf(op->getResult(0).getType());
+  if (!elementType.isBF16() && !(allowF32 && elementType.isF32()))
+    return false;
+  if (inputs.size() != 2 || inits.size() != 1 || op->getNumResults() != 1 ||
+      !hasCanonicalFloatContractionBody(op.getRegion(), elementType) ||
+      !isPositiveFloatZeroSplat(inits[0], elementType) ||
+      failed(evaluateDenseTensor(inputs[1])))
+    return false;
+  auto activationType = dyn_cast<RankedTensorType>(inputs[0].getType());
+  auto weightType = dyn_cast<RankedTensorType>(inputs[1].getType());
+  auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+  if (!activationType || !weightType || !resultType ||
+      activationType.getRank() != 2 || weightType.getRank() != 2 ||
+      resultType.getRank() != 2)
+    return false;
+  int64_t batch = activationType.getDimSize(0);
+  int64_t reduction = activationType.getDimSize(1);
+  int64_t output = resultType.getDimSize(1);
+  auto hasFloatType = [&](Value value, ArrayRef<int64_t> shape) {
+    auto type = dyn_cast<RankedTensorType>(value.getType());
+    return type && !type.getEncoding() && type.getShape() == shape &&
+           type.getElementType() == elementType;
+  };
+  if (batch <= 0 || reduction <= 0 || output <= 0 ||
+      !hasFloatType(inputs[0], {batch, reduction}) ||
+      !hasFloatType(inits[0], {batch, output}) ||
+      !hasFloatType(op->getResult(0), {batch, output}))
+    return false;
+  bool transposedWeight = isa<linalg::MatmulTransposeBOp>(op.getOperation());
+  return hasFloatType(inputs[1], transposedWeight
+                                   ? ArrayRef<int64_t>{output, reduction}
+                                   : ArrayRef<int64_t>{reduction, output});
+}
+
+void normalizeCIMLinear(linalg::MatmulOp op, PatternRewriter &rewriter) {
+  Location location = op.getLoc();
+  auto inputs = op.getDpsInputs();
+  auto activationType = cast<RankedTensorType>(inputs[0].getType());
+  auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
+  Type bf16 = activationType.getElementType();
+  int64_t batch = activationType.getDimSize(0);
+  int64_t reduction = activationType.getDimSize(1);
+  int64_t output = resultType.getDimSize(1);
+  auto weightType = RankedTensorType::get({output, reduction}, bf16);
+  Value weight = inputs[1];
+  if (!isa<linalg::MatmulTransposeBOp>(op.getOperation())) {
+    DenseElementsAttr source = *evaluateDenseTensor(inputs[1]);
+    SmallVector<APFloat> values(source.getValues<APFloat>());
+    SmallVector<APFloat> transposed;
+    transposed.reserve(values.size());
+    for (int64_t row = 0; row < output; ++row)
+      for (int64_t column = 0; column < reduction; ++column)
+        transposed.push_back(values[column * output + row]);
+    weight = arith::ConstantOp::create(
+        rewriter, location, weightType,
+        DenseElementsAttr::get(weightType, transposed));
+  }
+
+  auto inputEmpty = tensor::EmptyOp::create(
+      rewriter, location, ArrayRef<int64_t>{reduction, batch}, bf16);
+  Value normalizedInput =
+      linalg::TransposeOp::create(rewriter, location, inputs[0],
+                                  inputEmpty.getResult(),
+                                  ArrayRef<int64_t>{1, 0})
+          .getResult()
+          .front();
+  auto normalizedResultType = RankedTensorType::get({output, batch}, bf16);
+  Value zero = arith::ConstantOp::create(
+      rewriter, location, normalizedResultType,
+      DenseElementsAttr::get(normalizedResultType,
+                             rewriter.getZeroAttr(bf16)));
+  auto matmul = linalg::MatmulOp::create(
+      rewriter, location, TypeRange{normalizedResultType},
+      ValueRange{weight, normalizedInput}, ValueRange{zero});
+  auto outputEmpty = tensor::EmptyOp::create(
+      rewriter, location, ArrayRef<int64_t>{batch, output}, bf16);
+  Value restored =
+      linalg::TransposeOp::create(rewriter, location, matmul.getResult(0),
+                                  outputEmpty.getResult(),
+                                  ArrayRef<int64_t>{1, 0})
+          .getResult()
+          .front();
+  rewriter.replaceOp(op, restored);
 }
 
 std::optional<std::pair<linalg::MatmulOp, bool>>
@@ -1202,10 +1708,38 @@ public:
     PatternRewriter rewriter(&getContext());
     for (linalg::Conv2DNchwFchwOp op : candidates) {
       rewriter.setInsertionPoint(op);
-      if (failed(normalizeCIMConv(op, rewriter))) {
+      if (failed(normalizeCIMInt8Conv(op, rewriter))) {
         signalPassFailure();
         return;
       }
+    }
+    SmallVector<std::pair<linalg::LinalgOp, BF16ConvInfo>, 0> bf16Candidates;
+    getOperation()->walk([&](linalg::LinalgOp op) {
+      if (auto info = getBF16ConvInfo(op, allowF32, allowBiasEpilogue))
+        bf16Candidates.emplace_back(op, std::move(*info));
+    });
+    for (auto &[op, info] : bf16Candidates) {
+      rewriter.setInsertionPoint(op);
+      normalizeBF16Conv(op, info, rewriter);
+    }
+  }
+};
+
+class NormalizeCIMLinear final
+    : public impl::NormalizeCIMLinearBase<NormalizeCIMLinear> {
+public:
+  using Base::Base;
+
+  void runOnOperation() override {
+    SmallVector<linalg::MatmulOp> candidates;
+    getOperation()->walk([&](linalg::MatmulOp op) {
+      if (isBF16LinearCandidate(op, allowF32))
+        candidates.push_back(op);
+    });
+    PatternRewriter rewriter(&getContext());
+    for (linalg::MatmulOp op : candidates) {
+      rewriter.setInsertionPoint(op);
+      normalizeCIMLinear(op, rewriter);
     }
   }
 };
@@ -1220,6 +1754,227 @@ public:
     patterns.add<FoldCIMInt8BiasPattern>(&getContext(), allowExtraKTile);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
+  }
+};
+
+// Only direct, static tensor contractions with immutable weights cross the
+// current synchronous Host/device seam. In particular, runtime-weight MatMul
+// and operations in control-flow regions remain on the Host.
+bool isStaticFloatKernel(linalg::LinalgOp op, Type elementType) {
+  auto function = op->getParentOfType<func::FuncOp>();
+  if (!function || !function.getBody().hasOneBlock() ||
+      op->getBlock() != &function.getBody().front() ||
+      op->hasAttr(CIMDialect::getMatMulIntegerAttrName()) ||
+      !op.hasPureTensorSemantics() || op->getNumResults() != 1 ||
+      op.getNumDpsInputs() != 2 || op.getNumDpsInits() != 1)
+    return false;
+  if (auto matmul = dyn_cast<linalg::MatmulOp>(op.getOperation())) {
+    if (!hasCanonicalMatmulIndexingMaps(matmul))
+      return false;
+  } else if (auto matvec = dyn_cast<linalg::MatvecOp>(op.getOperation())) {
+    if (!hasCanonicalMatvecIndexingMaps(matvec))
+      return false;
+  } else {
+    return false;
+  }
+  for (Value operand : op->getOperands()) {
+    auto type = dyn_cast<RankedTensorType>(operand.getType());
+    if (!type || !type.hasStaticShape() || type.getEncoding() ||
+        type.getElementType() != elementType ||
+        llvm::any_of(type.getShape(), [](int64_t size) { return size <= 0; }))
+      return false;
+  }
+  return succeeded(evaluateDenseTensor(op.getDpsInputs()[0])) &&
+         isPositiveFloatZeroSplat(op.getDpsInits()[0], elementType) &&
+         hasCanonicalFloatContractionBody(op->getRegion(0), elementType);
+}
+
+class PrepareCIMBF16 final : public impl::PrepareCIMBF16Base<PrepareCIMBF16> {
+public:
+  using Base::Base;
+
+  void runOnOperation() override {
+    SmallVector<linalg::LinalgOp> candidates;
+    getOperation().walk([&](linalg::LinalgOp op) {
+      if (isStaticFloatKernel(op, Float32Type::get(&getContext())))
+        candidates.push_back(op);
+    });
+    IRRewriter rewriter(&getContext());
+    for (linalg::LinalgOp op : candidates) {
+      rewriter.setInsertionPoint(op);
+      Location loc = op.getLoc();
+      Type bf16 = rewriter.getBF16Type();
+      auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
+      auto bf16ResultType = resultType.clone(bf16);
+      auto inputType = cast<RankedTensorType>(op.getDpsInputs()[1].getType());
+      DenseElementsAttr source = *evaluateDenseTensor(op.getDpsInputs()[0]);
+      auto rounded = source.mapValues(bf16, [](const APFloat &value) {
+        APFloat result = value;
+        bool losesInfo;
+        result.convert(APFloat::BFloat(), APFloat::rmNearestTiesToEven,
+                       &losesInfo);
+        return result.bitcastToAPInt();
+      });
+      Value weight = arith::ConstantOp::create(rewriter, loc, rounded);
+      Value activation = arith::TruncFOp::create(
+          rewriter, loc, inputType.clone(bf16), op.getDpsInputs()[1]);
+      Value zero = arith::ConstantOp::create(
+          rewriter, loc, bf16ResultType,
+          DenseElementsAttr::get(bf16ResultType, rewriter.getZeroAttr(bf16)));
+      Value result;
+      if (isa<linalg::MatmulOp>(op.getOperation()))
+        result = linalg::MatmulOp::create(
+                     rewriter, loc, TypeRange{bf16ResultType},
+                     ValueRange{weight, activation}, ValueRange{zero})
+                     .getResult(0);
+      else
+        result = linalg::MatvecOp::create(
+                     rewriter, loc, TypeRange{bf16ResultType},
+                     ValueRange{weight, activation}, ValueRange{zero})
+                     .getResult(0);
+      // Keep FP32 bias, residuals and shared activation users in their original
+      // precision. Invoking this pass explicitly opts the contraction into BF16.
+      rewriter.replaceOpWithNewOp<arith::ExtFOp>(op, resultType, result);
+    }
+  }
+};
+
+class OutlineCIMBF16 final : public impl::OutlineCIMBF16Base<OutlineCIMBF16> {
+public:
+  using Base::Base;
+
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    if (maxKernelColumns < 1) {
+      module.emitError("max-kernel-columns must be positive");
+      return signalPassFailure();
+    }
+    if (module->hasAttr("cim.split_program")) {
+      module.emitError("outline-cim-bf16 expects an unsplit Linalg module");
+      return signalPassFailure();
+    }
+    bool hasDeviceIR = false;
+    module.walk([&](Operation *op) {
+      StringRef dialect = op->getName().getDialectNamespace();
+      hasDeviceIR |= dialect == "cim" || dialect == "cimframe";
+    });
+    if (hasDeviceIR) {
+      module.emitError("outline-cim-bf16 must run before CIM formation");
+      return signalPassFailure();
+    }
+    SmallVector<linalg::LinalgOp> candidates;
+    // Top-level functions retain their symbols, visibility and call graph.
+    for (auto function : module.getOps<func::FuncOp>())
+      function.walk([&](linalg::LinalgOp op) {
+        if (isStaticFloatKernel(op, BFloat16Type::get(&getContext())))
+          candidates.push_back(op);
+      });
+
+    SymbolTable symbols(module);
+    SmallVector<std::string> names;
+    unsigned nextId = 0;
+    for (size_t i = 0; i < candidates.size(); ++i) {
+      std::string name;
+      do {
+        name = (Twine("__cim_kernel_") + Twine(nextId++)).str();
+      } while (symbols.lookup(name));
+      names.push_back(std::move(name));
+    }
+    OpBuilder builder(&getContext());
+    auto host = ModuleOp::create(module.getLoc(), "__cim_host");
+    auto device = ModuleOp::create(module.getLoc(), "__cim_device");
+    host->setAttr("cim.pipeline_part", builder.getStringAttr("host"));
+    device->setAttr("cim.pipeline_part", builder.getStringAttr("device"));
+    // Retain data-layout and other module metadata at the common ancestor.
+    // The split uses standard MLIR types; it does not define a runtime ABI.
+    for (Operation &op :
+         llvm::make_early_inc_range(module.getBody()->getOperations()))
+      op.moveBefore(host.getBody(), host.getBody()->end());
+    module.getBody()->push_back(host);
+    module.getBody()->push_back(device);
+    module->setAttr("cim.split_program", builder.getUnitAttr());
+
+    IRRewriter rewriter(&getContext());
+    for (auto [op, name] : llvm::zip(candidates, names)) {
+      Value input = op.getDpsInputs()[1];
+      auto inputType = cast<RankedTensorType>(input.getType());
+      auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
+      bool stream = inputType.getRank() == 2 &&
+                    inputType.getDimSize(1) > maxKernelColumns;
+      auto kernelInputType =
+          stream ? RankedTensorType::get({inputType.getDimSize(0), 1},
+                                         inputType.getElementType())
+                 : inputType;
+      auto kernelResultType =
+          stream ? RankedTensorType::get({resultType.getDimSize(0), 1},
+                                         resultType.getElementType())
+                 : resultType;
+      auto type = builder.getFunctionType(TypeRange{kernelInputType},
+                                          TypeRange{kernelResultType});
+      builder.setInsertionPointToEnd(device.getBody());
+      auto kernel = func::FuncOp::create(builder, op.getLoc(), name, type);
+      kernel->setAttr("cim.kernel", builder.getUnitAttr());
+      auto sourceFunction = op->getParentOfType<func::FuncOp>();
+      for (StringRef attribute :
+           {"cim.target_profile", "cim.target_profile_version",
+            "cim.placement_policy", "cim.route_policy"})
+        if (Attribute value = sourceFunction->getAttr(attribute))
+          kernel->setAttr(attribute, value);
+      Block *entry = kernel.addEntryBlock();
+      builder.setInsertionPointToStart(entry);
+      auto weight = arith::ConstantOp::create(
+          builder, op.getLoc(), *evaluateDenseTensor(op.getDpsInputs()[0]));
+      auto zero = arith::ConstantOp::create(
+          builder, op.getLoc(),
+          DenseElementsAttr::get(
+              kernelResultType,
+              builder.getZeroAttr(kernelResultType.getElementType())));
+      Operation *body = builder.clone(*op);
+      body->getResult(0).setType(kernelResultType);
+      // Assign operands by position: input and weight may share one constant.
+      body->setOperands(ValueRange{weight, entry->getArgument(0), zero});
+      body->removeAttr(CIMDialect::getTransactionIdxAttrName());
+      func::ReturnOp::create(builder, op.getLoc(), body->getResults());
+
+      builder.setInsertionPointToEnd(host.getBody());
+      auto declaration = func::FuncOp::create(builder, op.getLoc(), name, type);
+      declaration.setPrivate();
+      declaration->setAttr("cim.kernel", builder.getUnitAttr());
+      rewriter.setInsertionPoint(op);
+      if (!stream) {
+        rewriter.replaceOpWithNewOp<func::CallOp>(op, declaration,
+                                                  ValueRange{input});
+        continue;
+      }
+      // Spatial/time columns can be enormous. Reuse one static device kernel
+      // from a Host loop instead of unrolling millions of VMMs in the compiler.
+      Location loc = op.getLoc();
+      Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      Value upper = arith::ConstantIndexOp::create(rewriter, loc,
+                                                   inputType.getDimSize(1));
+      Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
+      Value initial = tensor::EmptyOp::create(
+          rewriter, loc, resultType.getShape(), resultType.getElementType());
+      auto loop = scf::ForOp::create(
+          rewriter, loc, lower, upper, step, ValueRange{initial},
+          [&](OpBuilder &b, Location l, Value column, ValueRange carried) {
+            SmallVector<OpFoldResult> offsets{b.getIndexAttr(0), column};
+            SmallVector<OpFoldResult> sizes{
+                b.getIndexAttr(inputType.getDimSize(0)), b.getIndexAttr(1)};
+            SmallVector<OpFoldResult> strides{b.getIndexAttr(1),
+                                              b.getIndexAttr(1)};
+            Value slice = tensor::ExtractSliceOp::create(
+                b, l, kernelInputType, input, offsets, sizes, strides);
+            Value output =
+                func::CallOp::create(b, l, declaration, ValueRange{slice})
+                    .getResult(0);
+            sizes[0] = b.getIndexAttr(resultType.getDimSize(0));
+            Value next = tensor::InsertSliceOp::create(b, l, output, carried[0],
+                                                       offsets, sizes, strides);
+            scf::YieldOp::create(b, l, next);
+          });
+      rewriter.replaceOp(op, loop.getResults());
+    }
   }
 };
 
@@ -1730,24 +2485,6 @@ public:
                plan.works[transactionEnd].transactionIdx ==
                    plan.works[index].transactionIdx)
           ++transactionEnd;
-        Operation *lastVMM = plan.works[transactionEnd - 1].vmm;
-        SmallVector<Operation *> earlyUsers;
-        llvm::DenseSet<Operation *> transactionResults;
-        for (size_t workIndex = index; workIndex < transactionEnd;
-             ++workIndex)
-          transactionResults.insert(plan.works[workIndex].vmm);
-        for (Operation *op = plan.works[index].vmm->getNextNode();
-             op && op != lastVMM; op = op->getNextNode()) {
-          bool dependsOnTransaction = llvm::any_of(
-              op->getOperands(), [&](Value operand) {
-                return transactionResults.contains(operand.getDefiningOp());
-              });
-          if (dependsOnTransaction) {
-            earlyUsers.push_back(op);
-            transactionResults.insert(op);
-          }
-        }
-
         SmallVector<Value> inputs;
         SmallVector<Type> resultTypes;
         for (size_t workIndex = index; workIndex < transactionEnd;
@@ -1842,9 +2579,9 @@ public:
               transaction.getResult(offset));
         for (size_t workIndex = index; workIndex < transactionEnd; ++workIndex)
           plan.works[workIndex].vmm.erase();
-        for (auto iterator = earlyUsers.rbegin();
-             iterator != earlyUsers.rend(); ++iterator)
-          (*iterator)->moveAfter(transaction);
+        // The transaction replaces the first VMM and already dominates every
+        // original result user. Keep users in place: a join may also depend on
+        // a later transaction or on Host values defined after this one.
         index = transactionEnd;
       }
       if (failed(verifyCIMExecutionPlan(plan.function)))

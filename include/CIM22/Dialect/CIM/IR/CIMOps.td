@@ -21,13 +21,15 @@ def CIM_VMMOp : CIM_Op<"vmm", [Pure]> {
     Computes 16 independent dot products between a 64-element input vector and
     the rows of a 16x64 weight tensor. The supported signatures are signed INT8
     operands with signless `i21` results, or BF16 operands with BF16 results.
-    BF16 explicitly selects the provisional supplier software model:
-    prealign inputs and per-lane weights, accumulate signed INT21, then
-    reconstruct the output bit pattern. It is not IEEE BF16 multiplication
-    and addition, and must not replace ordinary BF16 Linalg contractions.
-    Zero results and saturated exponents follow the supplier bit-level rules.
+    BF16 Linalg formation assumes this tile implements a conventional BF16
+    dot product. The current software runner separately implements the
+    provisional supplier model: prealign inputs and per-lane weights,
+    accumulate signed INT21, then reconstruct BF16 output bits. That runner
+    is not an arithmetic-equivalence oracle for standard BF16 Linalg.
     Raw weight exponent interpretation remains provisional under CTQ-028;
-    RTL artifact export and board execution are not supported for BF16.
+    BF16 reference artifact export requires explicit opt-in. Numerical
+    equivalence and board execution for automatic BF16 Linalg lowering remain
+    unverified; earlier explicit-VMM demos are separate hardware tests.
 
     Before M5 scheduling this operation may carry zero-based `m_tile`,
     `n_tile`, and `k_tile` identity. M5 adds logical `work_id` and `group_id`.
