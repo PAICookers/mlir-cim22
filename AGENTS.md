@@ -20,6 +20,14 @@ keep file ownership disjoint.
   retain stale conclusions.
 - Do not declare a phase complete until code, tests, and records agree.
 
+### Python
+
+- Follow the [shared Python rules](.codex/project-rules.md#python) for
+  project-owned Python source, tests, and examples. Keep detailed conventions
+  there so the main agent and role agents use one rule source.
+- The Python runtime supports only Python 3.12 (`>=3.12,<3.13`). Keep runtime
+  package metadata, dependencies, annotations, and validation within that range.
+
 ### Code Documentation
 
 - Add concise, language-appropriate comments or docstrings for key code
