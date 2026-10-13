@@ -82,6 +82,7 @@ target_link_libraries(mlir-cim22-cim-executable-runner-test PRIVATE
 )
 target_compile_options(mlir-cim22-cim-executable-runner-test PRIVATE -fno-rtti)
 set(MLIRCIM22_TEST_DEPENDS
+  cim22_compiler
   FileCheck
   mlir-runner
   mlir_c_runner_utils

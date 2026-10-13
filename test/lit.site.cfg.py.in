@@ -6,6 +6,8 @@ config.mlir_c_runner_utils = lit_config.substitute(
 )
 config.mlir_cim22_obj_root = "@MLIRCIM22_BINARY_DIR@"
 config.python_executable = lit_config.substitute("@Python3_EXECUTABLE@")
+config.python_version = "@Python3_VERSION@"
+config.cim22_runtime = "@LLVM_LIBRARY_OUTPUT_INTDIR@/@CMAKE_SHARED_LIBRARY_PREFIX@cim22_runtime@CMAKE_SHARED_LIBRARY_SUFFIX@"
 
 import lit.llvm
 
