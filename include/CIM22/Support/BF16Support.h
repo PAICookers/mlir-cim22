@@ -28,8 +28,10 @@ struct BF16PrealignedWeightTile {
   std::array<uint8_t, kBF16OutputElements> exponents{};
 };
 
-// Reproduces the CIM22 input exponent-prealignment datapath on BF16 bit
-// patterns. IEEE special-value interpretation is outside this bit-level API.
+// Candidate software model, not a bit-exact hardware claim. Callers must reject
+// NaN/Inf. Stores the maximum raw biased exponent, while arithmetic uses E>=1.
+// Truncates magnitude with one headroom bit, then applies sign: x ~=
+// q*2^(E-133).
 BF16PrealignedVector
 prealignBF16Vector(const std::array<uint16_t, kBF16InputElements> &values);
 
@@ -38,9 +40,9 @@ BF16PrealignedWeightTile prealignBF16WeightTile(
     const std::array<uint16_t, kBF16OutputElements * kBF16InputElements>
         &values);
 
-// Reconstructs the supplier-model BF16 bit pattern from a signed INT21 result.
-// Exponent underflow and overflow clamp to 0 and 255; the fraction is retained.
-// Zero follows the exponent path too. This is not an IEEE numeric conversion.
+// Converts INT21 * 2^(max(Ew,1)+max(Ei,1)-266) to BF16, rounding toward zero.
+// Uses gradual underflow, finite saturation and positive zero for a zero MAC.
+// Shared-exponent truncation means this is not a conventional BF16 dot product.
 uint16_t int21ToBF16(int32_t value, uint8_t weightExponent,
                      uint8_t inputExponent);
 

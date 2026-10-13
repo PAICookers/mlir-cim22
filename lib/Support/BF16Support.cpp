@@ -8,9 +8,10 @@
 
 #include "CIM22/Support/BF16Support.h"
 
-#include "llvm/Support/MathExtras.h"
+#include "llvm/ADT/APFloat.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -30,17 +31,13 @@ prealignBF16Vector(const std::array<uint16_t, kBF16InputElements> &values) {
     uint8_t mantissa = static_cast<uint8_t>(value & 0x7f);
     if (exponent != 0)
       mantissa |= 0x80;
-    if (sign)
-      mantissa = static_cast<uint8_t>(~mantissa + 1U);
-
-    const int exponentDifference =
-        static_cast<int>(result.exponent) - (exponent == 0 ? 1 : exponent);
-    uint8_t aligned = 0;
-    if (exponentDifference < 7) {
-      aligned = static_cast<uint8_t>((mantissa >> (exponentDifference + 1)) +
-                                     (sign ? 0x80 : 0));
-    }
-    result.mantissas[index] = static_cast<int8_t>(aligned);
+    // Reserve one headroom bit. Truncate magnitude before applying the sign,
+    // so positive and negative values use the same scale and rounding rule.
+    // Keep raw exponent bytes in Weight_EXP; subnormals use effective E=1.
+    const int shift =
+        std::max<int>(result.exponent, 1) - std::max<int>(exponent, 1) + 1;
+    const int aligned = shift >= 8 ? 0 : mantissa >> shift;
+    result.mantissas[index] = static_cast<int8_t>(sign ? -aligned : aligned);
   }
   return result;
 }
@@ -63,22 +60,21 @@ BF16PrealignedWeightTile prealignBF16WeightTile(
 
 uint16_t int21ToBF16(int32_t value, uint8_t weightExponent,
                      uint8_t inputExponent) {
-  const bool sign = value < 0;
-  const uint32_t magnitude = static_cast<uint32_t>(sign ? -value : value);
+  if (value == 0)
+    return 0;
 
-  int shift = 0;
-  uint32_t shifted = 0;
-  if (magnitude != 0) {
-    shift = static_cast<int>(llvm::Log2_32(magnitude)) - 7;
-    shifted = shift >= 0 ? magnitude >> shift : magnitude << -shift;
-  }
-
-  const int exponent =
-      std::clamp(static_cast<int>(weightExponent) +
-                     static_cast<int>(inputExponent) + 1 + shift,
-                 0, 255);
-  return static_cast<uint16_t>((sign ? 0x8000 : 0) | (exponent << 7) |
-                               (shifted & 0x7f));
+  // Each aligned integer represents q * 2^(max(E,1)-133). The product
+  // therefore has scale 2^(Ew+Ei-266). Double represents every INT21 value
+  // times this power of two exactly across the finite BF16 operand range.
+  const int scale =
+      std::max<int>(weightExponent, 1) + std::max<int>(inputExponent, 1) - 266;
+  llvm::APFloat result(std::ldexp(static_cast<double>(value), scale));
+  bool losesInfo = false;
+  // Toward-zero conversion gives gradual underflow and saturates overflow to
+  // the largest finite BF16 of the same sign, never a manufactured NaN/Inf.
+  result.convert(llvm::APFloat::BFloat(), llvm::APFloat::rmTowardZero,
+                 &losesInfo);
+  return static_cast<uint16_t>(result.bitcastToAPInt().getZExtValue());
 }
 
 std::array<uint64_t, 2> packBF16WeightExponents(

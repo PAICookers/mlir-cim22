@@ -121,7 +121,7 @@ makeBF16Executable(bool withExponent = true, int8_t weightMantissa = 0,
   weight.macroSlot = 0;
   weight.dataType = CIMDataType::BF16;
   weight.values.fill(weightMantissa);
-  weight.exponents.fill(0);
+  weight.exponents.fill(127);
   if (fixture)
     weight = *fixture;
 
@@ -191,7 +191,6 @@ bool replayBF16Fixtures() {
   const llvm::json::Array *rows = json->getAsArray();
   if (!rows || rows->empty())
     return false;
-  CIMSoftwareRunner runner;
   for (const llvm::json::Value &value : *rows) {
     const llvm::json::Object &row = *value.getAsObject();
     auto checkStage = [&](bool matches, llvm::StringRef stage) {
@@ -201,64 +200,23 @@ bool replayBF16Fixtures() {
                      << " stage=" << stage << '\n';
       return matches;
     };
-    StaticWeightSection weight;
-    weight.groupId = weight.workId = weight.coreSlot = 0;
-    weight.macroSlot = row.getInteger("macro").value();
-    weight.dataType = CIMDataType::BF16;
-    weight.values = fixtureArray<int8_t, 1024>(row, "weight");
-    weight.exponents = fixtureArray<uint8_t, 16>(row, "weight_exponents");
+    // Historical supplier arithmetic remains evidence, not the active numeric
+    // oracle. Its immutable streams still independently verify frame layout.
     const auto input = fixtureArray<uint16_t, 64>(row, "input");
-    const auto aligned = mlir::cim22::prealignBF16Vector(input);
-    if (!checkStage(aligned.exponent == row.getInteger("input_exponent"),
-                    "input_exponent") ||
-        !checkStage(aligned.mantissas ==
-                        fixtureArray<int8_t, 64>(row, "aligned"),
-                    "aligned") ||
-        !checkStage(mlir::cim22::packBF16InputCacheRow(input) ==
+    const auto exponents = fixtureArray<uint8_t, 16>(row, "weight_exponents");
+    if (!checkStage(mlir::cim22::packBF16InputCacheRow(input) ==
                         fixtureArray<uint64_t, 16>(row, "input_words"),
                     "input_words") ||
-        !checkStage(mlir::cim22::packBF16WeightExponents(weight.exponents) ==
+        !checkStage(mlir::cim22::packBF16WeightExponents(exponents) ==
                         fixtureArray<uint64_t, 2>(row, "exponent_words"),
-                    "exponent_words"))
-      return false;
-
-    const auto intermediate = fixtureArray<int32_t, 16>(row, "intermediate");
-    const auto expected = fixtureArray<uint16_t, 16>(row, "output");
-    for (size_t lane = 0; lane < 16; ++lane) {
-      const int32_t sum = expectedValue(weight, aligned.mantissas, lane);
-      if (!checkStage(sum == intermediate[lane] && sum >= kCIMI21Min &&
-                          sum < kCIMI21MaxExclusive,
-                      "intermediate") ||
-          !checkStage(mlir::cim22::int21ToBF16(
-                          intermediate[lane], weight.exponents[lane],
-                          aligned.exponent) == expected[lane],
-                      "output"))
-        return false;
-    }
-    if (!checkStage(mlir::cim22::decodeBF16OutputCacheResponse(
-                        fixtureArray<uint64_t, 6>(row, "response")) == expected,
+                    "exponent_words") ||
+        !checkStage(mlir::cim22::decodeBF16OutputCacheResponse(
+                        fixtureArray<uint64_t, 6>(row, "response")) ==
+                        fixtureArray<uint16_t, 16>(row, "output"),
                     "response"))
       return false;
-
-    auto executable = makeBF16Executable(true, 0, &weight);
-    std::array<uint16_t, 16> actual{};
-    CIMInputView inputView{{}, input};
-    CIMOutputView outputView{{}, actual};
-    CIMRunInputs inputs{llvm::ArrayRef<CIMInputView>(&inputView, 1)};
-    CIMRunOutputs outputs{llvm::MutableArrayRef<CIMOutputView>(&outputView, 1)};
-    // Reuse the transaction with distinct invocations, exercising both supplier
-    // Macro identities without treating the packet list as a hardware relay.
-    for (int repeat = 0; repeat < 2; ++repeat) {
-      actual.fill(0xdead);
-      if (auto error = runner.run(executable, inputs, outputs)) {
-        llvm::errs() << llvm::toString(std::move(error)) << '\n';
-        return false;
-      }
-      if (!checkStage(actual == expected, "runner"))
-        return false;
-    }
   }
-  llvm::outs() << "PASS supplier-fixture-match BF16 rows=" << rows->size()
+  llvm::outs() << "PASS historical-layout-match BF16 rows=" << rows->size()
                << " inputs=" << rows->size() * 64
                << " outputs=" << rows->size() * 16 << '\n';
   return true;
@@ -311,7 +269,7 @@ void checkRun(CIMSoftwareRunner &runner, const CIMTransaction &executable,
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc == 2 && llvm::StringRef(argv[1]) == "--bf16-fixtures")
+  if (argc == 2 && llvm::StringRef(argv[1]) == "--bf16-layout-fixtures")
     return replayBF16Fixtures() ? 0 : 1;
   CIMTransaction executable = makeExecutable();
   CIMSoftwareRunner runner;
@@ -375,25 +333,25 @@ int main(int argc, char **argv) {
       llvm::MutableArrayRef<CIMOutputView>(&bf16OutputView, 1)};
   assert(!runner.run(bf16, bf16Inputs, bf16Outputs));
   for (uint16_t value : bf16OutputStorage)
-    assert(value == 0x4000);
+    assert(value == 0x0000);
 
-  // With input mantissa 64, 64 prealigned unit weights sum to 4096.
-  // The supplier reconstruction with weight exponent 0 produces 0x4280.
-  assert(!runner.run(makeBF16Executable(true, 1), bf16Inputs, bf16Outputs));
+  // Unit weights/input both align to 64 at E=127: 64 products give 64.
+  assert(!runner.run(makeBF16Executable(true, 64), bf16Inputs, bf16Outputs));
   for (uint16_t value : bf16OutputStorage)
     assert(value == 0x4280);
-  assert(!runner.run(makeBF16Executable(true, -1), bf16Inputs, bf16Outputs));
+  assert(!runner.run(makeBF16Executable(true, -64), bf16Inputs, bf16Outputs));
   for (uint16_t value : bf16OutputStorage)
     assert(value == 0xc280);
 
-  // Supplier negative zero aligns to -128. Reject the positive INT21
-  // overflow corner instead of letting BF16 reconstruction hide it.
   bf16InputStorage.fill(0x8000);
-  llvm::Error overflow =
-      runner.run(makeBF16Executable(true, -128), bf16Inputs, bf16Outputs);
-  assert(overflow && "negative-zero BF16 overflow must fail");
-  std::string overflowMessage = llvm::toString(std::move(overflow));
-  assert(overflowMessage == "CIM software result exceeds signed i21 range");
+  assert(!runner.run(makeBF16Executable(true, -128), bf16Inputs, bf16Outputs));
+  for (uint16_t value : bf16OutputStorage)
+    assert(value == 0);
+  // Every finite aligned magnitude is <=127, including dense negative inputs.
+  bf16InputStorage.fill(0xbfff);
+  assert(!runner.run(makeBF16Executable(true, -127), bf16Inputs, bf16Outputs));
+  for (uint16_t value : bf16OutputStorage)
+    assert(value == 0x437c); // trunc(64 * (127/64)^2) = 252 in BF16.
   bf16InputStorage.fill(0x3f80);
 
   bf16InputStorage[0] = 0x7f80;

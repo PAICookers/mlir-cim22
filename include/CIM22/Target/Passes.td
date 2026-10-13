@@ -24,7 +24,7 @@ def ExportCIMRTLArtifacts
     Option<"inputCacheFile", "input-cache-file", "std::string",
            /*default=*/"", "TB-compatible 8-row input cache for dynamic inputs">,
     Option<"bf16Reference", "bf16-reference", "bool", /*default=*/"false",
-           "Export provisional supplier-model BF16 reference artifacts for comparison">
+           "Export candidate-model BF16 reference artifacts for comparison">
   ];
 }
 

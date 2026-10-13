@@ -546,16 +546,17 @@ LogicalResult writeArtifacts(ModuleOp module, StringRef outputDir,
             << "Software-checked artifacts only. Frozen RTL replay and board "
                "execution are not established by export or compiler tests.\n";
         if (artifact.bf16)
-          stream << "\nExplicit supplier BF16 model (CTQ-028/037), not IEEE "
-                    "BF16 matmul. Raw weight preprocessing and the final "
-                    "response layout still need hardware comparison. "
+          stream << "\nCandidate BF16 software model (CTQ-028/037), not IEEE "
+                    "BF16 matmul or bit-exact board behavior. Historical demo "
+                    "zero/cancellation outputs differ from this model. "
                     "Weight_EXP uses lane 0 in bits [7:0] of the first word. "
                     "Expected outputs put BF16 bits in each 21-bit token's "
                     "low 16 bits, lane 15 first, with 48 low padding bits "
                     "in the provisional 384-bit Cache row. "
                     "int21_1/2.txt hold the intermediate sums. "
-                    "Exponent saturation retains the fraction; zero follows "
-                    "the exponent path.\n";
+                    "Alignment truncates magnitude before sign; zero MAC "
+                    "returns zero. Reconstruction uses gradual underflow "
+                    "and finite saturation with rounding toward zero.\n";
       });
 }
 
