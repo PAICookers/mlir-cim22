@@ -90,9 +90,37 @@ padDenseTensor(DenseElementsAttr source, RankedTensorType resultType,
 }
 
 FailureOr<DenseElementsAttr> evaluateDenseTensor(Value value) {
-  if (auto constant = value.getDefiningOp<arith::ConstantOp>())
+  if (auto constant = value.getDefiningOp<arith::ConstantOp>()) {
     if (auto elements = dyn_cast<DenseElementsAttr>(constant.getValue()))
       return elements;
+    // torch-mlir stores frozen FP32 parameters in externally backed blobs.
+    // Only inspect a resolved, correctly sized resource; absent blobs must
+    // remain Host values rather than becoming fabricated weights.
+    if (auto resource =
+            dyn_cast<DenseF32ResourceElementsAttr>(constant.getValue())) {
+      auto values = resource.tryGetAsArrayRef();
+      auto type = dyn_cast<RankedTensorType>(resource.getType());
+      if (values && type && type.hasStaticShape() &&
+          values->size() == static_cast<size_t>(type.getNumElements()))
+        return DenseElementsAttr::get(type, *values);
+    }
+  }
+
+  if (auto transpose = value.getDefiningOp<linalg::TransposeOp>()) {
+    auto source = evaluateDenseTensor(transpose.getInput());
+    auto type = dyn_cast<RankedTensorType>(value.getType());
+    if (failed(source) || !type || type.getRank() != 2 ||
+        transpose.getPermutation() != ArrayRef<int64_t>{1, 0} ||
+        !isa<FloatType>(type.getElementType()))
+      return failure();
+    auto values = (*source).getValues<APFloat>();
+    SmallVector<APFloat> transposed;
+    transposed.reserve(type.getNumElements());
+    for (int64_t row = 0; row < type.getDimSize(0); ++row)
+      for (int64_t col = 0; col < type.getDimSize(1); ++col)
+        transposed.push_back(values.begin()[col * type.getDimSize(0) + row]);
+    return DenseElementsAttr::get(type, transposed);
+  }
 
   // Frontends commonly cast checkpoint weights before the convolution.
   // Arith only folds lossless casts; explicit f32 -> bf16 nearest-even casts
@@ -1406,6 +1434,100 @@ LogicalResult normalizeCIMInt8Conv(linalg::Conv2DNchwFchwOp op,
   return success();
 }
 
+// Match a broadcast of ONE immutable matrix. A batch-dependent RHS cannot
+// use this rewrite: collapsing its batch dimension would mix separate weights.
+Value getSharedBatchWeight(Value value) {
+  if (auto broadcast = value.getDefiningOp<linalg::BroadcastOp>())
+    if (broadcast.getDimensions() == ArrayRef<int64_t>{0})
+      return broadcast.getInput();
+  auto generic = value.getDefiningOp<linalg::GenericOp>();
+  if (!generic || generic.getNumDpsInputs() != 1 ||
+      generic.getNumDpsInits() != 1 || generic.getNumLoops() != 3 ||
+      generic.getNumParallelLoops() != 3 || !generic.getRegion().hasOneBlock())
+    return {};
+  auto maps = generic.getIndexingMapsArray();
+  auto *context = value.getContext();
+  auto d1 = getAffineDimExpr(1, context);
+  auto d2 = getAffineDimExpr(2, context);
+  auto &body = generic.getRegion().front();
+  auto yield = dyn_cast<linalg::YieldOp>(body.getTerminator());
+  if (maps[0] != AffineMap::get(3, 0, {d1, d2}, context) ||
+      !maps[1].isIdentity() || body.getOperations().size() != 1 || !yield ||
+      yield.getValues().size() != 1 ||
+      yield.getValues()[0] != body.getArgument(0))
+    return {};
+  return generic.getDpsInputs()[0];
+}
+
+LogicalResult normalizeSharedBatchLinear(linalg::BatchMatmulOp op,
+                                         PatternRewriter &rewriter,
+                                         bool allowF32) {
+  auto inputs = op.getDpsInputs();
+  auto inits = op.getDpsInits();
+  if (!op.hasPureTensorSemantics() || op->getNumResults() != 1 ||
+      inputs.size() != 2 || inits.size() != 1)
+    return failure();
+  auto inputType = dyn_cast<RankedTensorType>(inputs[0].getType());
+  auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+  if (!inputType || !resultType || inputType.getRank() != 3 ||
+      resultType.getRank() != 3 || !inputType.hasStaticShape() ||
+      !resultType.hasStaticShape())
+    return failure();
+  Type elementType = inputType.getElementType();
+  if (!elementType.isBF16() && !(allowF32 && elementType.isF32()))
+    return failure();
+  for (Value operand : op->getOperands()) {
+    auto type = dyn_cast<RankedTensorType>(operand.getType());
+    if (!type || type.getEncoding() || !type.hasStaticShape() ||
+        type.getElementType() != elementType ||
+        llvm::any_of(type.getShape(), [](int64_t size) { return size <= 0; }))
+      return failure();
+  }
+  auto *context = op.getContext();
+  AffineExpr b, m, n, k;
+  bindDims(context, b, m, n, k);
+  SmallVector<AffineMap> expected{AffineMap::get(4, 0, {b, m, k}, context),
+                                  AffineMap::get(4, 0, {b, k, n}, context),
+                                  AffineMap::get(4, 0, {b, m, n}, context)};
+  if (op.getIndexingMapsArray() != expected ||
+      !hasCanonicalFloatContractionBody(op.getRegion(), elementType) ||
+      !isPositiveFloatZeroSplat(inits[0], elementType))
+    return failure();
+  Value weight = getSharedBatchWeight(inputs[1]);
+  if (!weight)
+    return failure();
+  auto weightType = dyn_cast<RankedTensorType>(weight.getType());
+  if (!weightType || weightType.getRank() != 2 || weightType.getEncoding() ||
+      weightType.getShape() !=
+          ArrayRef<int64_t>{inputType.getDimSize(2), resultType.getDimSize(2)})
+    return failure();
+  auto elements = evaluateDenseTensor(weight);
+  int64_t columns;
+  if (failed(elements) || llvm::MulOverflow(inputType.getDimSize(0),
+                                            inputType.getDimSize(1), columns))
+    return failure();
+  Location loc = op.getLoc();
+  auto flatInput =
+      RankedTensorType::get({columns, inputType.getDimSize(2)}, elementType);
+  auto flatOutput =
+      RankedTensorType::get({columns, resultType.getDimSize(2)}, elementType);
+  SmallVector<ReassociationIndices> reassociation{{0, 1}, {2}};
+  Value activation = tensor::CollapseShapeOp::create(rewriter, loc, flatInput,
+                                                     inputs[0], reassociation);
+  Value constant = arith::ConstantOp::create(rewriter, loc, *elements);
+  Value zero = arith::ConstantOp::create(
+      rewriter, loc,
+      DenseElementsAttr::get(flatOutput,
+                             rewriter.getFloatAttr(elementType, 0.0)));
+  auto matmul = linalg::MatmulOp::create(rewriter, loc, TypeRange{flatOutput},
+                                         ValueRange{activation, constant},
+                                         ValueRange{zero});
+  Value restored = tensor::ExpandShapeOp::create(
+      rewriter, loc, resultType, matmul.getResult(0), reassociation);
+  rewriter.replaceOp(op, restored);
+  return success();
+}
+
 bool isBF16LinearCandidate(linalg::MatmulOp op, bool allowF32 = false) {
   if (op->hasAttr(CIMDialect::getMatMulIntegerAttrName()) ||
       (!isa<linalg::MatmulTransposeBOp>(op.getOperation()) &&
@@ -1731,12 +1853,19 @@ public:
   using Base::Base;
 
   void runOnOperation() override {
+    PatternRewriter rewriter(&getContext());
+    SmallVector<linalg::BatchMatmulOp> batched;
+    getOperation()->walk(
+        [&](linalg::BatchMatmulOp op) { batched.push_back(op); });
+    for (auto op : batched) {
+      rewriter.setInsertionPoint(op);
+      (void)normalizeSharedBatchLinear(op, rewriter, allowF32);
+    }
     SmallVector<linalg::MatmulOp> candidates;
     getOperation()->walk([&](linalg::MatmulOp op) {
       if (isBF16LinearCandidate(op, allowF32))
         candidates.push_back(op);
     });
-    PatternRewriter rewriter(&getContext());
     for (linalg::MatmulOp op : candidates) {
       rewriter.setInsertionPoint(op);
       normalizeCIMLinear(op, rewriter);

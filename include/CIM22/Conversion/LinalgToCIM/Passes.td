@@ -41,7 +41,13 @@ def NormalizeCIMConv : Pass<"normalize-cim-conv", "::mlir::ModuleOp"> {
 }
 
 def NormalizeCIMLinear : Pass<"normalize-cim-linear", "::mlir::ModuleOp"> {
-  let summary = "Normalize BF16 activation-first Linear matmul for CIM lowering";
+  let summary = "Normalize BF16 Linear and shared-weight batch_matmul for CIM lowering";
+  let description = [{
+    Static batch_matmul with a broadcast immutable 2D RHS is collapsed to
+    ordinary Linear and its output shape is restored. Batch-dependent weights,
+    nonzero accumulators and modified contraction bodies remain on the Host.
+    FP32 resource-backed constants and constant 2D transposes are recognized.
+  }];
   let options = [Option<"allowF32", "allow-f32", "bool", "false",
                         "Also normalize FP32 Linear without changing precision">];
   let dependentDialects = ["::mlir::arith::ArithDialect",
