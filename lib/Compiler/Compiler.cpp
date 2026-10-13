@@ -1,0 +1,56 @@
+//===- Compiler.cpp - Shared compiler registration ------------*- C++ -*-===//
+//
+// Licensed under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#include "CIM22/Compiler/Compiler.h"
+#include "CIM22/Conversion/LinalgToCIM/Passes.h"
+#include "CIM22/Dialect/CIM/IR/CIMDialect.h"
+#include "CIM22/Dialect/CIMFrame/IR/CIMFrameDialect.h"
+#include "CIM22/Dialect/CIMFrame/Transforms/Passes.h"
+#include "CIM22/Target/Passes.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/InitAllPasses.h"
+#include <mutex>
+
+void registerCIM22Compiler(mlir::DialectRegistry &registry) {
+  static std::once_flag registration;
+  std::call_once(registration, [] {
+    mlir::cim::registerPasses();
+    mlir::cimframe::registerPasses();
+    mlir::cim22::target::registerPasses();
+    mlir::registerAllPasses();
+    registerCIM22Pipelines();
+  });
+  registry.insert<mlir::arith::ArithDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::cf::ControlFlowDialect, mlir::cim::CIMDialect,
+                  mlir::cimframe::CIMFrameDialect, mlir::func::FuncDialect,
+                  mlir::linalg::LinalgDialect, mlir::LLVM::LLVMDialect,
+                  mlir::memref::MemRefDialect, mlir::math::MathDialect,
+                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
+  mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
+      registry);
+  mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
+}

@@ -1,10 +1,12 @@
 //===- Pipelines.cpp - Mixed BF16 CIM and Host pipelines ------*- C++ -*-===//
 
+#include "CIM22/Compiler/Compiler.h"
 #include "CIM22/Dialect/CIM/IR/CIMDialect.h"
 #include "CIM22/Dialect/CIM/IR/CIMOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
@@ -15,36 +17,7 @@
 
 using namespace mlir;
 
-namespace {
-// Reuse the registered upstream pipelines. This file belongs to the optimizer
-// driver, which registers all upstream and project passes before these aliases.
-constexpr StringLiteral preparePipeline =
-    "canonicalize,cse,normalize-cim-linear{allow-f32=true},"
-    "normalize-cim-conv{allow-f32=true "
-    "allow-bias-epilogue=true},prepare-cim-bf16";
-constexpr StringLiteral vmmPipeline = "partition-cim-program,form-cim-program";
-constexpr StringLiteral packetPipeline =
-    "partition-cim-program,form-cim-program,"
-    "func.func(materialize-cim-schedule,map-cim-schedule),"
-    "materialize-cim-execution-plan,materialize-cim-static-weight-section,"
-    "lower-cimframe-commands-to-packets,verify-cimframe";
-constexpr StringLiteral hostPipeline =
-    "convert-elementwise-to-linalg,"
-    "one-shot-bufferize{bufferize-function-boundaries "
-    "function-boundary-type-conversion=identity-layout-map},"
-    "buffer-results-to-out-params,buffer-deallocation-pipeline,"
-    "convert-bufferization-to-memref,"
-    "convert-linalg-to-loops,expand-strided-metadata,lower-affine,"
-    "convert-scf-to-cf,convert-math-to-llvm,convert-arith-to-llvm,"
-    "convert-cf-to-llvm,finalize-memref-to-llvm,convert-func-to-llvm,"
-    "reconcile-unrealized-casts";
-
-void appendPipeline(OpPassManager &pm, StringRef pipeline) {
-  if (failed(parsePassPipeline(pipeline, pm)))
-    llvm::report_fatal_error("invalid built-in CIM22 pipeline");
-}
-
-FailureOr<std::pair<ModuleOp, ModuleOp>> getSplitParts(ModuleOp root) {
+FailureOr<std::pair<ModuleOp, ModuleOp>> getCIMSplitParts(ModuleOp root) {
   ModuleOp host, device;
   for (auto child : root.getOps<ModuleOp>()) {
     auto part = child->getAttrOfType<StringAttr>("cim.pipeline_part");
@@ -60,6 +33,69 @@ FailureOr<std::pair<ModuleOp, ModuleOp>> getSplitParts(ModuleOp root) {
     return root.emitError("expected an outline-cim-bf16 split program");
   return std::make_pair(host, device);
 }
+
+namespace {
+// Reuse upstream pipelines for both the optimizer and the native runtime.
+constexpr StringLiteral preparePipeline =
+    "canonicalize,cse,normalize-cim-linear{allow-f32=true},"
+    "normalize-cim-conv{allow-f32=true "
+    "allow-bias-epilogue=true},prepare-cim-bf16";
+constexpr StringLiteral vmmPipeline = "partition-cim-program,form-cim-program";
+constexpr StringLiteral packetPipeline =
+    "partition-cim-program,form-cim-program,"
+    "func.func(materialize-cim-schedule,map-cim-schedule),"
+    "materialize-cim-execution-plan,materialize-cim-static-weight-section,"
+    "lower-cimframe-commands-to-packets,verify-cimframe";
+constexpr StringLiteral hostPipeline =
+    "convert-elementwise-to-linalg,"
+    "one-shot-bufferize{bufferize-function-boundaries "
+    "function-boundary-type-conversion=identity-layout-map},"
+    "buffer-results-to-out-params{modify-public-functions=true},"
+    "buffer-deallocation-pipeline,"
+    "convert-bufferization-to-memref,"
+    "lower-cim-host-copies,convert-linalg-to-loops,expand-strided-metadata,"
+    "lower-affine,"
+    "convert-scf-to-cf,arith-expand{include-bf16=true},"
+    "convert-math-to-llvm,convert-arith-to-llvm,"
+    "convert-cf-to-llvm,finalize-memref-to-llvm,convert-func-to-llvm,"
+    "reconcile-unrealized-casts";
+
+void appendPipeline(OpPassManager &pm, StringRef pipeline) {
+  if (failed(parsePassPipeline(pipeline, pm)))
+    llvm::report_fatal_error("invalid built-in CIM22 pipeline");
+}
+
+// Upstream MemRef-to-LLVM leaves strided copies as calls to memrefCopy. The
+// packaged C runner DSO pulls in MLIR through its float helpers. Express ranked
+// copies as upstream Linalg copies so the existing loop lowering makes models
+// independent of that DSO, without duplicating its descriptor-copy algorithm.
+class LowerHostCopiesPass
+    : public PassWrapper<LowerHostCopiesPass, OperationPass<ModuleOp>> {
+public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LowerHostCopiesPass)
+  StringRef getArgument() const final { return "lower-cim-host-copies"; }
+  StringRef getDescription() const final {
+    return "Lower ranked Host copies through upstream Linalg loops";
+  }
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<linalg::LinalgDialect>();
+  }
+  void runOnOperation() override {
+    SmallVector<memref::CopyOp> copies;
+    getOperation()->walk([&](memref::CopyOp op) { copies.push_back(op); });
+    for (auto op : copies) {
+      if (!isa<MemRefType>(op.getSource().getType()) ||
+          !isa<MemRefType>(op.getTarget().getType())) {
+        op.emitError("CIM22 Host requires ranked copy operands");
+        return signalPassFailure();
+      }
+      OpBuilder builder(op);
+      linalg::CopyOp::create(builder, op.getLoc(), ValueRange{op.getSource()},
+                             ValueRange{op.getTarget()});
+      op.erase();
+    }
+  }
+};
 
 // Tiling creates Host pad/slice/concat and cross-K accumulation around the
 // transactions. Move those wrappers back to Host and outline only transactions
@@ -100,6 +136,24 @@ LogicalResult outlineTransactions(ModuleOp host, ModuleOp device) {
       Operation *clone = rewriter.clone(*transaction, mapping);
       clone->setAttr(cim::CIMDialect::getTransactionIdxAttrName(),
                      rewriter.getI64IntegerAttr(0));
+      // Packet resources follow the outlined function. Match resource symbols
+      // rather than work ids, which may be reused by separate transactions.
+      llvm::SmallDenseSet<Attribute> resources;
+      transaction.walk([&](cim::ConfigureWeightOp weight) {
+        resources.insert(weight->getAttr("resource"));
+      });
+      for (Operation &packet : device.getBody()->getOperations()) {
+        auto binding = packet.getAttrOfType<DictionaryAttr>("cim.plan_binding");
+        if (!binding || !resources.contains(binding.get("resource")))
+          continue;
+        auto function = binding.getAs<FlatSymbolRefAttr>("function");
+        if (!function || function.getValue() != wrapper.getSymName())
+          continue;
+        NamedAttrList updated(binding);
+        updated.set("function", FlatSymbolRefAttr::get(kernel));
+        packet.setAttr("cim.plan_binding",
+                       updated.getDictionary(host.getContext()));
+      }
       func::ReturnOp::create(rewriter, transaction.getLoc(),
                              clone->getResults());
 
@@ -137,7 +191,7 @@ public:
   void runOnOperation() final {
     ModuleOp host = getOperation();
     if (host->hasAttr("cim.split_program")) {
-      auto parts = getSplitParts(host);
+      auto parts = getCIMSplitParts(host);
       if (failed(parts))
         return signalPassFailure();
       host = parts->first;
@@ -198,13 +252,14 @@ public:
       getOperation().emitError("stage must be split, vmm, packet or llvm");
       return signalPassFailure();
     }
-    auto parts = getSplitParts(getOperation());
+    auto parts = getCIMSplitParts(getOperation());
     if (failed(parts))
       return signalPassFailure();
     if (requireCIM) {
       bool missing = parts->second.getOps<func::FuncOp>().empty();
       parts->first.walk([&](linalg::LinalgOp op) {
-        if (isa<linalg::MatmulOp, linalg::MatvecOp>(op.getOperation()) ||
+        if (isa<linalg::MatmulOp, linalg::BatchMatmulOp, linalg::MatvecOp>(
+                op.getOperation()) ||
             op->getName().getStringRef().contains("conv")) {
           op.emitError("required CIM contraction remained on Host");
           missing = true;
@@ -249,6 +304,7 @@ struct BF16PipelineOptions : PassPipelineOptions<BF16PipelineOptions> {
 } // namespace
 
 void registerCIM22Pipelines() {
+  PassRegistration<LowerHostCopiesPass>();
   PassRegistration<LowerCIMHostToLLVM>();
   PassRegistration<CompileCIMParts>();
   PassPipelineRegistration<>(
