@@ -17,7 +17,12 @@ config.substitutions = [
     if substitution[0] != "%python"
 ]
 config.substitutions.append(("%python", f'"{config.python_executable}"'))
-config.substitutions.append(("%mlir_c_runner_utils", f'"{config.mlir_c_runner_utils}"'))
+config.substitutions.append(
+    ("%mlir_c_runner_utils", f'"{config.mlir_c_runner_utils}"')
+)
+config.substitutions.append(("%cim22_runtime", f'"{config.cim22_runtime}"'))
+if config.python_version.startswith("3.12."):
+    config.available_features.add("python312")
 
 tool_dirs = [
     os.path.join(config.mlir_cim22_obj_root, "bin"),

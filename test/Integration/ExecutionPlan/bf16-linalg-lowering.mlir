@@ -1,7 +1,7 @@
 // RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(normalize-cim-linear,normalize-cim-conv,partition-cim-program,form-cim-program,func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section,lower-cimframe-commands-to-packets,verify-cimframe)' | FileCheck %s
 
 // A formed BF16 VMM must survive the existing schedule and packet pipeline.
-// This checks compilation only; the supplier-model runner is not a standard
+// This checks compilation only; the candidate-model runner is not a standard
 // BF16 numerical oracle for the conventional-BF16 hardware assumption.
 // CHECK: cim.static_weight @__cim_weight_bf16_linalg_s0_w0
 // CHECK: cimframe.control_bf16_packet

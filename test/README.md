@@ -1,28 +1,32 @@
-# MLIR-CIM22 Test Organization
+# MLIR-CIM22 Tests
 
 - `Dialect`, `Conversion`, `Frontend`, and `Target` mirror production ownership.
-- `Integration` contains cross-component compiler pipelines. `ONNX` includes the
-  importer; target-stage directories such as ExecutionPlan, Mapping, and
-  Schedule start from project MLIR.
-- `python` contains test-only numeric, layout, and model reference code.
-- `Inputs` contains immutable fixtures and manifests excluded from lit discovery.
-- `Unit` contains C++ API/helper tests invoked through lit wrappers.
+- `Integration` exercises compiler pipelines across components.
+- `Unit` contains C++ API tests invoked by lit wrappers.
+- `python` contains numeric oracles, fixture parsers and artifact checks.
+- `Inputs` holds immutable fixtures and is excluded from lit discovery.
 
-Test-only names describe their role:
+Run the compiler suite with `cmake --build build --target check-mlir-cim22`.
+LLVM/MLIR 22.1.8 supplies `mlir-runner` and `mlir_c_runner_utils`; CMake provides
+their paths. The native packet test requires Linux and Python 3.12 with NumPy.
+See [Python verification](../python/README.md#verification) for the separate uv,
+pytest and Ruff workflow covering the public Python backend and model `.so` ABI.
 
-- `reference` implements evidenced numeric or layout behavior.
-- `verify` checks compiler IR or artifacts, optionally using a reference model.
-- `replay` runs immutable supplier fixtures through a reference model.
-- `runner` is reserved for a future executable-artifact consumer.
+| Coverage | Tests |
+| --- | --- |
+| Conv layouts, groups, channel multiplier, stride/dilation/padding | `normalize-cim-conv*.mlir`, `normalize-cim-conv-numerics.test`: original and normalized CPU execution against a scalar oracle |
+| Shared constant batch weights, resource tensors, transposes and Host fallback | `shared-batch-linear.mlir`; Python backend test checks distinct T/B rows and temporal reset |
+| Mixed CIM/Host boundaries, casts, bias, reduction and bounded column reuse | `mixed-bf16-pipeline.mlir`, `mixed-bf16-numerics.test`, `prepare-cim-bf16.mlir` |
+| Candidate BF16 arithmetic | `BF16SupportTest.cpp` checks finite encodings, sign symmetry, zero/subnormals and saturation; `CIMSoftwareRunnerTest.cpp` checks execution |
+| Frame layouts and exports | BF16 fixture replay, reference/multicore export tests, and existing INT8 frame tests |
+| Native runtime contracts | `native-bf16.mlir` checks packet compilation, dispatch and malformed split IR; pytest checks AOT publication, relocated reload, output ownership, ABI rejection and backend caching |
 
-Do not encode temporary milestone names in directory paths. Record milestone,
-source provenance, and evidence level in task records, test comments, or fixture
-manifests instead.
+Supplier snapshots retain their original bytes and historical arithmetic
+outputs. BF16 replay now checks only Cache/Weight_EXP/response layouts, with
+three mutations proving rejection; it does not use supplier arithmetic as the
+candidate runner's oracle. See [fixture provenance](Inputs/CIM22/bf16/README.md).
 
-BF16 supplier replay checks all four bundle/Macro cases against production C++
-prealignment, reconstruction, Cache/Weight_EXP helpers and software runner.
-Expected stages are fixed supplier files; the Python adapter only parses
-them. See [snapshot provenance and boundaries](Inputs/CIM22/bf16/README.md).
-The fixed response/padding and signed exponent-gap tests are in
-`Unit/Support/BF16SupportTest.cpp`. Neither suite establishes RTL execution or
-raw BF16 weight preprocessing equivalence.
+Mathematical BF16 references test compiler indexing and precision boundaries;
+candidate-runner tests cover the selected shared-exponent approximation.
+Neither establishes bit-exact hardware behavior. All executable fixtures live
+in this repository; model-specific experiments and local tools are not required.

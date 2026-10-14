@@ -8,7 +8,9 @@
 
 #include "CIM22/Support/BF16Support.h"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -35,8 +37,8 @@ static bool testPrealignmentEdges() {
          check(result.mantissas[0] == 64, "BF16-P01 positive mantissa") &&
          check(result.mantissas[1] == -96, "BF16-P01 negative mantissa") &&
          check(result.mantissas[2] == 32, "BF16-P01 shifted mantissa") &&
-         check(static_cast<uint8_t>(result.mantissas[3]) == 0x90,
-               "BF16-P01 hardware negative shift") &&
+         check(result.mantissas[3] == -16,
+               "BF16-P01 magnitude shift before sign") &&
          check(result.mantissas[4] == 0,
                "BF16-P01 exponent-difference truncation");
 }
@@ -78,34 +80,50 @@ static bool testSupplierPrealignmentFixtures() {
 }
 
 static bool testInt21Conversion() {
-  return check(int21ToBF16(0, 3, 4) == 0x0400,
-               "BF16-P03 zero follows hardware exponent path") &&
-         check(int21ToBF16(192, 0, 126) == 0x3fc0,
+  return check(int21ToBF16(0, 3, 4) == 0x0000, "BF16-P03 canonical zero") &&
+         check(int21ToBF16(6144, 127, 127) == 0x3fc0,
                "BF16-P03 positive normalization") &&
-         check(int21ToBF16(-192, 0, 126) == 0xbfc0,
+         check(int21ToBF16(-6144, 127, 127) == 0xbfc0,
                "BF16-P03 negative normalization") &&
-         check(int21ToBF16(3, 0, 0) == 0x0040,
-               "BF16-P03 exponent underflow saturation") &&
-         check(int21ToBF16(1048575, 254, 254) == 0x7fff,
-               "BF16-P03 exponent overflow saturation") &&
-         check(int21ToBF16(-1048576, 0, 0) == 0x8700,
-               "BF16-P03 signed INT21 minimum");
+         check(int21ToBF16(2048, 1, 127) == 0x0040,
+               "BF16-P03 gradual underflow") &&
+         check(int21ToBF16(1048575, 254, 254) == 0x7f7f &&
+                   int21ToBF16(-1048576, 254, 254) == 0xff7f,
+               "BF16-P03 finite saturation, both signs") &&
+         check(int21ToBF16(-1048576, 127, 127) == 0xc380,
+               "BF16-P03 signed INT21 minimum") &&
+         check(int21ToBF16(8191, 127, 127) == 0x3fff &&
+                   int21ToBF16(-8191, 127, 127) == 0xbfff,
+               "BF16-P03 truncate final fraction toward zero") &&
+         check(int21ToBF16(1, 0, 0) == 0 && int21ToBF16(-1, 0, 0) == 0x8000,
+               "BF16-P03 underflow sign");
 }
 
-static bool testSupplierInt21Fixture() {
-  const std::array<uint8_t, kBF16OutputElements> weightExponents{
-      32, 4, 16, 2, 128, 8, 1, 4, 64, 8, 2, 1, 4, 128, 2, 64};
-  const std::array<int32_t, kBF16OutputElements> values{
-      -11648, 160,  -1216, 6864,  -12288, 640,    -4864, 512,
-      6400,   2048, 5504,  -7584, -3328,  -11840, 1344,  0};
-  const std::array<uint16_t, kBF16OutputElements> expected{
-      0xd3b6, 0x42a0, 0xca18, 0x4456, 0xffc0, 0x45a0, 0xc398, 0x4380,
-      0x6348, 0x4680, 0x442c, 0xc3ed, 0xc4d0, 0xffb9, 0x4328, 0x6080};
-
-  std::array<uint16_t, kBF16OutputElements> actual{};
-  for (size_t lane = 0; lane < actual.size(); ++lane)
-    actual[lane] = int21ToBF16(values[lane], weightExponents[lane], 128);
-  return check(actual == expected, "BF16-P04 supplier INT21 conversion");
+static bool testFiniteAlignmentError() {
+  // Independent numeric bound across every finite BF16 magnitude and several
+  // competing block maxima. Shared-exponent loss must never change the sign or
+  // exceed one quantization step; cancellation is exact after alignment.
+  for (uint32_t bits = 0; bits < 0x7f80; ++bits) {
+    const int exponent = (bits >> 7) & 0xff;
+    const double original = std::ldexp((bits & 0x7f) + (exponent ? 128 : 0),
+                                       std::max(exponent, 1) - 134);
+    for (uint16_t anchor : {0x0000, 0x3f80, 0x7f7f}) {
+      std::array<uint16_t, kBF16InputElements> values{};
+      values[0] = static_cast<uint16_t>(bits);
+      values[1] = static_cast<uint16_t>(bits | 0x8000);
+      values[2] = anchor;
+      const auto result = prealignBF16Vector(values);
+      const double step =
+          std::ldexp(1.0, std::max<int>(result.exponent, 1) - 133);
+      const double represented = result.mantissas[0] * step;
+      if (!check(result.mantissas[0] >= 0 &&
+                     result.mantissas[1] == -result.mantissas[0] &&
+                     represented <= original && original - represented < step,
+                 "BF16-P04 exhaustive finite alignment bound and symmetry"))
+        return false;
+    }
+  }
+  return true;
 }
 
 static bool testWeightPrealignment() {
@@ -129,45 +147,39 @@ static bool testWeightPrealignment() {
   return true;
 }
 
-static bool testSupplierZeroAndSubnormalBits() {
-  // Freeze the supplier bit operations, not IEEE zero/subnormal semantics.
+static bool testZeroAndSubnormalBits() {
   std::array<uint16_t, kBF16InputElements> values{};
   values[1] = 0x8000;
-  values[2] = 0x0001;
-  values[3] = 0x8001;
+  values[2] = 0x0002;
+  values[3] = 0x8002;
+  values[4] = 0x0001; // Lost to the one-bit headroom rule.
   const BF16PrealignedVector aligned = prealignBF16Vector(values);
   return check(aligned.exponent == 0 && aligned.mantissas[0] == 0 &&
-                   aligned.mantissas[1] == -128 && aligned.mantissas[2] == 1 &&
-                   aligned.mantissas[3] == 127,
-               "BF16-P07 supplier zero/subnormal prealignment") &&
-         check(int21ToBF16(262144, 127, 127) == 0x7f80,
-               "BF16-P07 raw unit weights are not IEEE arithmetic") &&
-         check(int21ToBF16(0, 0, 127) == 0x4000,
-               "BF16-P07 zero dot retains the supplier exponent");
+                   aligned.mantissas[1] == 0 && aligned.mantissas[2] == 1 &&
+                   aligned.mantissas[3] == -1 && aligned.mantissas[4] == 0,
+               "BF16-P07 zero/subnormal prealignment") &&
+         check(int21ToBF16(262144, 127, 127) == 0x4280,
+               "BF16-P07 64 unit products") &&
+         check(int21ToBF16(64, 0, 127) == 0x0002,
+               "BF16-P07 raw zero exponent uses subnormal scale");
 }
 
 static bool testExponentGapBoundary() {
   std::array<uint16_t, kBF16InputElements> values{};
   values[0] = 0x3f80;
   values[1] = 0x3c80; // Gap 6: keep the last positive bit.
-  values[2] = 0xbc80; // Negative sign extension survives gap 6.
+  values[2] = 0xbc80; // Negative magnitude also retains one bit.
   values[3] = 0x3c00; // Gap 7: drop both signs completely.
   values[4] = 0xbc00;
   values[5] = 0x3b80; // Gap 8: also zero.
   values[6] = 0xbb80;
+  values[7] = 0xbf02; // -0.5078125: truncate magnitude, not signed floor.
   const auto aligned = prealignBF16Vector(values);
-  return check(aligned.mantissas[1] == 1 && aligned.mantissas[2] == -127 &&
+  return check(aligned.mantissas[1] == 1 && aligned.mantissas[2] == -1 &&
                    aligned.mantissas[3] == 0 && aligned.mantissas[4] == 0 &&
-                   aligned.mantissas[5] == 0 && aligned.mantissas[6] == 0,
-               "BF16-P08 signed exponent gaps 6/7/8") &&
-         check(int21ToBF16(255, 0, 253) == 0x7f7f &&
-                   int21ToBF16(255, 0, 254) == 0x7fff &&
-                   int21ToBF16(255, 1, 254) == 0x7fff,
-               "BF16-P08 exponent 254/255/256 retains fraction") &&
-         check(int21ToBF16(3, 0, 4) == 0x0040 &&
-                   int21ToBF16(3, 0, 5) == 0x0040 &&
-                   int21ToBF16(3, 0, 6) == 0x00c0,
-               "BF16-P08 exponent -1/0/1 retains fraction");
+                   aligned.mantissas[5] == 0 && aligned.mantissas[6] == 0 &&
+                   aligned.mantissas[7] == -32,
+               "BF16-P08 signed exponent gaps and toward-zero shift");
 }
 
 static bool testLayouts() {
@@ -218,9 +230,8 @@ static bool testLayouts() {
 
 int main() {
   return testPrealignmentEdges() && testSupplierPrealignmentFixtures() &&
-                 testInt21Conversion() && testSupplierInt21Fixture() &&
-                 testWeightPrealignment() &&
-                 testSupplierZeroAndSubnormalBits() &&
+                 testInt21Conversion() && testFiniteAlignmentError() &&
+                 testWeightPrealignment() && testZeroAndSubnormalBits() &&
                  testExponentGapBoundary() && testLayouts()
              ? 0
              : 1;

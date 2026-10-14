@@ -1,4 +1,4 @@
-// Explicit supplier-model BF16 VMM, not standard BF16 matrix multiplication.
+// Explicit BF16 VMM fixture; candidate execution is not standard BF16 matmul.
 // The two weight templates reuse Integration/ExecutionPlan/bf16-runner.mlir.
 // One transaction: cores 0-2 use both Macros, core 3 uses only Macro 0.
 // The reference exporter supplies all eight Cache rows to each listed Macro.

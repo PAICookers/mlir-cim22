@@ -1,4 +1,4 @@
-// Explicit supplier-model BF16 VMM, not standard BF16 matrix multiplication.
+// Explicit BF16 VMM fixture; candidate execution is not standard BF16 matmul.
 // The two Macro weight tiles reuse test/Integration/ExecutionPlan/bf16-runner.mlir.
 // Optional full-array case: 40 independent VMM tiles, two Macros per core.
 // The reference exporter supplies all eight Cache rows to every active Macro.

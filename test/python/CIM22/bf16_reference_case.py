@@ -1,12 +1,13 @@
 """Prepare and check the fixed dual-Macro BF16 reference demo.
 
-Lane-zero expectations were evaluated with ExpPrealign/int21_to_bf16 from
-test_data_1_17.zip, independently of the C++ exporter. Other lanes alternate
-weight sign and increase the exponent by one; no BF16 arithmetic is reimplemented.
+Candidate-model lane-zero expectations are fixed scalar products with powers
+of two, independently of the C++ exporter. Subnormal lane-zero results are
+scaled numerically for higher lanes. Historical demo outputs are kept separately.
 The raw weights are defined by Integration/ExecutionPlan/bf16-runner.mlir.
 """
 
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import int8_reference as reference
@@ -17,7 +18,10 @@ from verify_rtl_artifacts import read_source, read_words
 INPUT_PAIRS = (
     (0x3F80, 0xBFC0),  # 1, -1.5
     (0x3F00, 0xBF80),  # 0.5, -1
-    (0x3F80, 0x3F80),  # Cancellation; supplier zero retains its exponent.
+    (
+        0x3F80,
+        0x3F80,
+    ),  # Cancellation yields zero in the selected software model.
     (0xBF80, 0x3F80),  # -1, 1
     (0x4000, 0xC040),  # 2, -3
     (0x3F80, 0),
@@ -26,39 +30,37 @@ INPUT_PAIRS = (
 )
 LANE_ZERO = (
     (
-        (10240, 0x43A0),
-        (6144, 0x4340),
-        (0, 0x4080),
-        (-8192, 0xC380),
-        (10240, 0x4420),
-        (4096, 0x4300),
-        (0, 0x0100),
-        (4096, 0x4300),
+        (10240, 0x0120),
+        (6144, 0x00C0),
+        (0, 0x0000),
+        (-8192, 0x8100),
+        (10240, 0x01A0),
+        (4096, 0x0080),
+        (0, 0x0000),
+        (4096, 0x0080),
     ),
     (
-        (15360, 0x4BF0),
-        (9216, 0x4B90),
-        (0, 0x4880),
-        (-12288, 0xCBC0),
-        (15360, 0x4C70),
-        (6144, 0x4B40),
-        (0, 0x0900),
-        (6144, 0x4B40),
+        (15360, 0x0970),
+        (9216, 0x0910),
+        (0, 0x0000),
+        (-12288, 0x8940),
+        (15360, 0x09F0),
+        (6144, 0x08C0),
+        (0, 0x0000),
+        (6144, 0x08C0),
     ),
 )
 
 
-def input_rows(profile="normal"):
+def input_rows(profile: str = "normal") -> "Iterator[str]":
     for row, pair in enumerate(INPUT_PAIRS):
         values = list(pair) + [0] * 62
         if profile == "inf" and row == 0:
             values[0] = 0x7F80
-        if profile == "overflow":
-            values = [0xBFFF] * 64
         yield "".join(f"{value:016b}" for value in values)
 
 
-def verify(directory):
+def verify(directory: Path) -> None:
     for macro, fixed_rows in enumerate(LANE_ZERO):
         suffix = macro + 1
         weights = reference.decode_int8_weight_words(
@@ -91,7 +93,9 @@ def verify(directory):
                     if total
                     else 0
                 )
-                expected = sign | ((bits & 0x7FFF) + 128 * lane)
+                magnitude = np.array((bits & 0x7FFF) << 16, dtype=np.uint32)
+                scaled = magnitude.view(np.float32) * np.float32(2**lane)
+                expected = sign | (int(scaled.view(np.uint32)) >> 16)
                 assert output[row, lane] == expected, (macro, row, lane)
     print(
         "PASS BF16 reference weights, inputs, exponents, 256 INT21 and 256 BF16 outputs"

@@ -23,8 +23,9 @@ def CIM_VMMOp : CIM_Op<"vmm", [Pure]> {
     operands with signless `i21` results, or BF16 operands with BF16 results.
     BF16 Linalg formation assumes this tile implements a conventional BF16
     dot product. The current software runner separately implements the
-    provisional supplier model: prealign inputs and per-lane weights,
-    accumulate signed INT21, then reconstruct BF16 output bits. That runner
+    selected candidate model: prealign input and per-lane weight magnitudes,
+    apply sign, accumulate signed INT21, then reconstruct BF16 with gradual
+    underflow, finite saturation and zero preservation. That runner
     is not an arithmetic-equivalence oracle for standard BF16 Linalg.
     Raw weight exponent interpretation remains provisional under CTQ-028;
     BF16 reference artifact export requires explicit opt-in. Numerical

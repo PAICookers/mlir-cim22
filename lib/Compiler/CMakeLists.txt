@@ -1,0 +1,23 @@
+add_mlir_library(MLIRCIM22Compiler
+  Compiler.cpp
+  Pipelines.cpp
+  LINK_LIBS PUBLIC
+  MLIRCIM22LinalgToCIM
+  MLIRCIM22CIMFrameTransforms
+  MLIRCIM22Target
+  MLIRArithDialect
+  MLIRArithTransforms
+  MLIRBufferizationDialect
+  MLIRControlFlowDialect
+  MLIRFuncDialect
+  MLIRFuncTransforms
+  MLIRLinalgDialect
+  MLIRLLVMDialect
+  MLIRMathDialect
+  MLIRMemRefDialect
+  MLIRRegisterAllPasses
+  MLIRSCFDialect
+  MLIRSCFTransforms
+  MLIRTensorDialect
+  MLIRTensorTransforms
+)

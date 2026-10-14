@@ -5,15 +5,20 @@ implementation is software-only and is not a hardware deployment tool.
 
 ## Current scope
 
-- `cim.vmm` logical lowering
-- Explicit BF16 VMM compilation and supplier-model execution (software-only)
-- Quantized ONNX `MatMulInteger` import
-- Provisional typed CIM frame planning
-- INT8 weight-layout helper
+- BF16 MatVec/MatMul tiling, static Linear and shared-weight `batch_matmul`
+  normalization, including resource-backed and transposed constant weights
+- Nine named 2D convolution forms: ordinary, grouped and depthwise, including
+  channel multiplier, static batch, stride and dilation
+- Mixed Linalg compilation: eligible FP32 contractions use FP32/BF16 casts and
+  CIM VMM; remaining operations lower to LLVM CPU code
+- Linux `torch.compile(backend="cim22")` inference and standalone model `.so`
+  generation/loading, with embedded weights and binary metadata
+- Candidate BF16 software execution through the native runtime
+- Quantized ONNX import, INT8 weight layout and typed CIM frame planning
 
 ## Prerequisites
 
-- LLVM/MLIR 22.1.8
+- LLVM/MLIR 22.1.8, including `mlir-runner` and `mlir_c_runner_utils` for tests
 - CMake 3.28 or newer
 - C++17 compiler
 - Ninja
@@ -55,17 +60,32 @@ build/bin/mlir-cim22-opt --help
 uv lock --check
 ```
 
-## Not implemented
+## Python inference backend
 
-There is no general ONNX operator coverage, board runtime, or deployable
-BF16 artifact flow yet. The BF16 software-only path starts at an explicit
-`cim.vmm` and covers exponent prealignment, per-lane Weight_EXP, Cache/frame
-packing, executable compilation, and the software runner. Ordinary BF16
-`linalg.matvec` and `linalg.matmul` remain on the Host: the supplier model is
-not equivalent to standard BF16 arithmetic, including zero and unit inputs.
-Its raw-weight exponent interpretation remains provisional (CTQ-028/037).
-RTL artifact export rejects BF16 transactions; software tests are not board
-verification.
+The Linux Python package has its own Python 3.12 uv environment and lockfile
+under `python/`. See [Python setup and usage](python/README.md) for the pinned
+CPU PyTorch/torch-mlir wheels, `torch.compile(backend="cim22")`, native `.so`
+loading, and pytest/Ruff commands. The root uv environment above remains for
+the compiler's ONNX/lit tests.
+
+## Execution contract and limits
+
+The Python backend requires frozen weights and static contiguous CPU FP32
+inputs. Eligible contractions use 16x64 BF16 VMM tiles; cross-K results are
+accumulated on the Host. Static time/batch dimensions are flattened and restored
+around stateless contractions. Reset state before each complete SNN inference;
+cross-call state continuation, training and dynamic shapes are unsupported.
+
+The selected BF16 software model uses shared exponents, magnitude truncation
+before sign, INT21 accumulation, zero-preserving reconstruction, gradual
+underflow and finite saturation. It is approximate and not a bit-exact hardware
+model. Historical board zero/cancellation observations differ from it.
+`bf16-reference=true` enables diagnostic RTL comparison exports; those exports
+and software tests do not establish board equivalence.
+
+USB/board transport and general ONNX operator coverage remain unimplemented.
+Native model artifacts currently target Linux x86-64; Host code generation uses
+O0 to bound compilation cost for large statically unrolled graphs.
 
 ## License
 
