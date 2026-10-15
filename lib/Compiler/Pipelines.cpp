@@ -3,6 +3,7 @@
 #include "CIM22/Compiler/Compiler.h"
 #include "CIM22/Dialect/CIM/IR/CIMDialect.h"
 #include "CIM22/Dialect/CIM/IR/CIMOps.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -204,6 +205,19 @@ public:
     if (hasDeviceOps) {
       host.emitError("Host LLVM lowering requires outlined CIM kernels");
       return signalPassFailure();
+    }
+    // Inference inputs belong to the caller, including private C-interface
+    // entries. Let One-Shot Bufferize copy before a helper writes to them.
+    for (func::FuncOp function : host.getOps<func::FuncOp>()) {
+      if (function.isDeclaration() ||
+          (function.isPrivate() &&
+           !function->hasAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName())))
+        continue;
+      for (auto [index, type] : llvm::enumerate(function.getArgumentTypes()))
+        if (isa<TensorType>(type))
+          function.setArgAttr(
+              index, bufferization::BufferizationDialect::kWritableAttrName,
+              BoolAttr::get(host.getContext(), false));
     }
     OpPassManager pm(ModuleOp::getOperationName());
     appendPipeline(pm, hostPipeline);

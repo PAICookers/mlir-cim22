@@ -21,9 +21,14 @@
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/ToolOutputFile.h"
 #include <algorithm>
 #include <cstring>
 #include <mutex>
@@ -239,15 +244,6 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
   options.jitCodeGenOptLevel = llvm::CodeGenOptLevel::None;
   // Library loading should not create a process-global perf dump directory.
   options.enablePerfNotificationListener = false;
-  options.enableObjectDump = !objectPath.empty();
-  auto moduleBuilder = [&](Operation *op, llvm::LLVMContext &context) {
-    auto module = translateModuleToLLVMIR(op, context);
-    if (module && !objectPath.empty())
-      addModelDescriptor(*module, entryName,
-                         ::cim22::runtime::encodeModelData(session.model));
-    return module;
-  };
-  options.llvmModuleBuilder = moduleBuilder;
   auto machineBuilder = llvm::orc::JITTargetMachineBuilder::detectHost();
   if (!machineBuilder) {
     session.error = llvm::toString(machineBuilder.takeError());
@@ -262,6 +258,48 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
   if (!machine) {
     session.error = llvm::toString(machine.takeError());
     return failure();
+  }
+  if (!objectPath.empty()) {
+    // AOT emits bytes directly: ExecutionEngine::dumpToObjectFile has no error
+    // result and cannot report an open/write failure to the native caller.
+    llvm::LLVMContext llvmContext;
+    auto module = translateModuleToLLVMIR(host, llvmContext);
+    if (!module)
+      return failure();
+    addModelDescriptor(*module, entryName,
+                       ::cim22::runtime::encodeModelData(session.model));
+    ExecutionEngine::setupTargetTripleAndDataLayout(module.get(),
+                                                    machine->get());
+    llvm::orc::SimpleCompiler compiler(**machine);
+    auto object = compiler(*module);
+    if (!object) {
+      session.error = llvm::toString(object.takeError());
+      return failure();
+    }
+    // Publish only a complete object; a failed write leaves any prior output
+    // intact. A sibling temporary also makes the final rename atomic.
+    int fd;
+    SmallString<256> temporary;
+    if (auto error = llvm::sys::fs::createUniqueFile(objectPath + ".tmp-%%%%%%",
+                                                     fd, temporary)) {
+      session.error = "cannot create object file: " + error.message();
+      return failure();
+    }
+    llvm::ToolOutputFile output(temporary, fd);
+    output.os() << (*object)->getBuffer();
+    output.os().close();
+    if (output.os().has_error()) {
+      session.error =
+          "cannot write object file: " + output.os().error().message();
+      output.os().clear_error();
+      return failure();
+    }
+    if (auto error = llvm::sys::fs::rename(temporary, objectPath)) {
+      session.error = "cannot publish object file: " + error.message();
+      return failure();
+    }
+    output.keep();
+    return success();
   }
   auto engine = ExecutionEngine::create(host, options, std::move(*machine));
   if (!engine) {
@@ -281,8 +319,6 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
     return failure();
   }
   session.invoke = *invoke;
-  if (!objectPath.empty())
-    (*engine)->dumpToObjectFile(objectPath);
   session.code = std::move(*engine);
   return success();
 }

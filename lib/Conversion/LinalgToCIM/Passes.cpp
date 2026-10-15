@@ -1098,15 +1098,26 @@ std::optional<BF16ConvInfo> getBF16ConvInfo(linalg::LinalgOp op,
         return std::nullopt;
   }
   bool zeroInit = isPositiveFloatZeroSplat(op.getDpsInits()[0], elementType);
-  auto bias = op.getDpsInits()[0].getDefiningOp<linalg::BroadcastOp>();
-  auto function = op->getParentOfType<func::FuncOp>();
-  bool biasInit =
-      allowBiasEpilogue && elementType.isF32() && bias && function &&
-      function.getBody().hasOneBlock() &&
-      op->getBlock() == &function.getBody().front() &&
+  Value biasValue = op.getDpsInits()[0];
+  bool supportedBiasLayout =
       isa<linalg::Conv2DNchwFchwOp, linalg::DepthwiseConv2DNchwChwOp>(
-          op.getOperation()) &&
-      bias.getDimensions() == ArrayRef<int64_t>({0, 2, 3});
+          op.getOperation());
+  // torch-mlir splits the NCHW channel axis into group/output-channel axes.
+  if (auto expand = biasValue.getDefiningOp<tensor::ExpandShapeOp>();
+      expand && isa<linalg::Conv2DNgchwGfchwOp>(op.getOperation()) &&
+      expand.getSrcType().hasStaticShape() &&
+      expand.getReassociationIndices() ==
+          SmallVector<ReassociationIndices>{{0}, {1, 2}, {3}, {4}}) {
+    biasValue = expand.getSrc();
+    supportedBiasLayout = true;
+  }
+  auto bias = biasValue.getDefiningOp<linalg::BroadcastOp>();
+  auto function = op->getParentOfType<func::FuncOp>();
+  bool biasInit = allowBiasEpilogue && elementType.isF32() && bias &&
+                  function && function.getBody().hasOneBlock() &&
+                  op->getBlock() == &function.getBody().front() &&
+                  supportedBiasLayout &&
+                  bias.getDimensions() == ArrayRef<int64_t>({0, 2, 3});
   if ((!zeroInit && !biasInit) ||
       !hasCanonicalFloatContractionBody(op->getRegion(0), elementType))
     return std::nullopt;
@@ -2626,8 +2637,8 @@ public:
         OpBuilder builder(plan.works[index].vmm);
         SmallVector<NamedAttribute> attributes;
         attributes.push_back(builder.getNamedAttr(
-            CIMDialect::getTransactionIdxAttrName(), builder.getI64IntegerAttr(
-                plan.works[index].transactionIdx)));
+            CIMDialect::getTransactionIdxAttrName(),
+            builder.getI64IntegerAttr(plan.works[index].transactionIdx)));
         TransactionOp transaction = TransactionOp::create(
             builder, plan.works[index].vmm.getLoc(), resultTypes, inputs,
             attributes);
@@ -2687,8 +2698,9 @@ public:
                                    "n_tile and a six-element route for readback");
               return signalPassFailure();
             }
-            readback->setAttr("output_cache_address",
-                              bodyBuilder.getI64IntegerAttr(*nTile % kOutputCacheRows));
+            readback->setAttr(
+                "output_cache_address",
+                bodyBuilder.getI64IntegerAttr(*nTile % kOutputCacheRows));
             readback->setAttr("test_core_xy", bodyBuilder.getI64IntegerAttr(-route[0]));
             readback->setAttr("test_core_x", bodyBuilder.getI64IntegerAttr(-route[1]));
             readback->setAttr("test_core_y", bodyBuilder.getI64IntegerAttr(-route[2]));
