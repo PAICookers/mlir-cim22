@@ -62,6 +62,7 @@ struct DynamicInputBinding {
   int64_t macroSlot = -1;
   int64_t inputSlot = -1;
   CIMDataType dataType = CIMDataType::Int8;
+  int64_t inputCacheAddress = 0;
 };
 
 struct ReadbackBinding {
@@ -89,12 +90,12 @@ struct CIMGroup {
 class CIMTransaction final {
 public:
   CIMTransaction(std::string targetProfile, int64_t targetProfileVersion,
-                int64_t executionPlanVersion, std::vector<CIMGroup> groups,
-                std::vector<StaticWeightSection> weights,
-                std::vector<CIMFramePacket> packets,
-                std::vector<DynamicInputBinding> inputs,
-                std::vector<ReadbackBinding> readbacks,
-                std::vector<uint64_t> flits)
+                 int64_t executionPlanVersion, std::vector<CIMGroup> groups,
+                 std::vector<StaticWeightSection> weights,
+                 std::vector<CIMFramePacket> packets,
+                 std::vector<DynamicInputBinding> inputs,
+                 std::vector<ReadbackBinding> readbacks,
+                 std::vector<uint64_t> flits)
       : targetProfile_(std::move(targetProfile)),
         targetProfileVersion_(targetProfileVersion),
         executionPlanVersion_(executionPlanVersion), groups_(std::move(groups)),

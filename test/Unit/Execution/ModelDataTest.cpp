@@ -37,7 +37,7 @@ static CIMTransaction transaction(CIMDataType type) {
     packets.push_back(p);
   }
   return CIMTransaction("cim22-4x5-v1", 1, 1, {{7, {work}}}, {weight}, packets,
-                        {{7, 19, 1, 47, type}},
+                        {{7, 19, 1, 47, type, 6}},
                         {{7, 19, 1, 7, work.route, {1, 2, 3}, type}},
                         {0, UINT64_MAX, UINT64_C(0x123456789abcdef0)});
 }
@@ -87,7 +87,7 @@ static bool sameTransaction(const CIMTransaction &a, const CIMTransaction &b) {
   const auto &ra = a.getReadbacks()[0];
   const auto &rb = b.getReadbacks()[0];
   return sameBinding(ia, ib) && ia.inputSlot == ib.inputSlot &&
-         sameBinding(ra, rb) &&
+         ia.inputCacheAddress == ib.inputCacheAddress && sameBinding(ra, rb) &&
          ra.outputCacheAddress == rb.outputCacheAddress &&
          ra.route == rb.route && ra.testCore == rb.testCore;
 }
@@ -95,6 +95,7 @@ static bool sameTransaction(const CIMTransaction &a, const CIMTransaction &b) {
 int main() {
   ModelData model;
   model.numInputs = 1;
+  model.backend = RuntimeBackend::Software;
   model.shapes = {{}, {2, 3}}; // Scalar input, ordered tensor output.
   // OutputSchema(version=1, root=OutputNode(tensor_leaf=0)).
   model.outputSchema = std::string("\x08\x01\x12\x02\x08\x00", 6);
@@ -127,6 +128,20 @@ int main() {
   for (size_t i = 0; i < model.transactions.size(); ++i)
     if (!sameTransaction(model.transactions[i], decoded.transactions[i]))
       return 1;
+  model.backend = RuntimeBackend::USB;
+  auto usb = encodeModelData(model);
+  if (!usb) {
+    std::cerr << llvm::toString(usb.takeError()) << '\n';
+    return 1;
+  }
+  ModelData usbDecoded;
+  if (auto error = decodeModelData(*usb, usbDecoded)) {
+    std::cerr << llvm::toString(std::move(error)) << '\n';
+    return 1;
+  }
+  if (usbDecoded.backend != RuntimeBackend::USB ||
+      !sameTransaction(model.transactions[1], usbDecoded.transactions[1]))
+    return 1;
   model.outputSchema.clear();
   auto missing = encodeModelData(model);
   if (missing)

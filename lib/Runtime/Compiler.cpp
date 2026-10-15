@@ -77,8 +77,9 @@ void addModelDescriptor(llvm::Module &module, StringRef entryName,
 
 // Tensor packing is ordinary Host IR. Stack buffers live only for the native
 // call; returned tensors are materialized before the wrapper returns.
-LogicalResult defineDispatchWrapper(func::FuncOp stub, int64_t id,
-                                    func::FuncOp dispatchFunc) {
+LogicalResult
+defineDispatchWrapper(func::FuncOp stub, int64_t id, func::FuncOp dispatchFunc,
+                      const ::cim22::execution::CIMTransaction &transaction) {
   for (Type type : stub.getArgumentTypes()) {
     auto tensor = dyn_cast<RankedTensorType>(type);
     if (!tensor || tensor.getShape() != ArrayRef<int64_t>{64} ||
@@ -91,21 +92,30 @@ LogicalResult defineDispatchWrapper(func::FuncOp stub, int64_t id,
         !tensor.getElementType().isBF16())
       return stub.emitError("runtime supports BF16 transaction outputs only");
   }
+  if (stub.getNumResults() != transaction.getReadbacks().size())
+    return stub.emitError("runtime readback count differs from Host results");
   Block *block = stub.addEntryBlock();
   OpBuilder builder(block, block->begin());
   Location loc = stub.getLoc();
   Value input = memref::AllocaOp::create(
       builder, loc,
-      MemRefType::get({static_cast<int64_t>(stub.getNumArguments()), 64},
-                      builder.getBF16Type()));
+      MemRefType::get(
+          {static_cast<int64_t>(transaction.getDynamicInputs().size()), 64},
+          builder.getBF16Type()));
   Value output = memref::AllocaOp::create(
       builder, loc,
-      MemRefType::get({static_cast<int64_t>(stub.getNumResults()), 16},
-                      builder.getBF16Type()));
+      MemRefType::get(
+          {static_cast<int64_t>(transaction.getReadbacks().size()), 16},
+          builder.getBF16Type()));
   Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
   Value bound = arith::ConstantIndexOp::create(builder, loc, 64);
   Value one = arith::ConstantIndexOp::create(builder, loc, 1);
-  for (auto [index, argument] : llvm::enumerate(block->getArguments())) {
+  for (auto [index, binding] :
+       llvm::enumerate(transaction.getDynamicInputs())) {
+    if (binding.inputSlot < 0 ||
+        binding.inputSlot >= static_cast<int64_t>(block->getNumArguments()))
+      return stub.emitError("runtime input binding is outside Host arguments");
+    Value argument = block->getArgument(binding.inputSlot);
     Value row = arith::ConstantIndexOp::create(builder, loc, index);
     scf::ForOp::create(
         builder, loc, zero, bound, one, ValueRange{},
@@ -212,7 +222,7 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
     auto transaction = mlir::cim22::target::compileCIMTransaction(*single);
     if (failed(transaction) ||
         failed(defineDispatchWrapper(stub, session.model.transactions.size(),
-                                     dispatchFunc)))
+                                     dispatchFunc, *transaction)))
       return failure();
     session.model.transactions.push_back(std::move(*transaction));
     session.model.kernelNames.push_back(kernel.getSymName().str());
@@ -337,16 +347,26 @@ extern "C" void *cim22_session_load_packet(const char *path, const char *entry,
     ::cim22::runtime::copyError(session->error, error, capacity);
     return nullptr;
   }
+  session->runner = std::make_unique<::cim22::execution::CIMSoftwareRunner>();
   return session.release();
 }
 
-extern "C" int cim22_compile_object(const char *path, const char *objectPath,
-                                    const void *schema, size_t schemaSize,
-                                    char *error, size_t capacity) {
+extern "C" int cim22_compile_object_with_backend(
+    const char *path, const char *objectPath, const void *schema,
+    size_t schemaSize, const char *backend, char *error, size_t capacity) {
   Session session;
   if (schema && schemaSize)
     session.model.outputSchema.assign(static_cast<const char *>(schema),
                                       schemaSize);
+  if (backend && llvm::StringRef(backend) == "software")
+    session.model.backend = ::cim22::runtime::RuntimeBackend::Software;
+  else if (backend && llvm::StringRef(backend) == "usb")
+    session.model.backend = ::cim22::runtime::RuntimeBackend::USB;
+  else {
+    ::cim22::runtime::copyError("unsupported CIM22 runtime backend", error,
+                                capacity);
+    return 1;
+  }
   if (!path || !objectPath || !*objectPath ||
       failed(load(session, path, "main", objectPath))) {
     ::cim22::runtime::copyError(
@@ -355,4 +375,11 @@ extern "C" int cim22_compile_object(const char *path, const char *objectPath,
     return 1;
   }
   return 0;
+}
+
+extern "C" int cim22_compile_object(const char *path, const char *objectPath,
+                                    const void *schema, size_t schemaSize,
+                                    char *error, size_t capacity) {
+  return cim22_compile_object_with_backend(path, objectPath, schema, schemaSize,
+                                           "usb", error, capacity);
 }

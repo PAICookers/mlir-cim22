@@ -118,7 +118,8 @@ template <typename Binding>
 bool hasBinding(const Binding &b) {
   return b.has_group_id() && b.has_work_id() && b.has_macro_slot();
 }
-llvm::Error validateTransaction(const pb::Transaction &t) {
+llvm::Error validateTransaction(const pb::Transaction &t,
+                                bool requireUSBFields) {
   if (t.target_profile() != "cim22-4x5-v1" || t.target_profile_version() != 1 ||
       t.execution_plan_version() != 1)
     return invalid("unsupported transaction profile/version");
@@ -129,13 +130,15 @@ llvm::Error validateTransaction(const pb::Transaction &t) {
     if (!group.has_group_id() || group.group_id() < 0 ||
         !groups.insert(group.group_id()).second || group.works().empty())
       return invalid("missing/duplicate group or empty works");
+    std::set<std::pair<int64_t, int64_t>> placements;
     for (const auto &work : group.works()) {
       if (!work.has_work_id() || !work.has_core_slot() ||
           !work.has_macro_slot() || work.work_id() < 0 ||
           work.core_slot() < 0 || work.core_slot() >= 20 ||
           work.macro_slot() < 0 || work.macro_slot() >= 2 ||
           work.route_size() != 6 ||
-          !works.emplace(Key{group.group_id(), work.work_id()}, &work).second)
+          !works.emplace(Key{group.group_id(), work.work_id()}, &work).second ||
+          !placements.emplace(work.core_slot(), work.macro_slot()).second)
         return invalid("missing/duplicate work, placement or route length");
     }
   }
@@ -162,6 +165,8 @@ llvm::Error validateTransaction(const pb::Transaction &t) {
   }
   for (const auto &b : t.inputs()) {
     if (!placement(b) || !b.has_input_slot() || b.input_slot() < 0 ||
+        (requireUSBFields && !b.has_input_cache_address()) ||
+        b.input_cache_address() < 0 || b.input_cache_address() >= 8 ||
         !inputs.emplace(Key{b.group_id(), b.work_id()}, &b).second)
       return invalid("input binding or datatype");
   }
@@ -169,6 +174,8 @@ llvm::Error validateTransaction(const pb::Transaction &t) {
     if (!placement(b) || !b.has_output_cache_address() ||
         b.output_cache_address() < 0 || b.output_cache_address() >= 8 ||
         b.route_size() != 6 || b.test_core_size() != 3 ||
+        !std::equal(b.route().begin(), b.route().end(),
+                    works.at({b.group_id(), b.work_id()})->route().begin()) ||
         !readbacks.emplace(Key{b.group_id(), b.work_id()}, &b).second)
       return invalid("readback binding, array length or datatype");
   }
@@ -253,8 +260,11 @@ llvm::Error validateTransaction(const pb::Transaction &t) {
 }
 
 llvm::Error validate(const pb::ModelArtifact &model) {
-  if (model.data_format_version() != 3 || model.numeric_contract_version() != 2)
-    return invalid("unsupported data format/numeric contract version");
+  // TODO: Enforce data_format_version once the artifact contract stabilizes.
+  if (model.numeric_contract_version() != 2)
+    return invalid("unsupported numeric contract version");
+  if (!pb::RuntimeBackend_IsValid(model.runtime_backend()))
+    return invalid("unsupported runtime backend");
   for (const auto *tensors : {&model.inputs(), &model.outputs()})
     for (const auto &tensor : *tensors) {
       if (tensor.data_type() != pb::FP32)
@@ -277,7 +287,8 @@ llvm::Error validate(const pb::ModelArtifact &model) {
     if (kernel.kernel_name().empty() ||
         !names.insert(kernel.kernel_name()).second || !kernel.has_transaction())
       return invalid("missing/duplicate kernel name or transaction");
-    if (auto error = validateTransaction(kernel.transaction()))
+    if (auto error = validateTransaction(kernel.transaction(),
+                                         model.runtime_backend() == pb::USB))
       return error;
   }
   return llvm::Error::success();
@@ -343,6 +354,7 @@ void encodeTransaction(const CIMTransaction &from, pb::Transaction &to) {
     auto *input = to.add_inputs();
     encodeBinding(b, *input);
     input->set_input_slot(b.inputSlot);
+    input->set_input_cache_address(b.inputCacheAddress);
   }
   for (const auto &b : from.getReadbacks()) {
     auto *readback = to.add_readbacks();
@@ -393,6 +405,7 @@ CIMTransaction decodeTransaction(const pb::Transaction &from) {
     DynamicInputBinding input;
     decodeBinding(b, input);
     input.inputSlot = b.input_slot();
+    input.inputCacheAddress = b.input_cache_address();
     inputs.push_back(input);
   }
   for (const auto &b : from.readbacks()) {
@@ -417,8 +430,10 @@ llvm::Expected<std::string> encodeModelData(const ModelData &model) {
       model.kernelNames.size() != model.transactions.size())
     return invalid("signature/kernel counts");
   pb::ModelArtifact artifact;
-  artifact.set_data_format_version(3);
+  artifact.set_data_format_version(1);
   artifact.set_numeric_contract_version(2);
+  artifact.set_runtime_backend(
+      model.backend == RuntimeBackend::Software ? pb::SOFTWARE : pb::USB);
   for (size_t i = 0; i < model.shapes.size(); ++i) {
     auto *tensor = i < static_cast<size_t>(model.numInputs)
                        ? artifact.add_inputs()
@@ -453,6 +468,9 @@ llvm::Error decodeModelData(llvm::StringRef bytes, ModelData &model) {
   if (auto error = validate(artifact))
     return error;
   ModelData decoded;
+  decoded.backend = artifact.runtime_backend() == pb::USB
+                        ? RuntimeBackend::USB
+                        : RuntimeBackend::Software;
   decoded.numInputs = artifact.inputs_size();
   for (const auto *tensors : {&artifact.inputs(), &artifact.outputs()})
     for (const auto &tensor : *tensors)

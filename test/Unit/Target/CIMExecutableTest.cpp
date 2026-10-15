@@ -66,14 +66,14 @@ module {
                                      &context);
 }
 
-static bool addPacketStage(ModuleOp module) {
+static bool addPacketStage(ModuleOp module, int64_t workId = 0) {
   OpBuilder builder(module.getContext());
   builder.setInsertionPointToStart(module.getBody());
   const std::array<int32_t, 6> route{};
   auto routeAttr = builder.getDenseI32ArrayAttr(route);
   auto control =
       ControlInt8PacketOp::create(builder, builder.getUnknownLoc(), routeAttr,
-                                  builder.getI32IntegerAttr(0));
+                                  builder.getI32IntegerAttr(workId));
 
   SmallVector<int32_t, 256> words(256, 0);
   SmallVector<NamedAttribute> planBinding;
@@ -84,11 +84,11 @@ static bool addPacketStage(ModuleOp module) {
   planBinding.push_back(
       builder.getNamedAttr("group_id", builder.getI64IntegerAttr(0)));
   planBinding.push_back(
-      builder.getNamedAttr("work_id", builder.getI64IntegerAttr(0)));
+      builder.getNamedAttr("work_id", builder.getI64IntegerAttr(workId)));
   planBinding.push_back(
       builder.getNamedAttr("core_idx", builder.getI64IntegerAttr(0)));
   planBinding.push_back(
-      builder.getNamedAttr("macro_idx", builder.getI64IntegerAttr(0)));
+      builder.getNamedAttr("macro_idx", builder.getI64IntegerAttr(workId)));
   auto mapping = builder.getDictionaryAttr({builder.getNamedAttr(
       "route", builder.getDenseI64ArrayAttr({0, 0, 0, 0, 0, 0}))});
   planBinding.push_back(builder.getNamedAttr("mapping", mapping));
@@ -100,14 +100,76 @@ static bool addPacketStage(ModuleOp module) {
   return control && weight;
 }
 
+static OwningOpRef<ModuleOp> parseTwoWorkPlan(MLIRContext &context,
+                                              bool sharedInput) {
+  auto module = parsePlan(context);
+  if (!module)
+    return {};
+  func::FuncOp function = *module->getOps<func::FuncOp>().begin();
+  auto original =
+      *function.getBody().front().getOps<cim::TransactionOp>().begin();
+  Block &originalBody = original.getBody().front();
+  auto input = *originalBody.getOps<cim::ConfigureInputOp>().begin();
+  auto weight = *originalBody.getOps<cim::ConfigureWeightOp>().begin();
+  auto dispatch = *originalBody.getOps<cim::DispatchOp>().begin();
+  auto once = *originalBody.getOps<cim::OnceOp>().begin();
+  auto readback = *originalBody.getOps<cim::ReadbackOp>().begin();
+  auto barrier = *originalBody.getOps<cim::GroupBarrierOp>().begin();
+  Location location = original.getLoc();
+  if (failed(
+          function.insertArgument(1, input.getInput().getType(), {}, location)))
+    return {};
+
+  // Reverse the transaction operands so its block argument ordinal differs
+  // from the Host ABI slot. Shared-input works both use the second Host input.
+  SmallVector<Value> operands{function.getArgument(1)};
+  if (!sharedInput)
+    operands.push_back(function.getArgument(0));
+  OpBuilder builder(original);
+  SmallVector<Type> resultTypes(2, readback.getResult().getType());
+  auto transaction = cim::TransactionOp::create(builder, location, resultTypes,
+                                                operands, original->getAttrs());
+  Block &body = transaction.getBody().emplaceBlock();
+  for (Value operand : operands)
+    body.addArgument(operand.getType(), location);
+  builder.setInsertionPointToEnd(&body);
+  auto cloneWork = [&](Operation *op, int64_t workId) {
+    IRMapping mapping;
+    mapping.map(originalBody.getArgument(0),
+                body.getArgument(sharedInput ? 0 : workId));
+    Operation *clone = builder.clone(*op, mapping);
+    clone->setAttr("work_id", builder.getI64IntegerAttr(workId));
+    clone->setAttr("macro_idx", builder.getI64IntegerAttr(workId));
+    return clone;
+  };
+  for (int64_t workId = 0; workId < 2; ++workId) {
+    cloneWork(input, workId)
+        ->setAttr("input_cache_address",
+                  builder.getI64IntegerAttr(workId == 0 ? 3 : 7));
+    cloneWork(weight, workId);
+  }
+  for (int64_t workId = 0; workId < 2; ++workId)
+    cloneWork(dispatch, workId);
+  builder.clone(*once.getOperation());
+  SmallVector<Value> results;
+  for (int64_t workId = 0; workId < 2; ++workId)
+    results.push_back(cloneWork(readback, workId)->getResult(0));
+  builder.clone(*barrier.getOperation());
+  cim::YieldOp::create(builder, location, results);
+  original.erase();
+  if (!addPacketStage(*module) || !addPacketStage(*module, 1))
+    return {};
+  return module;
+}
+
 static bool addBF16PacketStage(ModuleOp module) {
   OpBuilder builder(module.getContext());
   builder.setInsertionPointToStart(module.getBody());
   const std::array<int32_t, 6> route{};
   auto routeAttr = builder.getDenseI32ArrayAttr(route);
-  auto control = ControlBF16PacketOp::create(
-      builder, builder.getUnknownLoc(), routeAttr,
-      builder.getI32IntegerAttr(0));
+  auto control =
+      ControlBF16PacketOp::create(builder, builder.getUnknownLoc(), routeAttr,
+                                  builder.getI32IntegerAttr(0));
 
   SmallVector<NamedAttribute> planBinding;
   planBinding.push_back(builder.getNamedAttr(
@@ -122,8 +184,8 @@ static bool addBF16PacketStage(ModuleOp module) {
   planBinding.push_back(builder.getNamedAttr("mapping", mapping));
   DictionaryAttr binding = builder.getDictionaryAttr(planBinding);
 
-  constexpr std::array<int64_t, 2> exponents{
-      INT64_C(0x0706050403020100), INT64_C(0x0f0e0d0c0b0a0908)};
+  constexpr std::array<int64_t, 2> exponents{INT64_C(0x0706050403020100),
+                                             INT64_C(0x0f0e0d0c0b0a0908)};
   auto exponent = WeightExponentPacketOp::create(
       builder, builder.getUnknownLoc(), routeAttr,
       builder.getDenseI64ArrayAttr(exponents));
@@ -146,7 +208,8 @@ static bool testConstruction(MLIRContext &context) {
 
   func::FuncOp function = *module->getOps<func::FuncOp>().begin();
   auto transactions = cim::analyzeCIMTransactions(function);
-  if (!check(transactions.size() == 1 && transactions.front().inputs.size() == 1 &&
+  if (!check(transactions.size() == 1 &&
+                 transactions.front().inputs.size() == 1 &&
                  transactions.front().outputs.size() == 1,
              "transaction analysis preserves typed SSA boundaries"))
     return false;
@@ -167,9 +230,11 @@ static bool testConstruction(MLIRContext &context) {
          check(value.getStaticWeights().size() == 1 &&
                    value.getStaticWeights()[0].words.size() == 256,
                "static weight section is materialized") &&
-         check(value.getDynamicInputs().size() == 1 &&
-                   value.getDynamicInputs()[0].inputSlot == 0,
-               "dynamic input binding keeps input slot") &&
+         check(
+             value.getDynamicInputs().size() == 1 &&
+                 value.getDynamicInputs()[0].inputSlot == 0 &&
+                 value.getDynamicInputs()[0].inputCacheAddress == 0,
+             "dynamic input binding keeps input slot and default Cache row") &&
          check(value.getReadbacks().size() == 1 &&
                    value.getReadbacks()[0].outputCacheAddress == 7,
                "readback binding keeps output Cache address") &&
@@ -177,6 +242,50 @@ static bool testConstruction(MLIRContext &context) {
                "semantic packets preserve input and readback order") &&
          check(value.getFlits().size() == 258,
                "static packet flits are consumed without remapping");
+}
+
+static bool testInputArgumentMapping(MLIRContext &context) {
+  for (bool sharedInput : {false, true}) {
+    auto module = parseTwoWorkPlan(context, sharedInput);
+    if (!check(static_cast<bool>(module), "two-work input fixture is built"))
+      return false;
+    auto executable = compileCIMTransaction(*module);
+    if (!check(succeeded(executable), "two-work input fixture compiles"))
+      return false;
+    auto inputs = executable->getDynamicInputs();
+    if (!check(inputs.size() == 2, "both works have dynamic input bindings") ||
+        !check(inputs[0].inputSlot == 1 &&
+                   inputs[1].inputSlot == (sharedInput ? 1 : 0),
+               sharedInput
+                   ? "shared transaction input keeps one Host ABI slot"
+                   : "transaction operands map to Host argument slots") ||
+        !check(inputs[0].inputCacheAddress == 3 &&
+                   inputs[1].inputCacheAddress == 7,
+               "nonzero input Cache rows survive target compilation"))
+      return false;
+  }
+  return true;
+}
+
+static bool testRejectsInvalidInputCacheAddress(MLIRContext &context) {
+  Builder builder(&context);
+  const std::array<IntegerAttr, 3> addresses{builder.getI64IntegerAttr(-1),
+                                             builder.getI64IntegerAttr(8),
+                                             builder.getI32IntegerAttr(3)};
+  for (IntegerAttr address : addresses) {
+    auto module = parsePlan(context);
+    if (!check(static_cast<bool>(module), "invalid Cache fixture parses") ||
+        !check(addPacketStage(*module), "invalid Cache packet stage is built"))
+      return false;
+    module->walk([&](cim::ConfigureInputOp input) {
+      input->setAttr("input_cache_address", address);
+    });
+    ScopedDiagnosticHandler diagnostics(&context, [](Diagnostic &) {});
+    if (!check(failed(compileCIMTransaction(*module)),
+               "input Cache row requires i64 in [0, 7]"))
+      return false;
+  }
+  return true;
 }
 
 static bool testRejectsMultipleTransactions(MLIRContext &context) {
@@ -203,7 +312,8 @@ static bool testRejectsMultipleTransactions(MLIRContext &context) {
 
   auto transactions = cim::analyzeCIMTransactions(function);
   if (!check(transactions.size() == 2 && transactions[0].transactionIdx == 0 &&
-                 transactions[1].transactionIdx == 1 && transactions[0].inputs.size() == 1 &&
+                 transactions[1].transactionIdx == 1 &&
+                 transactions[0].inputs.size() == 1 &&
                  transactions[0].outputs.size() == 1 &&
                  transactions[1].inputs.size() == 1 &&
                  transactions[1].outputs.size() == 1,
@@ -211,8 +321,9 @@ static bool testRejectsMultipleTransactions(MLIRContext &context) {
     return false;
 
   ScopedDiagnosticHandler diagnostics(&context, [](Diagnostic &) {});
-  return check(failed(compileCIMTransaction(*module)),
-               "multiple CIM transactions are rejected before frame compilation");
+  return check(
+      failed(compileCIMTransaction(*module)),
+      "multiple CIM transactions are rejected before frame compilation");
 }
 
 static bool testRejectsMissingReadbackBinding(MLIRContext &context) {
@@ -255,11 +366,11 @@ module {
     return
   }
 }
-)mlir", &context);
+)mlir",
+                                            &context);
   if (!check(static_cast<bool>(module), "BF16 plan fixture parses"))
     return false;
-  if (!check(addBF16PacketStage(*module),
-             "BF16 packet stage is materialized"))
+  if (!check(addBF16PacketStage(*module), "BF16 packet stage is materialized"))
     return false;
   auto executable = compileCIMTransaction(*module);
   if (!check(succeeded(executable), "BF16 executable construction succeeds"))
@@ -271,7 +382,7 @@ module {
          check(weight.exponents.front() == 0 && weight.exponents.back() == 15,
                "Weight_EXP lanes are unpacked little-endian") &&
          check(value.getDynamicInputs().front().dataType ==
-                   ::cim22::execution::CIMDataType::BF16 &&
+                       ::cim22::execution::CIMDataType::BF16 &&
                    value.getReadbacks().front().dataType ==
                        ::cim22::execution::CIMDataType::BF16,
                "BF16 dynamic bindings preserve their mode") &&
@@ -285,7 +396,10 @@ int main() {
   MLIRContext context;
   context.loadDialect<cim::CIMDialect, CIMFrameDialect, arith::ArithDialect,
                       func::FuncDialect, tensor::TensorDialect>();
-  return testConstruction(context) && testRejectsMultipleTransactions(context) &&
+  return testConstruction(context) &&
+                 testRejectsMultipleTransactions(context) &&
+                 testInputArgumentMapping(context) &&
+                 testRejectsInvalidInputCacheAddress(context) &&
                  testRejectsMissingReadbackBinding(context) &&
                  testBF16Construction(context)
              ? 0

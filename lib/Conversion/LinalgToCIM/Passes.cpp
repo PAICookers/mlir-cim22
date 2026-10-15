@@ -2658,6 +2658,10 @@ public:
               bodyBuilder, work.vmm.getLoc(),
               body->getArgument(inputPosition - inputs.begin()));
           copyExecutionPlanIdentity(work.vmm, input);
+          input->setAttr(
+              "input_cache_address",
+              bodyBuilder.getI64IntegerAttr(
+                  work.vmm->getAttrOfType<IntegerAttr>("n_tile").getInt() % 8));
           auto weight = ConfigureWeightOp::create(bodyBuilder, work.vmm.getLoc(),
                                                    resources[workIndex]);
           copyExecutionPlanIdentity(work.vmm, weight);

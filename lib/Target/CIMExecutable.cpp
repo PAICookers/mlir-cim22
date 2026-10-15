@@ -403,14 +403,33 @@ FailureOr<CIMTransaction> compileCIMTransaction(ModuleOp module) {
         return input.emitError("CIM executable requires core_idx in [0, 19] "
                                "and macro_idx in [0, 1]");
       groupPtr->works.push_back(CIMWork{*work, *core, *macro, *route});
-      int64_t inputSlot = *work;
+      auto argument = dyn_cast<BlockArgument>(input.getInput());
+      if (!argument || argument.getOwner() != &transaction.getBody().front())
+        return input.emitError(
+            "CIM executable requires a transaction input argument");
+      auto hostArgument = dyn_cast<BlockArgument>(
+          transaction.getOperand(argument.getArgNumber()));
+      // Split kernels address Host arguments; unsplit plans receive prepared
+      // transaction operands from the caller instead of executing Host SSA.
+      int64_t inputSlot = argument.getArgNumber();
+      if (hostArgument &&
+          hostArgument.getOwner() == &function.getBody().front())
+        inputSlot = hostArgument.getArgNumber();
       if (auto attr = input->getAttrOfType<IntegerAttr>("input_slot")) {
         if (!attr.getType().isSignlessInteger(64) || attr.getInt() < 0)
           return input.emitError("CIM executable requires input_slot >= 0");
         inputSlot = attr.getInt();
       }
-      inputs.push_back(
-          DynamicInputBinding{*group, *work, *macro, inputSlot, dataType});
+      int64_t inputCacheAddress = 0;
+      if (auto attr = input->getAttrOfType<IntegerAttr>("input_cache_address")) {
+        if (!attr.getType().isSignlessInteger(64) || attr.getInt() < 0 ||
+            attr.getInt() >= 8)
+          return input.emitError(
+              "CIM executable requires input_cache_address in [0, 7]");
+        inputCacheAddress = attr.getInt();
+      }
+      inputs.push_back(DynamicInputBinding{*group, *work, *macro, inputSlot,
+                                           dataType, inputCacheAddress});
       packets.push_back(CIMFramePacket{CIMPacketKind::InputCacheWrite});
       packets.back().route = *route;
       packets.back().groupId = *group;

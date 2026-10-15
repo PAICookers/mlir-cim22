@@ -3,15 +3,22 @@ syntax = "proto3";
 package cim22.artifact.v1;
 option optimize_for = LITE_RUNTIME;
 
-// Unknown descriptive fields may be ignored. Changes to execution semantics
-// require a new data_format_version, even if the wire format stays compatible.
+// Unknown descriptive fields may be ignored. During development, writers emit
+// data_format_version 1 and readers do not enforce it.
 message ModelArtifact {
-  uint32 data_format_version = 1;       // 3
+  uint32 data_format_version = 1;       // 1 during development.
   uint32 numeric_contract_version = 2;  // 2, independent of the native ABI (1)
   repeated TensorSignature inputs = 3;
   repeated TensorSignature outputs = 4;
   repeated Kernel kernels = 5;          // Position is the native dispatch index.
   OutputSchema output_schema = 6;
+  RuntimeBackend runtime_backend = 7;
+}
+
+enum RuntimeBackend {
+  // An absent backend defaults to software; the compiler selects explicitly.
+  SOFTWARE = 0;
+  USB = 1;
 }
 
 enum DataType {
@@ -99,6 +106,7 @@ message InputBinding {
   optional int64 macro_slot = 3;
   optional int64 input_slot = 4;
   DataType data_type = 5;
+  optional int64 input_cache_address = 6;
 }
 
 message ReadbackBinding {
