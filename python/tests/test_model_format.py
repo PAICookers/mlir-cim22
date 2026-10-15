@@ -22,7 +22,9 @@ pytestmark = [
 
 def host_artifact() -> proto.ModelArtifact:
     model = proto.ModelArtifact(
-        data_format_version=3, numeric_contract_version=2
+        data_format_version=1,
+        numeric_contract_version=2,
+        runtime_backend=proto.SOFTWARE,
     )
     model.outputs.add(data_type=proto.FP32)  # Rank-zero is valid.
     model.output_schema.ParseFromString(
@@ -52,7 +54,12 @@ def transaction_artifact() -> proto.ModelArtifact:
         data_type=proto.BF16,
     )
     transaction.inputs.add(
-        group_id=0, work_id=0, macro_slot=0, input_slot=0, data_type=proto.BF16
+        group_id=0,
+        work_id=0,
+        macro_slot=0,
+        input_slot=0,
+        input_cache_address=0,
+        data_type=proto.BF16,
     )
     transaction.readbacks.add(
         group_id=0,
@@ -106,7 +113,6 @@ def test_schema_interoperability(
         "truncated",
         "old-binary",
         "marshal",
-        "format",
         "numeric",
         "missing-schema",
         "missing-root",
@@ -127,8 +133,6 @@ def test_invalid_model_metadata(
 ) -> None:
     model = host_artifact()
     match failure:
-        case "format":
-            model.data_format_version = 2
         case "numeric":
             model.numeric_contract_version = 99
         case "missing-schema":
@@ -195,6 +199,7 @@ def test_invalid_model_metadata(
         "duplicate-input",
         "readback-address",
         "readback-work",
+        "readback-work-route",
         "readback-test-core",
         "datatype-mismatch",
         "packet-kind",
@@ -257,6 +262,10 @@ def test_invalid_transaction(
             readback.output_cache_address = 8
         case "readback-work":
             readback.work_id = 9
+        case "readback-work-route":
+            readback.route[0] = 1
+            for read_packet in transaction.packets[3:]:
+                read_packet.route[0] = 1
         case "readback-test-core":
             readback.test_core.pop()
         case "datatype-mismatch":
@@ -290,3 +299,88 @@ def test_invalid_transaction(
 def test_invalid_native_abi(model_library: "ModelLibrary") -> None:
     with pytest.raises(RuntimeError, match="ABI"):
         load_compiled(model_library(host_artifact().SerializeToString(), 99))
+
+
+@pytest.mark.parametrize(
+    "duplicate", [False, True], ids=["distinct", "duplicate"]
+)
+def test_physical_macro_placement(
+    model_library: "ModelLibrary", duplicate: bool
+) -> None:
+    model = transaction_artifact()
+    transaction = model.kernels[0].transaction
+    works = transaction.groups[0].works
+    work = works.add()
+    work.CopyFrom(works[0])
+    work.work_id = 1
+    work.macro_slot = 0 if duplicate else 1
+    for bindings in (
+        transaction.weights,
+        transaction.inputs,
+        transaction.readbacks,
+    ):
+        binding = bindings.add()
+        binding.CopyFrom(bindings[0])
+        binding.work_id = 1
+        binding.macro_slot = work.macro_slot
+    transaction.inputs[1].input_slot = 1
+    transaction.inputs[1].input_cache_address = 1
+    transaction.readbacks[1].output_cache_address = 6
+    for original in list(transaction.packets):
+        packet = transaction.packets.add()
+        packet.CopyFrom(original)
+        packet.work_id = 1
+        packet.macro_slot = work.macro_slot
+        if packet.kind == proto.OUTPUT_CACHE_READ:
+            packet.cache_address = 6
+    shared = model_library(model.SerializeToString(), 1)
+    if duplicate:
+        with pytest.raises(RuntimeError, match="duplicate work, placement"):
+            load_compiled(shared)
+    else:
+        with load_compiled(shared) as compiled:
+            assert compiled.session.num_transactions == 1
+
+
+@pytest.mark.parametrize(
+    ("version", "backend", "cache", "valid"),
+    [
+        (None, None, None, True),
+        (1, proto.SOFTWARE, None, True),
+        (99, proto.SOFTWARE, 0, True),
+        (None, proto.USB, 0, True),
+        (1, proto.USB, 7, True),
+        (99, proto.USB, 7, True),
+        (99, proto.USB, None, False),
+        (1, 99, 0, False),
+        (1, proto.USB, 8, False),
+    ],
+)
+def test_development_metadata_contract(
+    model_library: "ModelLibrary",
+    version: int | None,
+    backend: int | None,
+    cache: int | None,
+    valid: bool,
+) -> None:
+    model = transaction_artifact()
+    if version is None:
+        model.ClearField("data_format_version")
+    else:
+        model.data_format_version = version
+    if backend is None:
+        model.ClearField("runtime_backend")
+    else:
+        model.runtime_backend = backend
+    binding = model.kernels[0].transaction.inputs[0]
+    if cache is None:
+        binding.ClearField("input_cache_address")
+    else:
+        binding.input_cache_address = cache
+    shared = model_library(model.SerializeToString(), 1)
+    if valid:
+        with load_compiled(shared) as compiled:
+            assert compiled.session.num_transactions == 1
+    else:
+        with pytest.raises(RuntimeError, match="Protobuf model.*recompile"):
+            load_compiled(shared)

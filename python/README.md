@@ -59,7 +59,11 @@ import torch
 model = model.cpu().eval()
 with torch.inference_mode():
     compiled = torch.compile(
-        model, backend="cim22", fullgraph=True, dynamic=False
+        model,
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"runtime": "software"},
     )
     result = compiled(sample_input)  # captures, builds .so, loads, executes
     result2 = compiled(other_input)  # calls the loaded native program
@@ -86,7 +90,11 @@ from spikingjelly.activation_based import functional
 with torch.inference_mode():
     functional.reset_net(model)
     compiled = torch.compile(
-        model, backend="cim22", fullgraph=True, dynamic=False
+        model,
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"runtime": "software"},
     )
     functional.reset_net(compiled)
     result = compiled(sample_input)
@@ -115,7 +123,9 @@ from cim22 import compile_exported, load_compiled
 # Export after resetting model state; use flat positional tensor inputs.
 with torch.inference_mode():
     program = torch.export.export(model, (sample_input,), strict=True)
-    with compile_exported(program, artifact_path=Path("model.so")) as runner:
+    with compile_exported(
+        program, artifact_path=Path("model.so"), runtime="software"
+    ) as runner:
         result = runner(sample_input)
 
 # This can run in another process with only the execution runtime installed.
@@ -128,7 +138,7 @@ compiled CIM transactions, weights, ordered static tensor signatures, and
 Protobuf output metadata (`schema/cim22_model.proto`). Loading needs no JSON,
 MLIR, `.pt2`, compiler subprocess or JIT.
 Outputs support tensors, tuples, lists, and string-keyed dictionaries, within
-the Protobuf model parser depth limit checked before compilation. The loader checks native ABI version **1**, Protobuf data format version **3** and
+the Protobuf model parser depth limit checked before compilation. The loader checks native ABI version **1**, Protobuf data format version **3** (software) or **4** (USB), and
 numeric contract version **2** separately. Existing custom binary/marshal models
 are rejected with a recompile diagnostic. Recompile old model libraries.
 The payload is parsed once at load into owned runtime data; inference continues
@@ -144,7 +154,6 @@ under `cim22/lib/`. The deployment process needs neither torch-mlir nor
 `mlir-cim22-opt`, `libcim22_compiler.so`, or MLIR/LLVM compiler shared libraries.
 Models use the build host's Linux architecture with generic CPU codegen.
 Cross-compilation and arbitrary glibc/runtime compatibility are not promised.
-USB execution is not implemented.
 
 For a runtime-only environment using this checkout, run `uv sync --locked
 --no-dev` from `python/`, then `uv run --locked --no-dev python app.py`.
@@ -165,6 +174,65 @@ close. Native runner failures raise errors instead of returning partial outputs.
 `cim22.Session(Path("model.so"))` provides the flat NumPy FP32 interface.
 Raw packet loading through `Session` remains a diagnostic/test route requiring
 the compiler adapter/JIT; it is not the deployment path.
+
+## Linux USB board diagnostics
+
+The compilation option `runtime="usb"` (default) fixes USB dispatch in the model
+`.so`. Select `runtime="software"` explicitly for simulation. During development,
+both backends write `data_format_version=1`; loaders do not enforce this field.
+The schema defaults an absent backend to software (`SOFTWARE=0`, `USB=1`);
+unknown backend values are rejected. Recompile artifacts from the previous
+development enum numbering. Software models can omit input Cache addresses;
+USB models require them regardless of the format version. Device parameters
+stay in the live Session; they cannot change the compiled backend.
+
+CMake enables USB when Linux `libusb-1.0` development files are available.
+Use `-DCIM22_ENABLE_USB=OFF` for a software-only runtime. Such builds can load USB
+metadata but reject device configuration explicitly.
+
+The Session serializes device operations and claims the configured USB interface
+exclusively through Linux/libusb. A second Session or process claiming that
+interface fails with `LIBUSB_ERROR_BUSY`. Closing or reconfiguring the Session
+releases its claim; failed reconfiguration leaves USB dispatch unavailable.
+Other interfaces on a composite USB device are outside this claim.
+Transport/protocol faults are sticky: reconfiguration and reopen cannot recover
+them. Close the Session, follow the board's FPGA/chip reset procedure, then
+create a new Session. Reopening a Host handle does not reset hardware.
+
+```python
+from pathlib import Path
+from cim22 import UsbConfig, compile_exported, load_compiled
+
+with compile_exported(program, artifact_path=Path("board.so"), runtime="usb"):
+    pass
+config = UsbConfig(
+    vendor_id=vendor_id,
+    product_id=product_id,
+    bulk_in_endpoint=bulk_in,
+    bulk_out_endpoint=bulk_out,
+)
+with load_compiled(Path("board.so"), usb_config=config) as runner:
+    raw_flits = runner.session.capture_usb(0, transaction_input_bits)
+```
+
+`transaction_input_bits` is an aligned, contiguous NumPy `uint16` array shaped
+`(dynamic_bindings, 64)`, containing already lowered BF16 input rows in the
+embedded transaction's binding order. It is separate from the model's FP32
+input signature: capture does not run the Host graph. The returned `uint64`
+array has shape `(readbacks, 7)` in readback binding order, with one header and
+six unchanged body flits per row.
+
+Python compilation currently lowers CIM regions in BF16 mode. USB tensor
+output remains disabled until BF16 response packing is confirmed
+(CTQ-037/HWQ-LAYOUT-003); use raw capture for diagnostics. The C++ INT8 typed
+runner is covered by fake-device tests. Neither those tests nor the capture API
+establish physical-board correctness.
+
+The transport follows framehandler's 12-byte records, 3072-byte TX chunks,
+big-endian words and default link 2/channel 3. The runner uses the framehandler
+20 ms startup/2 ms Once delays. BF16 Once-to-idle sequencing follows the supplier
+testbench provisionally for raw diagnostics. These defaults were not validated
+on a board in this change.
 
 ## Verification
 

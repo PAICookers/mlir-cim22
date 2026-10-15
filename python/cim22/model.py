@@ -8,7 +8,7 @@ import torch
 from torch.utils import _pytree
 
 from cim22._schema import decode_outputs
-from cim22.runtime import Session
+from cim22.runtime import Session, UsbConfig
 
 
 class CompiledProgram:
@@ -55,7 +55,10 @@ class CompiledProgram:
 
 
 def load_compiled(
-    artifact: Path, *, library: Path | None = None
+    artifact: Path,
+    *,
+    library: Path | None = None,
+    usb_config: UsbConfig | None = None,
 ) -> CompiledProgram:
     """Load a Linux model.so using only the native execution runtime.
 
@@ -67,6 +70,8 @@ def load_compiled(
         raise ValueError("CIM22 deployment artifacts must be Linux .so files")
     session = Session(artifact, library)
     try:
+        if usb_config is not None:
+            session.configure_usb(usb_config)
         return CompiledProgram(session, decode_outputs(session.output_schema))
     except BaseException:
         session.close()

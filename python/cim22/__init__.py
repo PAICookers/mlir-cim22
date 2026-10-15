@@ -1,8 +1,14 @@
 """Static FP32-boundary inference through LLVM and the CIM22 BF16 runner."""
 
-from cim22.runtime import Session
+from cim22.runtime import Session, UsbConfig
 
-__all__ = ["CompiledProgram", "Session", "compile_exported", "load_compiled"]
+__all__ = [
+    "CompiledProgram",
+    "Session",
+    "UsbConfig",
+    "compile_exported",
+    "load_compiled",
+]
 
 
 def __getattr__(name: str) -> object:

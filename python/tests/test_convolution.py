@@ -37,7 +37,7 @@ def test_grouped_convolution_bias_offloads(
         expected = model(value)
         expected_other = model(other)
         program = torch.export.export(model, (value,), strict=True)
-        with compile_exported(program) as compiled:
+        with compile_exported(program, runtime="software") as compiled:
             assert compiled.session.num_transactions > 0
             torch.testing.assert_close(
                 compiled(value), expected, rtol=0, atol=0

@@ -43,11 +43,15 @@ def backend(
     Original model classes and SpikingJelly reset methods are untouched.
     """
     options = options or {}
-    unknown = options.keys() - {"artifact_dir", "debug_dir"}
+    unknown = options.keys() - {"artifact_dir", "debug_dir", "runtime"}
     if unknown:
         raise ValueError(f"Unknown CIM22 backend options: {sorted(unknown)}")
     directories: dict[str, Path] = {}
     for key, value in options.items():
+        if key == "runtime":
+            if value not in ("software", "usb"):
+                raise ValueError("CIM22 runtime must be 'software' or 'usb'")
+            continue
         if not isinstance(value, (str, Path)):
             raise TypeError(f"CIM22 {key} must be a path")
         directories[key] = Path(value)
@@ -125,6 +129,7 @@ def backend(
                     debug_dir=debug_dir / graph_name
                     if debug_dir is not None
                     else None,
+                    runtime=options.get("runtime", "usb"),
                 )
             for index, (value, version) in frozen.items():
                 if args[index] is not value or value._version != version:

@@ -77,7 +77,7 @@ def test_shared_batch_temporal_reset_and_cache(tmp_path: Path) -> None:
             backend="cim22",
             fullgraph=True,
             dynamic=False,
-            options={"artifact_dir": str(tmp_path)},
+            options={"artifact_dir": str(tmp_path), "runtime": "software"},
         )
         first = compiled(value)
         assert torch.is_inference(first)
@@ -115,8 +115,28 @@ def test_host_only_multiple_outputs() -> None:
     value = torch.arange(6, dtype=torch.float32).reshape(2, 3)
     with torch.inference_mode():
         compiled = torch.compile(
-            HostOnly(), backend="cim22", fullgraph=True, dynamic=False
+            HostOnly(),
+            backend="cim22",
+            fullgraph=True,
+            dynamic=False,
+            options={"runtime": "software"},
         )
         actual = compiled(value)
         torch.testing.assert_close(actual["value"], value * 2.0 + 3.0)
         torch.testing.assert_close(actual["sum"], value.sum())
+
+
+def test_default_backend_requires_usb_configuration(tmp_path: Path) -> None:
+    value = torch.ones(1, 64)
+    compiled = torch.compile(
+        torch.nn.Linear(64, 16).eval(),
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"artifact_dir": str(tmp_path)},
+    )
+    with (
+        torch.inference_mode(),
+        pytest.raises(RuntimeError, match="USB runtime is not configured"),
+    ):
+        compiled(value)

@@ -8,10 +8,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 import torch
 
 from cim22 import compile_exported, load_compiled
+from cim22._generated import cim22_model_pb2 as proto
 
 if TYPE_CHECKING:
     from .conftest import EmbeddedModel, ModelLibrary
@@ -120,7 +122,9 @@ def compiled_artifact(
     program = torch.export.export(
         StructuredLinear().eval(), (torch.ones(2, 3, 65),), strict=True
     )
-    with compile_exported(program, artifact_path=artifact) as compiled:
+    with compile_exported(
+        program, runtime="software", artifact_path=artifact
+    ) as compiled:
         assert compiled.session.num_transactions > 0, (
             "Expected real CIM offload"
         )
@@ -136,7 +140,7 @@ def test_atomic_publication(
         patch("subprocess.run", side_effect=AssertionError("recompiled")),
         pytest.raises(FileExistsError),
     ):
-        compile_exported(program, artifact_path=artifact)
+        compile_exported(program, runtime="software", artifact_path=artifact)
     assert hashlib.sha256(artifact.read_bytes()).digest() == original
     incomplete = tmp_path / "incomplete.so"
     with (
@@ -146,8 +150,23 @@ def test_atomic_publication(
         ),
         pytest.raises(RuntimeError, match="import failed"),
     ):
-        compile_exported(program, artifact_path=incomplete)
+        compile_exported(program, runtime="software", artifact_path=incomplete)
     assert not incomplete.exists()
+
+
+def test_session_rejects_unaligned_fp32(
+    compiled_artifact: tuple[torch.export.ExportedProgram, Path],
+) -> None:
+    _, artifact = compiled_artifact
+    inputs = np.ndarray(
+        (2, 3, 65), dtype=np.float32, buffer=bytearray(1561), offset=1
+    )
+    assert inputs.flags.c_contiguous and not inputs.flags.aligned
+    with (
+        load_compiled(artifact) as compiled,
+        pytest.raises(ValueError, match="aligned"),
+    ):
+        compiled.session(inputs)
 
 
 def test_embedded_protobuf_contract(
@@ -157,7 +176,8 @@ def test_embedded_protobuf_contract(
 ) -> None:
     _, path = compiled_artifact
     model = embedded_model(path)
-    assert model.data_format_version == 3
+    assert model.data_format_version == 1
+    assert model.runtime_backend == proto.SOFTWARE
     assert model.numeric_contract_version == 2
     assert list(model.inputs[0].dimensions) == [2, 3, 65]
     assert [list(value.dimensions) for value in model.outputs] == [
@@ -198,7 +218,9 @@ def test_host_scalar_model(
     value = torch.tensor(4.0)
     program = torch.export.export(HostOnly(), (value,), strict=True)
     shared = tmp_path / "scalar.so"
-    with compile_exported(program, artifact_path=shared) as compiled:
+    with compile_exported(
+        program, runtime="software", artifact_path=shared
+    ) as compiled:
         assert compiled.session.num_transactions == 0
         result = compiled(value)
         assert list(result) == ["z", "a", ""]

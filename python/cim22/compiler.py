@@ -16,15 +16,20 @@ from cim22.runtime import compiler_library, runtime_library
 
 
 def _emit_object(
-    packet: Path, object_file: Path, schema: bytes, library: Path
+    packet: Path,
+    object_file: Path,
+    schema: bytes,
+    library: Path,
+    runtime: str = "usb",
 ) -> None:
     native = ctypes.CDLL(str(compiler_library(library)))
-    emit = native.cim22_compile_object
+    emit = native.cim22_compile_object_with_backend
     emit.argtypes = [
         ctypes.c_char_p,
         ctypes.c_char_p,
         ctypes.c_void_p,
         ctypes.c_size_t,
+        ctypes.c_char_p,
         ctypes.c_char_p,
         ctypes.c_size_t,
     ]
@@ -35,6 +40,7 @@ def _emit_object(
         os.fsencode(object_file),
         schema,
         len(schema),
+        runtime.encode(),
         error,
         len(error),
     ):
@@ -56,6 +62,7 @@ def compile_exported(
     library: Path | None = None,
     artifact_path: Path | None = None,
     debug_dir: Path | None = None,
+    runtime: str = "usb",
 ) -> CompiledProgram:
     """Compile a reset-state, static inference program to a Linux shared library.
 
@@ -68,14 +75,20 @@ def compile_exported(
             Otherwise the library is temporary and lives through the session.
         debug_dir: Optional new directory retaining the intermediate pt2, MLIR
             and object files. Inference never reads this directory.
+        runtime: Persisted backend, "software" for simulation or "usb" (default)
+            for Linux board tests. Configure the returned Session's device.
 
     Returns:
-        A callable using compiled CPU code and the candidate BF16 software runner.
+        A callable using compiled CPU code and the selected CIM runtime.
+        USB BF16 tensor output is disabled pending hardware format confirmation;
+        use Session.capture_usb for raw transaction diagnostics.
         Each invocation starts from the exported state and retains recurrence
         within that invocation. Outputs have independent ownership.
     """
     if sys.platform != "linux" or sys.version_info[:2] != (3, 12):
         raise RuntimeError("CIM22 compilation requires Linux and Python 3.12")
+    if runtime not in ("software", "usb"):
+        raise ValueError("runtime must be 'software' or 'usb'")
     if not isinstance(program, torch.export.ExportedProgram):
         raise TypeError("Expected a torch.export.ExportedProgram")
     if program.range_constraints:
@@ -134,7 +147,7 @@ def compile_exported(
             ],
             "CIM lowering",
         )
-        _emit_object(packet, object_file, schema, library)
+        _emit_object(packet, object_file, schema, library, runtime)
         # Bind model-local function names locally; different loaded models may
         # all have an entry called main. The common runtime remains external.
         _run(
