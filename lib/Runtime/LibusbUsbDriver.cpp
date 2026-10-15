@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
-#include <string>
 
 namespace cim22::runtime::detail {
 namespace {
@@ -80,15 +79,25 @@ public:
 
     if (libusb_kernel_driver_active(handle_, config.interfaceNumber) == 1) {
       result = libusb_detach_kernel_driver(handle_, config.interfaceNumber);
-      if (result != LIBUSB_SUCCESS) {
+      // Another opener may have detached the driver after the active check.
+      // Let the kernel claim decide ownership instead of reporting a stale
+      // detach result as the final error.
+      if (result != LIBUSB_SUCCESS && result != LIBUSB_ERROR_NOT_FOUND) {
         close();
         return libusbError("libusb_detach_kernel_driver", result);
       }
-      detached_ = true;
+      detached_ = result == LIBUSB_SUCCESS;
     }
+    // Linux enforces exclusive interface ownership across handles/processes.
     result = libusb_claim_interface(handle_, config.interfaceNumber);
     if (result != LIBUSB_SUCCESS) {
       close();
+      if (result == LIBUSB_ERROR_BUSY)
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "CIM USB interface %u is already in use by another handle, "
+            "process or driver (LIBUSB_ERROR_BUSY)",
+            static_cast<unsigned>(config.interfaceNumber));
       return libusbError("libusb_claim_interface", result);
     }
     claimed_ = true;

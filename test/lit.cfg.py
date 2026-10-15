@@ -21,6 +21,8 @@ config.substitutions.append(
     ("%mlir_c_runner_utils", f'"{config.mlir_c_runner_utils}"')
 )
 config.substitutions.append(("%cim22_runtime", f'"{config.cim22_runtime}"'))
+if config.cim22_runtime_usb:
+    config.available_features.add("cim22_runtime_usb")
 if config.python_version.startswith("3.12."):
     config.available_features.add("python312")
 
@@ -40,6 +42,8 @@ llvm_config.add_tool_substitutions(
         "mlir-cim22-int8-weight-layout-test",
         "mlir-cim22-cim-software-runner-test",
         "mlir-cim22-cim-executable-runner-test",
+        "mlir-cim22-cim-device-runtime-test",
+        "mlir-cim22-usb-runtime-test",
         "mlir-cim22-onnx-import",
         "mlir-cim22-opt",
     ],

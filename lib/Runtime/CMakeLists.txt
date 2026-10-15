@@ -19,7 +19,21 @@ add_custom_target(update-cim22-protobuf
   COMMENT "Regenerating packaged Python Protobuf binding" VERBATIM)
 
 # Execution-only deployment library; Protobuf lite and LLVMSupport are static.
-add_library(cim22_runtime SHARED Runtime.cpp ModelData.cpp
+option(CIM22_ENABLE_USB "Build the Linux libusb runtime when available" ON)
+if(CIM22_ENABLE_USB AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_package(PkgConfig QUIET)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(LIBUSB QUIET IMPORTED_TARGET GLOBAL libusb-1.0)
+  endif()
+endif()
+
+set(_cim22_runtime_sources Runtime.cpp ModelData.cpp CIMBoardRunner.cpp)
+if(TARGET PkgConfig::LIBUSB)
+  find_package(Threads REQUIRED)
+  list(APPEND _cim22_runtime_sources UsbCIMDevice.cpp UsbRecordCodec.cpp
+       LibusbUsbDriver.cpp)
+endif()
+add_library(cim22_runtime SHARED ${_cim22_runtime_sources}
   ${_cim22_proto_cpp}
   $<TARGET_OBJECTS:obj.MLIRCIM22Execution>
   $<TARGET_OBJECTS:obj.MLIRCIM22Support>)
@@ -27,6 +41,10 @@ llvm_update_compile_flags(cim22_runtime)
 target_include_directories(cim22_runtime PRIVATE "${_cim22_generated}")
 target_link_libraries(cim22_runtime PRIVATE LLVMSupport protobuf::libprotobuf-lite
   ${CMAKE_DL_LIBS})
+if(TARGET PkgConfig::LIBUSB)
+  target_compile_definitions(cim22_runtime PRIVATE CIM22_HAS_USB=1)
+  target_link_libraries(cim22_runtime PRIVATE PkgConfig::LIBUSB Threads::Threads)
+endif()
 
 # ExecutionEngine is excluded from libMLIR; its exported target carries the
 # native codegen/JIT dependencies for either static or shared LLVM/MLIR builds.

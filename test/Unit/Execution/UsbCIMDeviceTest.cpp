@@ -1,8 +1,10 @@
 //===- UsbCIMDeviceTest.cpp - CIM22 USB backend tests --------*- C++ -*-===//
 
 #include "CIM22/Runtime/UsbCIMDevice.h"
+#include "CIM22/Execution/Runtime.h"
 #include "CIM22/Runtime/Detail/UsbDriver.h"
 #include "CIM22/Runtime/UsbRecordCodec.h"
+#include "Session.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
@@ -352,6 +354,19 @@ void testReopenPreservesSessionFault() {
          std::string::npos);
   assert(driverView->openCount() == 1);
   device->close();
+
+  Session session;
+  session.model.backend = RuntimeBackend::USB;
+  auto *faultedDevice = device.get();
+  session.device = std::move(device);
+  CIM22UsbConfig config{};
+  std::array<char, 256> error{};
+  assert(cim22_session_configure_usb(&session, &config, error.data(),
+                                     error.size()) != 0);
+  assert(std::string(error.data()).find("USB session is faulted") !=
+         std::string::npos);
+  assert(session.device.get() == faultedDevice);
+  assert(driverView->openCount() == 1);
 }
 
 void testRejectsUnsolicitedAndOverflowResponses() {
@@ -383,7 +398,33 @@ void testRejectsInvalidTransferConfig() {
   assert(takeError(device->open()).find("transfer sizes") != std::string::npos);
 }
 
-void testRejectsUnverifiedBF16Readback() {
+void testRejectsInvalidEndpointAddresses() {
+  for (const auto &[input, output] : {std::pair<uint8_t, uint8_t>{0x01, 0x01},
+                                      {0x81, 0x81},
+                                      {0x80, 0x01},
+                                      {0x81, 0x00},
+                                      {0x91, 0x01},
+                                      {0x81, 0x11}}) {
+    UsbCIMDeviceConfig config = makeConfig();
+    config.bulkInEndpoint = input;
+    config.bulkOutEndpoint = output;
+    auto device =
+        detail::createUsbCIMDevice(config, std::make_unique<FakeUsbDriver>());
+    assert(takeError(device->open()).find("endpoint addresses") !=
+           std::string::npos);
+  }
+}
+
+void testRejectsInvalidWordByteOrder() {
+  UsbCIMDeviceConfig config = makeConfig();
+  config.wordByteOrder = static_cast<UsbWordByteOrder>(2);
+  auto device =
+      detail::createUsbCIMDevice(config, std::make_unique<FakeUsbDriver>());
+  assert(takeError(device->open()).find("word byte order") !=
+         std::string::npos);
+}
+
+void testPreservesRawBF16Readback() {
   auto driver = std::make_unique<FakeUsbDriver>();
   auto device = detail::createUsbCIMDevice(makeConfig(), std::move(driver));
   expectSuccess(device->open());
@@ -391,9 +432,45 @@ void testRejectsUnverifiedBF16Readback() {
   CIMDeviceProgram program = makeProgram();
   program.readbacks.front().dataType = cim22::execution::CIMDataType::BF16;
   CIMDeviceResponse response;
-  std::string message = takeError(device->execute(program, response));
-  assert(message.find("BF16 readback is disabled") != std::string::npos);
-  expectSuccess(device->execute(makeProgram(), response));
+  expectSuccess(device->execute(program, response));
+  assert(response.readbacks.size() == 1);
+  assert(response.readbacks.front().headerFlit ==
+         ((uint64_t{5} << 60) | (uint64_t{3} << 18) | (uint64_t{7} << 14) | 6));
+  assert(response.readbacks.front().bodyFlits == kResponse);
+  device->close();
+}
+
+void testConsumesCancelledReadError() {
+  class CancelErrorUsbDriver final : public FakeUsbDriver {
+  public:
+    llvm::Error open(const UsbCIMDeviceConfig &config) override {
+      std::lock_guard<std::mutex> lock(mutex_);
+      cancelled_ = false;
+      return FakeUsbDriver::open(config);
+    }
+
+    llvm::Expected<size_t> read(llvm::MutableArrayRef<uint8_t>) override {
+      std::unique_lock<std::mutex> lock(mutex_);
+      condition_.wait(lock, [&] { return cancelled_; });
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "injected USB cancellation");
+    }
+
+    void cancel() override {
+      std::lock_guard<std::mutex> lock(mutex_);
+      cancelled_ = true;
+      condition_.notify_all();
+    }
+
+  private:
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    bool cancelled_ = false;
+  };
+
+  auto device = detail::createUsbCIMDevice(
+      makeConfig(), std::make_unique<CancelErrorUsbDriver>());
+  expectSuccess(device->open());
   device->close();
 }
 } // namespace
@@ -410,6 +487,9 @@ int main() {
   testReopenPreservesSessionFault();
   testRejectsUnsolicitedAndOverflowResponses();
   testRejectsInvalidTransferConfig();
-  testRejectsUnverifiedBF16Readback();
+  testRejectsInvalidEndpointAddresses();
+  testRejectsInvalidWordByteOrder();
+  testPreservesRawBF16Readback();
+  testConsumesCancelledReadError();
   return 0;
 }

@@ -1,5 +1,10 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+set(CIM22_HAS_USB 0)
+if(TARGET PkgConfig::LIBUSB)
+  set(CIM22_HAS_USB 1)
+endif()
+
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
   ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
@@ -88,6 +93,21 @@ target_link_libraries(mlir-cim22-cim-executable-runner-test PRIVATE
   MLIRTensorDialect
 )
 target_compile_options(mlir-cim22-cim-executable-runner-test PRIVATE -fno-rtti)
+add_executable(mlir-cim22-cim-device-runtime-test EXCLUDE_FROM_ALL
+  Unit/Execution/CIMDeviceRuntimeTest.cpp)
+llvm_update_compile_flags(mlir-cim22-cim-device-runtime-test)
+target_link_libraries(mlir-cim22-cim-device-runtime-test PRIVATE
+  cim22_runtime MLIRCIM22Target)
+target_compile_options(mlir-cim22-cim-device-runtime-test PRIVATE -fno-rtti)
+if(TARGET PkgConfig::LIBUSB)
+  add_executable(mlir-cim22-usb-runtime-test EXCLUDE_FROM_ALL
+    Unit/Execution/UsbCIMDeviceTest.cpp)
+  llvm_update_compile_flags(mlir-cim22-usb-runtime-test)
+  target_include_directories(mlir-cim22-usb-runtime-test PRIVATE
+    "${PROJECT_SOURCE_DIR}/lib/Runtime")
+  target_link_libraries(mlir-cim22-usb-runtime-test PRIVATE cim22_runtime)
+  target_compile_options(mlir-cim22-usb-runtime-test PRIVATE -fno-rtti)
+endif()
 set(MLIRCIM22_TEST_DEPENDS
   cim22_compiler
   check-cim22-protobuf
@@ -102,10 +122,14 @@ set(MLIRCIM22_TEST_DEPENDS
   mlir-cim22-int8-weight-layout-test
   mlir-cim22-cim-software-runner-test
   mlir-cim22-cim-executable-runner-test
+  mlir-cim22-cim-device-runtime-test
   mlir-cim22-onnx-import
   mlir-cim22-opt
   split-file
 )
+if(TARGET mlir-cim22-usb-runtime-test)
+  list(APPEND MLIRCIM22_TEST_DEPENDS mlir-cim22-usb-runtime-test)
+endif()
 
 add_lit_testsuite(check-mlir-cim22 "Running mlir-cim22 regression tests"
   ${CMAKE_CURRENT_BINARY_DIR}

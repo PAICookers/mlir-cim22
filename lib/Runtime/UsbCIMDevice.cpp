@@ -105,12 +105,6 @@ public:
     if (faulted_)
       return usbError(llvm::Twine("CIM USB session is faulted: ") +
                       faultMessage_);
-    for (const CIMDeviceReadbackCommand &readback : program.readbacks)
-      if (readback.dataType == execution::CIMDataType::BF16)
-        return usbError(
-            "CIM USB BF16 readback is disabled until the board response ABI "
-            "is verified");
-
     {
       std::lock_guard<std::mutex> lock(receiveMutex_);
       if (!records_.empty() || receiveCodec_.pendingBytes() != 0)
@@ -138,6 +132,13 @@ public:
         readback.bodyFlits[index] = (*records)[index + 1].flit;
       response.readbacks.push_back(readback);
     }
+    {
+      std::lock_guard<std::mutex> lock(receiveMutex_);
+      if (!receiveError_.empty())
+        return fault(receiveError_);
+      if (!records_.empty() || receiveCodec_.pendingBytes() != 0)
+        return fault("CIM USB session has unsolicited response bytes");
+    }
     return llvm::Error::success();
   }
 
@@ -160,9 +161,14 @@ private:
     if (config_.bulkInEndpoint == 0 || config_.bulkOutEndpoint == 0 ||
         (config_.bulkInEndpoint & 0x80) == 0 ||
         (config_.bulkOutEndpoint & 0x80) != 0 ||
+        (config_.bulkInEndpoint & 0x70) != 0 ||
+        (config_.bulkOutEndpoint & 0x70) != 0 ||
         (config_.bulkInEndpoint & 0x0f) == 0 ||
         (config_.bulkOutEndpoint & 0x0f) == 0)
-      return usbError("CIM USB bulk endpoint directions are invalid");
+      return usbError("CIM USB bulk endpoint addresses are invalid");
+    if (config_.wordByteOrder != UsbWordByteOrder::BigEndian &&
+        config_.wordByteOrder != UsbWordByteOrder::LittleEndian)
+      return usbError("CIM USB word byte order is invalid");
     if (config_.physicalLink > 3 || config_.logicalChannel > 7)
       return usbError("CIM USB link or channel is outside the record format");
     if (config_.maxTransferBytes == 0 ||
@@ -260,6 +266,8 @@ private:
         std::lock_guard<std::mutex> lock(receiveMutex_);
         if (!stopRequested_)
           receiveError_ = llvm::toString(count.takeError());
+        else
+          llvm::consumeError(count.takeError());
         receiveCondition_.notify_all();
         break;
       }

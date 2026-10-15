@@ -6,8 +6,8 @@
 #include "llvm/Support/Error.h"
 
 #include <array>
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,7 +18,7 @@ using namespace cim22::runtime;
 namespace {
 #define CHECK(condition)                                                       \
   do {                                                                         \
-    if (!(condition))                                                           \
+    if (!(condition))                                                          \
       std::abort();                                                            \
   } while (false)
 constexpr std::array<int32_t, 16> kExpected{
@@ -30,6 +30,14 @@ constexpr std::array<uint64_t, 6> kResponse{
 
 class FakeCIMDevice final : public CIMDevice {
 public:
+  enum class ResponseFault {
+    None,
+    Missing,
+    InvalidIndex,
+    DuplicateIndex,
+    Header
+  };
+
   llvm::Error open() override {
     opened = true;
     return llvm::Error::success();
@@ -53,9 +61,27 @@ public:
                             (static_cast<uint64_t>(coreSlot) << 18) |
                             (((outputCacheRead >> 14) & 0xf) << 14) | 6;
       readback.bodyFlits = kResponse;
-      if (corruptResponsePadding)
+      if (corruptResponsePadding &&
+          command.outputIndex + 1 == program.readbacks.size())
         readback.bodyFlits[5] = 1;
       response.readbacks.push_back(readback);
+    }
+    switch (responseFault) {
+    case ResponseFault::None:
+      break;
+    case ResponseFault::Missing:
+      response.readbacks.pop_back();
+      break;
+    case ResponseFault::InvalidIndex:
+      response.readbacks.front().outputIndex = response.readbacks.size();
+      break;
+    case ResponseFault::DuplicateIndex:
+      response.readbacks.back().outputIndex =
+          response.readbacks.front().outputIndex;
+      break;
+    case ResponseFault::Header:
+      response.readbacks.front().headerFlit ^= uint64_t{1} << 18;
+      break;
     }
     return llvm::Error::success();
   }
@@ -68,9 +94,10 @@ public:
   CIMDeviceProgram program;
   size_t executeCount = 0;
   bool corruptResponsePadding = false;
+  ResponseFault responseFault = ResponseFault::None;
 };
 
-CIMTransaction makeTransaction() {
+CIMTransaction makeTransaction(CIMDataType dataType = CIMDataType::Int8) {
   const std::array<int32_t, 6> route{};
   const std::array<int32_t, 3> testCore{};
   CIMGroup group;
@@ -83,9 +110,10 @@ CIMTransaction makeTransaction() {
   weight.coreSlot = 3;
   weight.macroSlot = 0;
   weight.words.resize(256, 0);
+  weight.dataType = dataType;
 
-  DynamicInputBinding input{0, 0, 0, 0, CIMDataType::Int8, 7};
-  ReadbackBinding readback{0, 0, 0, 7, route, testCore, CIMDataType::Int8};
+  DynamicInputBinding input{0, 0, 0, 0, dataType, 7};
+  ReadbackBinding readback{0, 0, 0, 7, route, testCore, dataType};
   return CIMTransaction("cim22-4x5-v1", 1, 1, {std::move(group)},
                         {std::move(weight)}, {}, {input}, {readback}, {});
 }
@@ -170,9 +198,7 @@ CIMTransaction makeBF16Transaction() {
                         {std::move(weight)}, {}, {input}, {readback}, {});
 }
 
-void expectSuccess(llvm::Error error) {
-  CHECK(!error);
-}
+void expectSuccess(llvm::Error error) { CHECK(!error); }
 
 void testPacketCodec() {
   const std::array<int32_t, 6> route{};
@@ -236,7 +262,7 @@ void testBoardRunner() {
   CHECK(device.program.readbacks.size() == 1);
   CHECK(device.program.readbacks.front().request.flits.size() == 2);
   CHECK(device.program.readbacks.front().request.flits.back() ==
-         0x500000000081c000ULL);
+        0x500000000081c000ULL);
   device.close();
 }
 
@@ -295,28 +321,31 @@ void testTwoMacrosShareReturnRouteAndOnce() {
   CHECK(device.program.operations[7].flits.front() == 0x9000000000000001ULL);
   CHECK(device.program.readbacks.size() == 2);
   CHECK(device.program.readbacks[0].request.flits.back() ==
-         encodeCIMOutputCacheReadFlit(route, 6));
+        encodeCIMOutputCacheReadFlit(route, 6));
   CHECK(device.program.readbacks[1].request.flits.back() ==
-         encodeCIMOutputCacheReadFlit(route, 7));
+        encodeCIMOutputCacheReadFlit(route, 7));
   device.close();
 }
 
-void testBF16PrefixKeepsWeightExponentWithMacroSelect() {
+void testBF16RawCaptureKeepsPrefixAndBody() {
   FakeCIMDevice device;
+  device.corruptResponsePadding = true;
   expectSuccess(device.open());
-  CIMBoardRunPolicy policy;
-  policy.allowCandidateBF16 = true;
-  CIMBoardRunner runner(device, policy);
+  CIMBoardRunner runner(device, {});
   CIMTransaction executable = makeBF16Transaction();
 
   std::array<uint16_t, 64> inputStorage{};
   const std::array<CIMInputView, 1> inputViews{CIMInputView{{}, inputStorage}};
   CIMRunInputs inputs{inputViews};
-  std::array<uint16_t, 16> outputStorage{};
-  std::array<CIMOutputView, 1> outputViews{CIMOutputView{{}, outputStorage}};
-  CIMRunOutputs outputs{outputViews};
-
-  expectSuccess(runner.run(executable, inputs, outputs));
+  auto response = runner.capture(executable, inputs);
+  CHECK(response);
+  CHECK(response->readbacks.size() == 1);
+  CHECK(response->readbacks[0].outputIndex == 0);
+  CHECK(response->readbacks[0].headerFlit == 0x50000000000dc006ULL);
+  auto expectedBody = kResponse;
+  expectedBody[5] = 1;
+  CHECK(response->readbacks[0].bodyFlits == expectedBody);
+  CHECK(device.executeCount == 1);
   CHECK(device.program.operations.size() == 6);
   const CIMDeviceOperation &prefix = device.program.operations[1];
   CHECK(prefix.flits.size() == 4);
@@ -327,6 +356,115 @@ void testBF16PrefixKeepsWeightExponentWithMacroSelect() {
   CHECK(device.program.operations[5].flits.front() ==
         encodeCIMWorkIdleFlit(route));
   device.close();
+}
+
+void testRawCaptureValidatesInputsBeforeDeviceExecution() {
+  FakeCIMDevice device;
+  expectSuccess(device.open());
+  CIMBoardRunner runner(device, {});
+  CIMTransaction executable = makeBF16Transaction();
+  auto missingInputs = runner.capture(executable, {});
+  CHECK(!missingInputs);
+  CHECK(llvm::toString(missingInputs.takeError()).find("input count") !=
+        std::string::npos);
+
+  std::array<uint16_t, 63> inputStorage{};
+  const std::array<CIMInputView, 1> inputViews{CIMInputView{{}, inputStorage}};
+  auto shortInput = runner.capture(executable, CIMRunInputs{inputViews});
+  CHECK(!shortInput);
+  CHECK(llvm::toString(shortInput.takeError()).find("64 BF16") !=
+        std::string::npos);
+  CHECK(device.executeCount == 0);
+  device.close();
+}
+
+void testRawCaptureValidatesResponseBindings() {
+  FakeCIMDevice device;
+  expectSuccess(device.open());
+  CIMBoardRunner runner(device, {});
+  CIMTransaction executable = makeTwoMacroTransaction();
+  std::array<std::array<int8_t, 64>, 2> inputStorage{};
+  const std::array<CIMInputView, 2> inputViews{
+      CIMInputView{inputStorage[0], {}}, CIMInputView{inputStorage[1], {}}};
+
+  for (FakeCIMDevice::ResponseFault fault :
+       {FakeCIMDevice::ResponseFault::Missing,
+        FakeCIMDevice::ResponseFault::InvalidIndex,
+        FakeCIMDevice::ResponseFault::DuplicateIndex,
+        FakeCIMDevice::ResponseFault::Header}) {
+    device.responseFault = fault;
+    auto response = runner.capture(executable, CIMRunInputs{inputViews});
+    CHECK(!response);
+    llvm::consumeError(response.takeError());
+  }
+  CHECK(device.executeCount == 4);
+  device.close();
+}
+
+void testUnknownDataModeIsRejectedBeforeDeviceExecution() {
+  FakeCIMDevice device;
+  expectSuccess(device.open());
+  CIMBoardRunner runner(device, {});
+  CIMTransaction executable = makeTransaction(static_cast<CIMDataType>(-1));
+  std::array<int8_t, 64> inputStorage{};
+  const std::array<CIMInputView, 1> inputViews{CIMInputView{inputStorage, {}}};
+  CIMRunInputs inputs{inputViews};
+  auto response = runner.capture(executable, inputs);
+  CHECK(!response);
+  llvm::consumeError(response.takeError());
+  std::array<int32_t, 16> outputStorage{};
+  std::array<CIMOutputView, 1> outputViews{CIMOutputView{outputStorage, {}}};
+  CIMRunOutputs outputs{outputViews};
+  llvm::Error error = runner.run(executable, inputs, outputs);
+  CHECK(error);
+  llvm::consumeError(std::move(error));
+  CHECK(device.executeCount == 0);
+  device.close();
+}
+
+void testInvalidPlacementAndReadbackRouteRejectBeforeIO() {
+  for (bool duplicateMacro : {false, true}) {
+    CIMTransaction source = makeTwoMacroTransaction();
+    auto groups = source.getGroups().vec();
+    auto weights = source.getStaticWeights().vec();
+    auto inputs = source.getDynamicInputs().vec();
+    auto readbacks = source.getReadbacks().vec();
+    if (duplicateMacro) {
+      groups[0].works[1].macroSlot = 0;
+      weights[1].macroSlot = 0;
+      inputs[1].macroSlot = 0;
+      readbacks[1].macroSlot = 0;
+    } else {
+      // A different legal onecast route must not read a different Core.
+      readbacks[0].route[0] = 1;
+    }
+    CIMTransaction invalid("cim22-4x5-v1", 1, 1, std::move(groups),
+                           std::move(weights), {}, std::move(inputs),
+                           std::move(readbacks), {});
+    FakeCIMDevice device;
+    expectSuccess(device.open());
+    CIMBoardRunner runner(device, {});
+    std::array<std::array<int8_t, 64>, 2> inputStorage{};
+    const std::array<CIMInputView, 2> inputViews{
+        CIMInputView{inputStorage[0], {}}, CIMInputView{inputStorage[1], {}}};
+    const CIMRunInputs runInputs{inputViews};
+    auto response = runner.capture(invalid, runInputs);
+    CHECK(!response);
+    const std::string expected =
+        duplicateMacro ? "physical Macro" : "Work route";
+    CHECK(llvm::toString(response.takeError()).find(expected) !=
+          std::string::npos);
+    std::array<std::array<int32_t, 16>, 2> outputStorage{};
+    std::array<CIMOutputView, 2> outputViews{
+        CIMOutputView{outputStorage[0], {}},
+        CIMOutputView{outputStorage[1], {}}};
+    CIMRunOutputs outputs{outputViews};
+    llvm::Error error = runner.run(invalid, runInputs, outputs);
+    CHECK(error);
+    CHECK(llvm::toString(std::move(error)).find(expected) != std::string::npos);
+    CHECK(device.executeCount == 0);
+    device.close();
+  }
 }
 
 void testBF16IsRejectedBeforeDeviceExecution() {
@@ -354,13 +492,16 @@ void testMalformedResponseDoesNotPublishPartialOutputs() {
   device.corruptResponsePadding = true;
   expectSuccess(device.open());
   CIMBoardRunner runner(device, {});
-  CIMTransaction executable = makeTransaction();
-  std::array<int8_t, 64> inputStorage{};
-  const std::array<CIMInputView, 1> inputViews{CIMInputView{inputStorage, {}}};
+  CIMTransaction executable = makeTwoMacroTransaction();
+  std::array<std::array<int8_t, 64>, 2> inputStorage{};
+  const std::array<CIMInputView, 2> inputViews{
+      CIMInputView{inputStorage[0], {}}, CIMInputView{inputStorage[1], {}}};
   CIMRunInputs inputs{inputViews};
-  std::array<int32_t, 16> outputStorage;
-  outputStorage.fill(77);
-  std::array<CIMOutputView, 1> outputViews{CIMOutputView{outputStorage, {}}};
+  std::array<std::array<int32_t, 16>, 2> outputStorage;
+  for (auto &output : outputStorage)
+    output.fill(77);
+  std::array<CIMOutputView, 2> outputViews{CIMOutputView{outputStorage[0], {}},
+                                           CIMOutputView{outputStorage[1], {}}};
   CIMRunOutputs outputs{outputViews};
 
   llvm::Error error = runner.run(executable, inputs, outputs);
@@ -370,7 +511,8 @@ void testMalformedResponseDoesNotPublishPartialOutputs() {
     values.fill(77);
     return values;
   }();
-  CHECK(outputStorage == untouched);
+  for (const auto &output : outputStorage)
+    CHECK(output == untouched);
   device.close();
 }
 } // namespace
@@ -380,7 +522,11 @@ int main() {
   testBoardRunner();
   testGroupExecutionOrder();
   testTwoMacrosShareReturnRouteAndOnce();
-  testBF16PrefixKeepsWeightExponentWithMacroSelect();
+  testBF16RawCaptureKeepsPrefixAndBody();
+  testRawCaptureValidatesInputsBeforeDeviceExecution();
+  testRawCaptureValidatesResponseBindings();
+  testUnknownDataModeIsRejectedBeforeDeviceExecution();
+  testInvalidPlacementAndReadbackRouteRejectBeforeIO();
   testBF16IsRejectedBeforeDeviceExecution();
   testMalformedResponseDoesNotPublishPartialOutputs();
   return 0;

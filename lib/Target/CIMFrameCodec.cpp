@@ -95,8 +95,7 @@ FailureOr<SmallVector<uint64_t>> encodeCIMFramePackets(ModuleOp module) {
         .Case<cimframe::ConfigureTestReturnRoutePacketOp>(
             [&](auto returnRoute) {
               flits.push_back(::cim22::runtime::encodeCIMReturnRouteFlit(
-                  returnRoute.getRoute(), returnRoute.getCoreIdx(),
-                  returnRoute.getTestCore()));
+                  returnRoute.getRoute(), 0, returnRoute.getTestCore()));
             })
         .Case<cimframe::ReadOutputCacheInt8PacketOp,
               cimframe::ReadOutputCacheBF16PacketOp>([&](auto read) {

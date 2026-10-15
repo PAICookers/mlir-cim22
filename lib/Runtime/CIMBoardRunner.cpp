@@ -13,6 +13,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <set>
 #include <vector>
 
 namespace cim22::runtime {
@@ -116,16 +117,14 @@ void emitTrace(CIMTraceSink *trace, uint64_t &sequence, CIMTraceEventKind kind,
                  cacheAddress});
 }
 
-llvm::Error validateViews(const CIMTransaction &executable,
-                          const CIMRunInputs &inputs, CIMRunOutputs &outputs) {
+llvm::Error validateInputs(const CIMTransaction &executable,
+                           const CIMRunInputs &inputs) {
   if (executable.getTargetProfile() != "cim22-4x5-v1" ||
       executable.getTargetProfileVersion() != 1 ||
       executable.getExecutionPlanVersion() != 1)
     return runnerError("unsupported CIM executable profile or version");
   if (inputs.values.size() != executable.getDynamicInputs().size())
     return runnerError("CIM input count does not match executable bindings");
-  if (outputs.values.size() != executable.getReadbacks().size())
-    return runnerError("CIM output count does not match executable bindings");
 
   for (const CIMGroup &group : executable.getGroups()) {
     if (group.works.empty())
@@ -134,18 +133,24 @@ llvm::Error validateViews(const CIMTransaction &executable,
     if (first.coreSlot < 0 || first.coreSlot >= 20)
       return runnerError("CIM work Core is outside [0, 19]");
     if (llvm::Error error = validateCIMRoute(first.route))
-      return std::move(error);
+      return error;
+    std::set<std::pair<int64_t, int64_t>> placements;
     for (const CIMWork &work : group.works) {
       if (work.coreSlot != first.coreSlot || work.route != first.route)
         return runnerError(
             "CIM group works must share one Core and Once route");
       if (work.macroSlot < 0 || work.macroSlot >= 2)
         return runnerError("CIM work Macro is outside [0, 1]");
+      if (!placements.emplace(work.coreSlot, work.macroSlot).second)
+        return runnerError("CIM group reuses a physical Macro placement");
     }
   }
 
   for (auto [index, binding] : llvm::enumerate(executable.getDynamicInputs())) {
     const CIMInputView &input = inputs.values[index];
+    if (binding.dataType != CIMDataType::Int8 &&
+        binding.dataType != CIMDataType::BF16)
+      return runnerError("unsupported CIM input data mode");
     if (binding.inputCacheAddress < 0 || binding.inputCacheAddress >= 8)
       return runnerError("CIM input Cache binding is outside [0, 7]");
     if (binding.dataType == CIMDataType::Int8 &&
@@ -155,22 +160,41 @@ llvm::Error validateViews(const CIMTransaction &executable,
         input.bf16Values.size() != kCIMInputElements)
       return runnerError("CIM input view must contain exactly 64 BF16 values");
   }
-  for (auto [index, binding] : llvm::enumerate(executable.getReadbacks())) {
-    const CIMOutputView &output = outputs.values[index];
+  for (const ReadbackBinding &binding : executable.getReadbacks()) {
+    if (binding.dataType != CIMDataType::Int8 &&
+        binding.dataType != CIMDataType::BF16)
+      return runnerError("unsupported CIM readback data mode");
     if (binding.outputCacheAddress < 0 || binding.outputCacheAddress >= 8)
       return runnerError("CIM output Cache binding is outside [0, 7]");
+    if (llvm::Error error = validateCIMRoute(binding.route))
+      return error;
+    const CIMWork *work = findWork(executable, binding.groupId, binding.workId);
+    if (!work || binding.route != work->route)
+      return runnerError("CIM readback route differs from Work route");
+    for (int32_t value : binding.testCore)
+      if (value < -31 || value > 31)
+        return runnerError("CIM readback test Core is outside [-31, 31]");
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error validateOutputs(const CIMTransaction &executable,
+                            const CIMRunOutputs &outputs) {
+  if (outputs.values.size() != executable.getReadbacks().size())
+    return runnerError("CIM output count does not match executable bindings");
+  for (auto [index, binding] : llvm::enumerate(executable.getReadbacks())) {
+    const CIMOutputView &output = outputs.values[index];
+    if (binding.dataType != CIMDataType::Int8 &&
+        binding.dataType != CIMDataType::BF16)
+      return runnerError("unsupported CIM readback data mode");
     if (binding.dataType == CIMDataType::Int8 &&
         output.values.size() != kCIMOutputElements)
       return runnerError(
           "CIM output view must contain exactly 16 INT32 values");
-    if (binding.dataType == CIMDataType::BF16 &&
-        output.bf16Values.size() != kCIMOutputElements)
-      return runnerError("CIM output view must contain exactly 16 BF16 values");
-    if (llvm::Error error = validateCIMRoute(binding.route))
-      return std::move(error);
-    for (int32_t value : binding.testCore)
-      if (value < -31 || value > 31)
-        return runnerError("CIM readback test Core is outside [-31, 31]");
+    if (binding.dataType == CIMDataType::BF16)
+      return runnerError(
+          "CIM board BF16 readback is disabled until response packing is "
+          "verified (CTQ-037/HWQ-LAYOUT-003); use raw capture for diagnostics");
   }
   return llvm::Error::success();
 }
@@ -286,8 +310,8 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
   }
   program.operations.push_back(std::move(startWork));
 
-  // The supplier BF16 testbench requires an explicit idle transition before a
-  // response request. This path is candidate-only and disabled by default.
+  // The BF16 testbench uses Once -> idle, provisionally retained only for raw
+  // diagnostics pending CTQ-037/HWQ-LAYOUT-003.
   if (hasBF16(executable)) {
     CIMDeviceOperation idle;
     for (const CIMGroup &group : executable.getGroups())
@@ -313,17 +337,12 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
   return program;
 }
 
-llvm::Error decodeResponse(const CIMTransaction &executable,
-                           const CIMDeviceResponse &response,
-                           CIMRunOutputs &outputs, CIMTraceSink *trace,
-                           uint64_t &sequence) {
+llvm::Error validateResponse(const CIMTransaction &executable,
+                             const CIMDeviceResponse &response,
+                             CIMTraceSink *trace, uint64_t &sequence) {
   if (response.readbacks.size() != executable.getReadbacks().size())
     return runnerError("CIM device returned an unexpected readback count");
-  std::vector<bool> seen(outputs.values.size(), false);
-  std::vector<std::array<int32_t, kCIMOutputElements>> decodedInt21(
-      outputs.values.size());
-  std::vector<std::array<uint16_t, kCIMOutputElements>> decodedBF16(
-      outputs.values.size());
+  std::vector<bool> seen(executable.getReadbacks().size(), false);
 
   for (const CIMDeviceReadback &result : response.readbacks) {
     if (result.outputIndex >= executable.getReadbacks().size() ||
@@ -345,29 +364,26 @@ llvm::Error decodeResponse(const CIMTransaction &executable,
       return runnerError(
           "CIM output Cache response head does not match binding");
 
-    if (binding.dataType == CIMDataType::BF16) {
-      const auto values =
-          mlir::cim22::decodeBF16OutputCacheResponse(result.bodyFlits);
-      std::copy(values.begin(), values.end(),
-                decodedBF16[result.outputIndex].begin());
-    } else {
-      auto values = decodeCIMInt21OutputCacheResponse(result.bodyFlits);
-      if (!values)
-        return values.takeError();
-      decodedInt21[result.outputIndex] = *values;
-    }
     emitTrace(trace, sequence, CIMTraceEventKind::ReadOutput, binding.groupId,
               binding.workId, binding.macroSlot, -1,
               binding.outputCacheAddress);
   }
+  return llvm::Error::success();
+}
+
+llvm::Error decodeResponse(const CIMDeviceResponse &response,
+                           CIMRunOutputs &outputs) {
+  std::vector<std::array<int32_t, kCIMOutputElements>> decodedInt21(
+      outputs.values.size());
+  for (const CIMDeviceReadback &result : response.readbacks) {
+    auto values = decodeCIMInt21OutputCacheResponse(result.bodyFlits);
+    if (!values)
+      return values.takeError();
+    decodedInt21[result.outputIndex] = *values;
+  }
   for (size_t index = 0; index < outputs.values.size(); ++index) {
-    const ReadbackBinding &binding = executable.getReadbacks()[index];
-    if (binding.dataType == CIMDataType::BF16)
-      std::copy(decodedBF16[index].begin(), decodedBF16[index].end(),
-                outputs.values[index].bf16Values.begin());
-    else
-      std::copy(decodedInt21[index].begin(), decodedInt21[index].end(),
-                outputs.values[index].values.begin());
+    std::copy(decodedInt21[index].begin(), decodedInt21[index].end(),
+              outputs.values[index].values.begin());
   }
   return llvm::Error::success();
 }
@@ -379,34 +395,56 @@ llvm::Error CIMBoardRunner::run(const execution::CIMTransaction &executable,
                                 execution::CIMTraceSink *trace) {
   uint64_t sequence = 0;
   emitTrace(trace, sequence, execution::CIMTraceEventKind::BeginRun);
-  if (llvm::Error error = validateViews(executable, inputs, outputs)) {
+  if (llvm::Error error = validateOutputs(executable, outputs)) {
     emitTrace(trace, sequence, execution::CIMTraceEventKind::Error);
     return error;
   }
-  if (hasBF16(executable) && !policy_.allowCandidateBF16) {
+  auto response = captureImpl(executable, inputs, trace, sequence);
+  if (!response) {
     emitTrace(trace, sequence, execution::CIMTraceEventKind::Error);
-    return runnerError(
-        "CIM board BF16 readback is disabled until response packing is verified "
-        "(CTQ-037/HWQ-LAYOUT-003)");
+    return response.takeError();
   }
-  auto program =
-      materializeProgram(executable, inputs, policy_, trace, sequence);
-  if (!program) {
-    emitTrace(trace, sequence, execution::CIMTraceEventKind::Error);
-    return program.takeError();
-  }
-  CIMDeviceResponse response;
-  if (llvm::Error error = device_.execute(*program, response)) {
-    emitTrace(trace, sequence, execution::CIMTraceEventKind::Error);
-    return error;
-  }
-  if (llvm::Error error =
-          decodeResponse(executable, response, outputs, trace, sequence)) {
+  if (llvm::Error error = decodeResponse(*response, outputs)) {
     emitTrace(trace, sequence, execution::CIMTraceEventKind::Error);
     return error;
   }
   emitTrace(trace, sequence, execution::CIMTraceEventKind::Complete);
   return llvm::Error::success();
+}
+
+llvm::Expected<CIMDeviceResponse>
+CIMBoardRunner::capture(const execution::CIMTransaction &executable,
+                        const execution::CIMRunInputs &inputs,
+                        execution::CIMTraceSink *trace) {
+  uint64_t sequence = 0;
+  emitTrace(trace, sequence, execution::CIMTraceEventKind::BeginRun);
+  auto response = captureImpl(executable, inputs, trace, sequence);
+  if (!response) {
+    emitTrace(trace, sequence, execution::CIMTraceEventKind::Error);
+    return response.takeError();
+  }
+  emitTrace(trace, sequence, execution::CIMTraceEventKind::Complete);
+  return response;
+}
+
+llvm::Expected<CIMDeviceResponse>
+CIMBoardRunner::captureImpl(const execution::CIMTransaction &executable,
+                            const execution::CIMRunInputs &inputs,
+                            execution::CIMTraceSink *trace,
+                            uint64_t &sequence) {
+  if (llvm::Error error = validateInputs(executable, inputs))
+    return std::move(error);
+  auto program =
+      materializeProgram(executable, inputs, policy_, trace, sequence);
+  if (!program)
+    return program.takeError();
+  CIMDeviceResponse response;
+  if (llvm::Error error = device_.execute(*program, response))
+    return std::move(error);
+  if (llvm::Error error =
+          validateResponse(executable, response, trace, sequence))
+    return std::move(error);
+  return response;
 }
 
 } // namespace cim22::runtime
