@@ -15,8 +15,8 @@ struct ModelData {
   int64_t numInputs = 0;
 };
 
-// Field-wise encoding keeps the artifact independent of C++ object layouts.
-std::string encodeModelData(const ModelData &model);
+// Protobuf persists owned static data; live buffers/devices remain in Session.
+llvm::Expected<std::string> encodeModelData(const ModelData &model);
 llvm::Error decodeModelData(llvm::StringRef data, ModelData &model);
 } // namespace cim22::runtime
 

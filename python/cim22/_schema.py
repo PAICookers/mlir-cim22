@@ -1,69 +1,100 @@
-"""Binary output-container metadata embedded in a Linux model library.
+"""Protobuf output trees embedded in a model library, using built-in containers."""
 
-Only built-in containers and tensor leaves are represented. Python 3.12 marshal
-encodes primitive tuples/strings without importing classes or using JSON/pickle.
-The native model library is trusted executable code, not an untrusted input.
-"""
-
-import marshal
-
+from google.protobuf.message import DecodeError
 from torch.utils import _pytree
 
-type _Node = tuple[int] | tuple[int, tuple[str, ...], tuple[_Node, ...]]
+from cim22._generated import cim22_model_pb2 as proto
 
 
-def _encode(spec: _pytree.TreeSpec) -> _Node:
+def _encode(
+    spec: _pytree.TreeSpec, node: proto.OutputNode, ordinal: int
+) -> int:
     if spec.is_leaf():
-        return (0,)
-    kinds = {tuple: 1, list: 2, dict: 3}
-    if spec.type not in kinds or (
+        node.tensor_leaf = ordinal
+        return ordinal + 1
+    if spec.type not in (tuple, list, dict) or (
         spec.type is dict
         and not all(isinstance(key, str) for key in spec.context)
     ):
         raise ValueError(
             "Outputs require tensors, tuples, lists, or string-keyed dictionaries"
         )
-    keys = tuple(spec.context) if spec.type is dict else ()
-    return kinds[spec.type], keys, tuple(_encode(s) for s in spec.children())
+    if spec.type is dict:
+        node.dictionary.SetInParent()
+        if len(set(spec.context)) != len(spec.context):
+            raise ValueError("Duplicate output dictionary keys")
+        for key, child in zip(spec.context, spec.children(), strict=True):
+            entry = node.dictionary.entries.add(key=key)
+            ordinal = _encode(child, entry.value, ordinal)
+    else:
+        sequence = node.tuple if spec.type is tuple else node.list
+        sequence.SetInParent()
+        for child in spec.children():
+            ordinal = _encode(child, sequence.children.add(), ordinal)
+    return ordinal
 
 
-def _decode(data: object) -> _pytree.TreeSpec:
-    if data == (0,):
-        return _pytree.tree_structure(0)
-    if not isinstance(data, tuple) or len(data) != 3:
-        raise ValueError("Invalid output schema node")
-    kind, keys, children = data
-    if type(kind) is not int or kind not in (1, 2, 3):
-        raise ValueError("Invalid output schema container")
-    if not isinstance(keys, tuple) or not isinstance(children, tuple):
-        raise ValueError("Invalid output schema fields")
-    if kind == 3:
-        if (
-            len(keys) != len(children)
-            or not all(isinstance(key, str) for key in keys)
-            or len(set(keys)) != len(keys)
+def _decode(
+    node: proto.OutputNode, ordinal: int
+) -> tuple[_pytree.TreeSpec, int]:
+    kind = node.WhichOneof("node")
+    if kind == "tensor_leaf":
+        if node.tensor_leaf != ordinal:
+            raise ValueError("Invalid output tensor leaf ordinal")
+        return _pytree.tree_structure(0), ordinal + 1
+    if kind not in ("tuple", "list", "dictionary"):
+        raise ValueError("Missing or unsupported output schema node")
+    keys = None
+    if kind == "dictionary":
+        entries = node.dictionary.entries
+        keys = [entry.key for entry in entries]
+        if len(set(keys)) != len(keys) or any(
+            not entry.HasField("key") or not entry.HasField("value")
+            for entry in entries
         ):
-            raise ValueError("Invalid output dictionary keys")
-    elif keys:
-        raise ValueError("Unexpected output schema keys")
-    return _pytree.TreeSpec(
-        {1: tuple, 2: list, 3: dict}[kind],
-        list(keys) if kind == 3 else None,
-        [_decode(child) for child in children],
+            raise ValueError("Invalid output dictionary entries")
+        nodes = [entry.value for entry in entries]
+    else:
+        nodes = getattr(node, kind).children
+    children = []
+    for child in nodes:
+        spec, ordinal = _decode(child, ordinal)
+        children.append(spec)
+    return (
+        _pytree.TreeSpec(
+            {"tuple": tuple, "list": list, "dictionary": dict}[kind],
+            keys,
+            children,
+        ),
+        ordinal,
     )
 
 
 def encode_outputs(spec: _pytree.TreeSpec) -> bytes:
-    """Encode the supported output tree, with a separate schema version."""
-    return marshal.dumps((1, _encode(spec)), 4)
+    """Encode built-in containers with tensor ordinals in flatten order."""
+    schema = proto.OutputSchema(version=1)
+    _encode(spec, schema.root, 0)
+    data = schema.SerializeToString()
+    # Match the enclosing native model's parser depth before compilation.
+    try:
+        proto.ModelArtifact.FromString(
+            proto.ModelArtifact(output_schema=schema).SerializeToString()
+        )
+    except DecodeError as error:
+        raise ValueError("Output schema exceeds model parser limit") from error
+    return data
 
 
 def decode_outputs(data: bytes) -> _pytree.TreeSpec:
-    """Restore only built-in tensor containers from the embedded binary schema."""
+    """Restore and validate the embedded output tree; old marshal is rejected."""
     try:
-        version, tree = marshal.loads(data)
-        if type(version) is not int or version != 1:
-            raise ValueError("Unsupported output schema version")
-        return _decode(tree)
-    except (EOFError, TypeError, ValueError) as error:
-        raise ValueError("Invalid CIM22 binary output schema") from error
+        schema = proto.OutputSchema.FromString(data)
+        if schema.version != 1 or not schema.HasField("root"):
+            raise ValueError(
+                "Unsupported or missing output schema version/root"
+            )
+        return _decode(schema.root, 0)[0]
+    except (DecodeError, ValueError) as error:
+        raise ValueError(
+            f"Invalid CIM22 Protobuf output schema; recompile the model: {error}"
+        ) from error

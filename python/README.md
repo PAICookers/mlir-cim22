@@ -34,7 +34,9 @@ the compiler extra uses a pinned binary wheel from
 [llvm/torch-mlir-release](https://github.com/llvm/torch-mlir-release/releases).
 The lockfile records resolved versions and download hashes. No CUDA packages
 or torch-mlir source checkout are used. Compilation also needs a C linker
-(`cc`, or `CIM22_CC`) and discoverable LLVM shared libraries. The compiler
+(`cc`, or `CIM22_CC`). Building the native compiler requires LLVM/MLIR;
+its dependencies follow the configured LLVM/MLIR CMake targets, so static
+toolchain builds do not require LLVM/MLIR shared libraries. The compiler
 adapter is `libcim22_compiler.so` beside the runtime, or select it with
 `CIM22_COMPILER_LIBRARY`.
 
@@ -122,17 +124,22 @@ with torch.inference_mode(), load_compiled(Path("model.so")) as runner:
 ```
 
 Only the model `.so` is a model-specific runtime artifact. It embeds CPU code,
-compiled CIM transactions, weights, static tensor shapes, and binary output
-metadata. Loading needs no JSON, MLIR, `.pt2`, compiler subprocess or JIT.
-Outputs support tensors, tuples, lists, and string-keyed dictionaries. The
-loader checks the model ABI version and binary metadata. Binary data version 2
-identifies the candidate arithmetic contract; version 1 artifacts must be
-recompiled because their prealigned weights used the previous arithmetic.
-Regenerate diagnostic packet/RTL exports as well. Load trusted models.
+compiled CIM transactions, weights, ordered static tensor signatures, and
+Protobuf output metadata (`schema/cim22_model.proto`). Loading needs no JSON,
+MLIR, `.pt2`, compiler subprocess or JIT.
+Outputs support tensors, tuples, lists, and string-keyed dictionaries, within
+the Protobuf model parser depth limit checked before compilation. The loader checks native ABI version **1**, Protobuf data format version **3** and
+numeric contract version **2** separately. Existing custom binary/marshal models
+are rejected with a recompile diagnostic. Recompile old model libraries.
+The payload is parsed once at load into owned runtime data; inference continues
+to use native tensor buffers. Scalar tensors and pure Host models are supported.
+Load trusted models.
 
 Deploy `model.so` with matching `libcim22_runtime.so`, the Python runtime
 package, PyTorch/NumPy and
-normal Linux C/C++ libraries. Set `CIM22_RUNTIME_LIBRARY`, or package the runtime
+normal Linux C/C++ libraries. Python uses `protobuf==6.31.1`; inference needs
+no `protoc`, and the runtime statically links Protobuf lite. Set
+`CIM22_RUNTIME_LIBRARY`, or package the runtime
 under `cim22/lib/`. The deployment process needs neither torch-mlir nor
 `mlir-cim22-opt`, `libcim22_compiler.so`, or MLIR/LLVM compiler shared libraries.
 Models use the build host's Linux architecture with generic CPU codegen.
@@ -186,3 +193,26 @@ runtime JSON reads, and checks that compiler/MLIR DSOs were not loaded. Generic
 regressions are separate from local model-specific accuracy investigations.
 Ruff inherits the repository lint rules and 80-column formatting, selecting
 Python 3.12 for this package and its tests.
+
+
+### Protobuf code generation
+
+Default CMake builds reuse ONNX's pinned Protobuf/protoc **31.1**. Generated C++
+lives in the build directory; generated Python ships inside the runtime wheel.
+Installation and inference do not regenerate bindings. After editing the schema:
+
+```bash
+cmake --build build --target update-cim22-protobuf
+cmake --build build --target check-cim22-protobuf
+```
+
+Normal builds never overwrite packaged Python source. `check-mlir-cim22` checks
+binding freshness. System ONNX mode requires a matching Protobuf **31.1.0** CMake
+config exporting `protobuf::protoc` and static `protobuf::libprotobuf-lite`;
+configure fails explicitly if either is missing or incompatible. C++ generation
+and runtime must match exactly. The model `.so` only links the execution runtime,
+not another Protobuf library.
+
+New descriptive fields may be ignored by older readers. Changes to execution
+semantics must upgrade the artifact version. Device handles, ports, timeouts and
+live buffer pointers remain outside the persisted model.

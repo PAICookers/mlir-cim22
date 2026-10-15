@@ -266,8 +266,12 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
     auto module = translateModuleToLLVMIR(host, llvmContext);
     if (!module)
       return failure();
-    addModelDescriptor(*module, entryName,
-                       ::cim22::runtime::encodeModelData(session.model));
+    auto data = ::cim22::runtime::encodeModelData(session.model);
+    if (!data) {
+      session.error = llvm::toString(data.takeError());
+      return failure();
+    }
+    addModelDescriptor(*module, entryName, *data);
     ExecutionEngine::setupTargetTripleAndDataLayout(module.get(),
                                                     machine->get());
     llvm::orc::SimpleCompiler compiler(**machine);

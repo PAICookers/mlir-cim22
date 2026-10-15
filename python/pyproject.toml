@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "mlir-cim22-runtime"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["numpy>=1.26,<3", "torch==2.14.0"]
+dependencies = ["numpy>=1.26,<3", "torch==2.14.0", "protobuf==6.31.1"]
 
 [project.optional-dependencies]
 compiler = ["torch-mlir==20260930.892"]
@@ -25,7 +25,9 @@ include = ["cim22*"]
 required-version = ">=0.13"
 # The compiler wheel and native model ABI currently target Linux x86-64.
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
-required-environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -40,8 +42,11 @@ torch-mlir = { url = "https://github.com/llvm/torch-mlir-release/releases/downlo
 minversion = "8.3"
 testpaths = ["tests"]
 addopts = "-ra --strict-config --strict-markers --import-mode=importlib"
-markers = ["integration: requires the native compiler/runtime and torch-mlir extra"]
+markers = [
+    "integration: requires native runtime; compilation also needs compiler/torch-mlir",
+]
 
 [tool.ruff]
 extend = "../pyproject.toml"
 target-version = "py312"
+extend-exclude = ["cim22/_generated"]
