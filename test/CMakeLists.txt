@@ -22,6 +22,13 @@ endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR})
 
+add_executable(mlir-cim22-model-data-test EXCLUDE_FROM_ALL
+  Unit/Execution/ModelDataTest.cpp)
+llvm_update_compile_flags(mlir-cim22-model-data-test)
+target_include_directories(mlir-cim22-model-data-test PRIVATE
+  "${PROJECT_SOURCE_DIR}/lib/Runtime")
+target_link_libraries(mlir-cim22-model-data-test PRIVATE cim22_runtime LLVMSupport)
+
 add_executable(mlir-cim22-int8-weight-layout-test EXCLUDE_FROM_ALL
   Unit/Support/Int8WeightLayoutTest.cpp
 )
@@ -83,6 +90,8 @@ target_link_libraries(mlir-cim22-cim-executable-runner-test PRIVATE
 target_compile_options(mlir-cim22-cim-executable-runner-test PRIVATE -fno-rtti)
 set(MLIRCIM22_TEST_DEPENDS
   cim22_compiler
+  check-cim22-protobuf
+  mlir-cim22-model-data-test
   FileCheck
   mlir-runner
   mlir_c_runner_utils

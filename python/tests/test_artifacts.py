@@ -4,14 +4,18 @@ import hashlib
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 import torch
 
 from cim22 import compile_exported, load_compiled
+
+if TYPE_CHECKING:
+    from .conftest import EmbeddedModel, ModelLibrary
+
 
 pytestmark = [
     pytest.mark.integration,
@@ -32,7 +36,8 @@ class StructuredLinear(torch.nn.Module):
     def forward(
         self, x: torch.Tensor
     ) -> dict[str, tuple[torch.Tensor, list[torch.Tensor]]]:
-        y = self.linear(x)
+        # Destination-style bufferization must not reuse caller-owned storage.
+        y = self.linear(x + x)
         return {"result": (y, [x.sum(), y.sum()])}
 
 
@@ -58,7 +63,8 @@ from cim22 import load_compiled
 value = torch.ones(2, 3, 65)
 value[:, 1] *= 2
 value[:, 2] *= 4
-expected = torch.tensor([66., 131., 261.])[None, :, None].expand(2, 3, 17)
+original = value.clone()
+expected = torch.tensor([131., 261., 521.])[None, :, None].expand(2, 3, 17)
 with patch('subprocess.run', side_effect=AssertionError('frontend invoked')), \
      patch('json.loads', side_effect=AssertionError('runtime JSON read')):
     with load_compiled(Path(sys.argv[1])) as compiled:
@@ -68,6 +74,7 @@ with patch('subprocess.run', side_effect=AssertionError('frontend invoked')), \
         torch.testing.assert_close(first[0], expected, rtol=0, atol=0)
         torch.testing.assert_close(first[1][0], value.sum(), rtol=0, atol=0)
         torch.testing.assert_close(first[1][1], expected.sum(), rtol=0, atol=0)
+        torch.testing.assert_close(value, original, rtol=0, atol=0)
         assert compiled.session.dispatch_count > 0
         with load_compiled(Path(sys.argv[1])) as another:
             torch.testing.assert_close(another(value)['result'][0], expected)
@@ -80,6 +87,7 @@ with patch('subprocess.run', side_effect=AssertionError('frontend invoked')), \
         second = compiled(value * 2)['result'][0]
         torch.testing.assert_close(second, expected * 2 - 1, rtol=0, atol=0)
         third = compiled(value)['result'][0]
+        torch.testing.assert_close(value, original, rtol=0, atol=0)
         torch.testing.assert_close(first[0], third, rtol=0, atol=0)
         assert first[0].data_ptr() != second.data_ptr()
         for invalid in (value.double(), value[:, :2], value.transpose(0, 1)):
@@ -99,7 +107,7 @@ with patch('subprocess.run', side_effect=AssertionError('frontend invoked')), \
 assert 'torch_mlir' not in sys.modules
 assert 'cim22.compiler' not in sys.modules
 maps = Path('/proc/self/maps').read_text()
-assert 'libMLIR.so' not in maps and 'libcim22_compiler.so' not in maps
+assert not any(name in maps for name in ('libMLIR', 'libLLVM', 'libcim22_compiler'))
 """
 
 
@@ -117,29 +125,6 @@ def compiled_artifact(
             "Expected real CIM offload"
         )
     return program, artifact
-
-
-def test_relocated_reload_without_frontend(
-    compiled_artifact: tuple[torch.export.ExportedProgram, Path], tmp_path: Path
-) -> None:
-    _, artifact = compiled_artifact
-    shared = tmp_path / "model.so"
-    shutil.copyfile(artifact, shared)
-    runtime = tmp_path / "libcim22_runtime.so"
-    shutil.copyfile(Path(os.environ["CIM22_RUNTIME_LIBRARY"]), runtime)
-    environment = os.environ.copy()
-    environment["CIM22_OPT"] = "/nonexistent/optimizer"
-    environment["CIM22_COMPILER_LIBRARY"] = "/nonexistent/compiler.so"
-    environment["CIM22_RUNTIME_LIBRARY"] = str(runtime)
-    result = subprocess.run(
-        [sys.executable, "-c", RELOAD_SCRIPT, str(shared)],
-        env=environment,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_atomic_publication(
@@ -165,39 +150,143 @@ def test_atomic_publication(
     assert not incomplete.exists()
 
 
-@pytest.mark.parametrize(
-    ("version", "data_version", "message"),
-    [(99, 2, "ABI"), (1, 1, "recompile"), (1, 2, "data")],
-    ids=["incompatible-abi", "old-arithmetic", "truncated-data"],
-)
-def test_invalid_library(
-    tmp_path: Path, version: int, data_version: int, message: str
+def test_embedded_protobuf_contract(
+    compiled_artifact: tuple[torch.export.ExportedProgram, Path],
+    embedded_model: "EmbeddedModel",
+    model_library: "ModelLibrary",
 ) -> None:
-    source = tmp_path / "invalid.c"
-    source.write_text(
-        """
-#include <stdint.h>
-struct Model { uint64_t version; const void *data; uint64_t size;
-               void (*invoke)(void **); };
-static const unsigned char data[8] = {DATA_VERSION};
-static void invoke(void **args) {}
-static const struct Model model = {VERSION, data, sizeof(data), invoke};
-const struct Model *cim22_model_v1(void) { return &model; }
-""".replace("DATA_VERSION", str(data_version)).replace("VERSION", str(version)),
-        encoding="utf-8",
+    _, path = compiled_artifact
+    model = embedded_model(path)
+    assert model.data_format_version == 3
+    assert model.numeric_contract_version == 2
+    assert list(model.inputs[0].dimensions) == [2, 3, 65]
+    assert [list(value.dimensions) for value in model.outputs] == [
+        [2, 3, 17],
+        [],
+        [],
+    ]
+    entries = model.output_schema.root.dictionary.entries
+    assert [entry.key for entry in entries] == ["result"]
+    assert entries[0].value.tuple.children[0].tensor_leaf == 0
+    assert entries[0].value.tuple.children[1].list.children[1].tensor_leaf == 2
+    assert model.kernels
+    assert len({kernel.kernel_name for kernel in model.kernels}) == len(
+        model.kernels
     )
-    invalid = tmp_path / "invalid.so"
+    for kernel in model.kernels:
+        transaction = kernel.transaction
+        assert transaction.weights and transaction.flits
+        assert all(
+            len(weight.values) == 1024 and len(weight.words) == 256
+            for weight in transaction.weights
+        )
+    # Native-generated transactions can be parsed/re-serialized by Python and
+    # loaded back by C++, with future descriptive metadata safely ignored.
+    with load_compiled(
+        model_library(model.SerializeToString() + b"\xa0\x06\x01", 1)
+    ) as loaded:
+        assert loaded.session.num_transactions == len(model.kernels)
+
+
+def test_host_scalar_model(
+    tmp_path: Path, embedded_model: "EmbeddedModel"
+) -> None:
+    class HostOnly(torch.nn.Module):
+        def forward(self, x: torch.Tensor) -> dict[str, object]:
+            return {"z": (x + x, []), "a": [x * x], "": {}}
+
+    value = torch.tensor(4.0)
+    program = torch.export.export(HostOnly(), (value,), strict=True)
+    shared = tmp_path / "scalar.so"
+    with compile_exported(program, artifact_path=shared) as compiled:
+        assert compiled.session.num_transactions == 0
+        result = compiled(value)
+        assert list(result) == ["z", "a", ""]
+        assert result["z"][1] == [] and result[""] == {}
+        torch.testing.assert_close(result["z"][0], value * 2)
+        torch.testing.assert_close(result["a"][0], value * value)
+    model = embedded_model(shared)
+    assert list(model.inputs[0].dimensions) == []
+    assert [
+        entry.key for entry in model.output_schema.root.dictionary.entries
+    ] == ["z", "a", ""]
+
+
+def test_installed_wheel_reload_without_frontend(
+    compiled_artifact: tuple[torch.export.ExportedProgram, Path], tmp_path: Path
+) -> None:
+    """A clean deployment env contains the wheel and runtime dependencies only."""
+    project = Path(__file__).resolve().parents[1]
+    deployment = tmp_path / "venv"
+    environment = os.environ.copy()
+    environment["UV_PROJECT_ENVIRONMENT"] = str(deployment)
+    environment.pop("PYTHONPATH", None)
+    commands = [
+        [
+            "uv",
+            "sync",
+            "--project",
+            str(project),
+            "--frozen",
+            "--no-dev",
+            "--no-install-project",
+        ],
+        [
+            "uv",
+            "build",
+            "--project",
+            str(project),
+            "--wheel",
+            "--out-dir",
+            str(tmp_path / "wheels"),
+        ],
+    ]
+    for command in commands:
+        subprocess.run(
+            command, env=environment, check=True, capture_output=True
+        )
+    wheel = next((tmp_path / "wheels").glob("*.whl"))
+    python = deployment / "bin" / "python"
     subprocess.run(
         [
-            os.environ.get("CIM22_CC", "cc"),
-            "-shared",
-            "-fPIC",
-            str(source),
-            "-o",
-            str(invalid),
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(python),
+            "--no-deps",
+            str(wheel),
         ],
+        env=environment,
         check=True,
         capture_output=True,
     )
-    with pytest.raises(RuntimeError, match=message):
-        load_compiled(invalid)
+    _, artifact = compiled_artifact
+    shared = tmp_path / "model.so"
+    shutil.copyfile(artifact, shared)
+    runtime = tmp_path / "libcim22_runtime.so"
+    shutil.copyfile(Path(os.environ["CIM22_RUNTIME_LIBRARY"]), runtime)
+    environment["CIM22_OPT"] = "/nonexistent/optimizer"
+    environment["CIM22_COMPILER_LIBRARY"] = "/nonexistent/compiler.so"
+    environment["CIM22_RUNTIME_LIBRARY"] = str(runtime)
+    script = (
+        """
+import importlib.util
+import sys
+from pathlib import Path
+assert importlib.util.find_spec('torch_mlir') is None
+import cim22
+assert Path(cim22.__file__).is_relative_to(Path(sys.prefix))
+"""
+        + RELOAD_SCRIPT
+    )
+    result = subprocess.run(
+        [str(python), "-c", script, str(shared)],
+        env=environment,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
