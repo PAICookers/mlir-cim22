@@ -1,19 +1,22 @@
 """Integration with the pinned wheels, LLVM Host, and candidate CIM runner.
 
-Run with Python 3.12 and CIM22_OPT/CIM22_RUNTIME_LIBRARY set. No replacement
-kernel or eager fallback is used; unit weights make expected numbers exact
-under the candidate model.
+Run with the installed compiler extra and Python 3.12. No replacement kernel
+or eager fallback is used; unit weights make expected numbers exact under the
+candidate model.
 """
 
 from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 import torch
+from torch._dynamo.exc import BackendCompilerFailed
 
 import cim22.backend as adapter
-from cim22.compiler import compile_exported
+from cim22 import Session
+from cim22.compiler import _compile
 
 pytestmark = [
     pytest.mark.integration,
@@ -66,9 +69,8 @@ def test_shared_batch_temporal_reset_and_cache(tmp_path: Path) -> None:
     other_value = value * 2
     with (
         torch.inference_mode(),
-        patch.object(
-            adapter, "compile_exported", wraps=compile_exported
-        ) as compiler,
+        patch.object(adapter, "_compile", wraps=_compile) as compiler,
+        patch("torch.export.export", wraps=torch.export.export) as exporter,
     ):
         model(value)
         model.reset()
@@ -77,7 +79,7 @@ def test_shared_batch_temporal_reset_and_cache(tmp_path: Path) -> None:
             backend="cim22",
             fullgraph=True,
             dynamic=False,
-            options={"artifact_dir": str(tmp_path)},
+            options={"artifact_dir": str(tmp_path), "runtime": "software"},
         )
         first = compiled(value)
         assert torch.is_inference(first)
@@ -94,6 +96,7 @@ def test_shared_batch_temporal_reset_and_cache(tmp_path: Path) -> None:
         third = compiled(value)
         torch.testing.assert_close(first, third, rtol=0, atol=0)
         assert compiler.call_count == 1
+        assert exporter.call_count == 1
         products = list(tmp_path.iterdir())
         assert len(products) == 1
         assert products[0].suffix == ".so"
@@ -101,22 +104,260 @@ def test_shared_batch_temporal_reset_and_cache(tmp_path: Path) -> None:
             assert stream.read(4) == b"\x7fELF"
         assert first.data_ptr() != second.data_ptr()
         assert isinstance(model.v, torch.Tensor)
-        model.linear.weight.add_(1)
-        model.reset()
-        with pytest.raises(ValueError, match="changed; recompile"):
-            compiled(value)
 
 
-def test_host_only_multiple_outputs() -> None:
-    class HostOnly(torch.nn.Module):
-        def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-            return {"value": x * 2.0 + 3.0, "sum": x.sum()}
+def test_host_shape_specialization_and_cache() -> None:
+    def host_only(value: torch.Tensor) -> torch.Tensor:
+        return value * value + value
 
-    value = torch.arange(6, dtype=torch.float32).reshape(2, 3)
-    with torch.inference_mode():
+    scalar = torch.tensor(4.0)
+    values = [scalar, torch.ones(2, 3), scalar]
+    with (
+        torch.inference_mode(),
+        patch.object(adapter, "_compile", wraps=_compile) as compiler,
+    ):
         compiled = torch.compile(
-            HostOnly(), backend="cim22", fullgraph=True, dynamic=False
+            host_only,
+            backend="cim22",
+            fullgraph=True,
+            dynamic=False,
+            options={"runtime": "software"},
         )
-        actual = compiled(value)
-        torch.testing.assert_close(actual["value"], value * 2.0 + 3.0)
-        torch.testing.assert_close(actual["sum"], value.sum())
+        for value in values:
+            torch.testing.assert_close(compiled(value), host_only(value))
+        assert compiler.call_count == 2
+
+
+def test_runtime_weights_stay_on_host(tmp_path: Path) -> None:
+    def linear(value: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.linear(value, weight)
+
+    value = torch.ones(1, 64)
+    weight = torch.ones(16, 64)
+    compiled = torch.compile(
+        linear,
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"runtime": "software", "artifact_dir": tmp_path},
+    )
+    with (
+        torch.inference_mode(),
+        patch.object(adapter, "_compile", wraps=_compile) as compiler,
+    ):
+        for scale in (1, 2):
+            weight.fill_(scale)
+            torch.testing.assert_close(
+                compiled(value, weight), linear(value, weight)
+            )
+        assert compiler.call_count == 1
+    (artifact,) = tmp_path.glob("*.so")
+    with Session(artifact) as session:
+        assert session.num_transactions == 0
+
+
+def test_backend_requires_inference_context() -> None:
+    compiled = torch.compile(
+        lambda value: value * 2,
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"runtime": "software"},
+    )
+    with (
+        torch.enable_grad(),
+        pytest.raises(BackendCompilerFailed, match="no_grad"),
+    ):
+        compiled(torch.ones(2, 3))
+
+
+@pytest.mark.parametrize(
+    "operation", ["add_", "mul_", "relu_", "copy_", "view", "slice"]
+)
+def test_inplace_input_writeback(operation: str) -> None:
+    class Mutating(torch.nn.Module):
+        def forward(self, value: torch.Tensor) -> dict[str, torch.Tensor]:
+            if operation == "add_":
+                value.add_(2)
+            elif operation == "mul_":
+                value.mul_(2)
+            elif operation == "relu_":
+                value.relu_()
+            elif operation == "copy_":
+                value.copy_(value * 2 + 1)
+            elif operation == "view":
+                value.view(-1).add_(2)
+            else:
+                value[:, 1].add_(2)
+            return {"result": value * 3, "input": value, "view": value.view(-1)}
+
+    value = torch.tensor([[-1.0, 2.0], [3.0, -4.0]])
+    expected_input = value.clone()
+    model = Mutating()
+    compiled = torch.compile(
+        model,
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"runtime": "software"},
+    )
+    with (
+        torch.inference_mode(),
+        patch.object(adapter, "_compile", wraps=_compile) as compiler,
+    ):
+        for _ in range(2):
+            expected = model(expected_input)
+            actual = compiled(value)
+            torch.testing.assert_close(value, expected_input)
+            torch.testing.assert_close(actual["result"], expected["result"])
+            assert actual["input"] is value
+            assert (
+                actual["view"].untyped_storage().data_ptr()
+                == value.untyped_storage().data_ptr()
+            )
+        assert compiler.call_count == 1
+
+
+@pytest.mark.parametrize("state_kind", ["buffer", "parameter"])
+def test_mutable_state_and_cim_weights(
+    inference_context: AbstractContextManager[None],
+    state_kind: str,
+    tmp_path: Path,
+) -> None:
+    class Accumulator(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.linear = torch.nn.Linear(64, 16)
+            if state_kind == "buffer":
+                self.register_buffer("state", torch.zeros(1, 16))
+            else:
+                self.state = torch.nn.Parameter(torch.zeros(1, 16))
+            with torch.no_grad():
+                self.linear.weight.fill_(1)
+                self.linear.bias.fill_(1)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            self.state.add_(self.linear(x))
+            return self.state * 2
+
+    model = Accumulator().eval()
+    value = torch.ones(1, 64)
+    original = value.clone()
+    compiled = torch.compile(
+        model,
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"runtime": "software", "artifact_dir": tmp_path},
+    )
+    with (
+        inference_context,
+        patch.object(adapter, "_compile", wraps=_compile) as compiler,
+    ):
+        first = compiled(value)
+        torch.testing.assert_close(first, torch.full((1, 16), 130.0))
+        torch.testing.assert_close(model.state, torch.full((1, 16), 65.0))
+        second = compiled(value)
+        torch.testing.assert_close(second, torch.full((1, 16), 260.0))
+        torch.testing.assert_close(model.state, torch.full((1, 16), 130.0))
+        torch.testing.assert_close(first, torch.full((1, 16), 130.0))
+        model.state.zero_()
+        torch.testing.assert_close(compiled(value), first)
+        assert compiler.call_count == 1
+    torch.testing.assert_close(value, original)
+    (artifact,) = tmp_path.glob("*.so")
+    with Session(artifact) as session:
+        assert session.num_transactions > 0
+
+
+def test_duplicate_input_writeback(
+    inference_context: AbstractContextManager[None],
+) -> None:
+    def mutating(first: torch.Tensor, second: torch.Tensor) -> torch.Tensor:
+        first.add_(2)
+        return second * 3
+
+    value = torch.ones(2, 2)
+    expected_value = value.clone()
+    compiled = torch.compile(
+        mutating,
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"runtime": "software"},
+    )
+    with (
+        inference_context,
+        patch.object(adapter, "_compile", wraps=_compile) as compiler,
+    ):
+        for _ in range(2):
+            expected = mutating(expected_value, expected_value)
+            actual = compiled(value, value)
+            torch.testing.assert_close(actual, expected)
+            torch.testing.assert_close(value, expected_value)
+        assert compiler.call_count == 1
+
+
+@pytest.mark.parametrize("mutate", [False, True], ids=["view", "data-mutation"])
+def test_parameter_output_alias(
+    inference_context: AbstractContextManager[None], mutate: bool
+) -> None:
+    class ParameterOutput(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.ones(2, 2))
+
+        def forward(self, value: torch.Tensor) -> tuple[torch.Tensor, ...]:
+            if mutate:
+                self.weight.data.add_(value)
+            return self.weight * 3, self.weight, self.weight.view(-1)
+
+    model = ParameterOutput()
+    eager = ParameterOutput()
+    value = torch.ones(2, 2)
+    compiled = torch.compile(
+        model,
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"runtime": "software"},
+    )
+    with (
+        inference_context,
+        patch.object(adapter, "_compile", wraps=_compile) as compiler,
+    ):
+        for _ in range(2):
+            expected = eager(value)
+            actual = compiled(value)
+            torch.testing.assert_close(actual, expected)
+            torch.testing.assert_close(model.weight, eager.weight)
+            assert actual[1] is model.weight
+            assert (
+                actual[2].untyped_storage().data_ptr()
+                == model.weight.data_ptr()
+            )
+        assert compiler.call_count == 1
+
+
+def test_failed_compilation_can_retry() -> None:
+    model = torch.nn.Linear(64, 16).eval()
+    value = torch.ones(1, 64)
+    compiled = torch.compile(
+        model,
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"runtime": "software"},
+    )
+    with torch.no_grad():
+        model.weight.fill_(1)
+        model.bias.fill_(1)
+        with (
+            patch.object(
+                adapter, "_compile", side_effect=RuntimeError("retry")
+            ),
+            pytest.raises(BackendCompilerFailed, match="retry"),
+        ):
+            compiled(value)
+        model.weight.add_(1)
+        torch.testing.assert_close(compiled(value), torch.full((1, 16), 129.0))

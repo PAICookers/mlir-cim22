@@ -1,4 +1,3 @@
-import sys
 import unittest
 
 import verify_execution_plan as verify
@@ -172,9 +171,7 @@ class ExecutionPlanVerificationTest(unittest.TestCase):
             "route = array<i64: 0, 0, 0, 0, 0, 0>",
             "route = array<i64: 0, 0, 0, 1, 0, 0>",
         )
-        same_macro = text.replace(
-            "macro_idx = 1 : i64", "macro_idx = 0 : i64"
-        )
+        same_macro = text.replace("macro_idx = 1 : i64", "macro_idx = 0 : i64")
         missing_config = "\n".join(
             line
             for line in text.splitlines()
@@ -254,6 +251,4 @@ class ExecutionPlanVerificationTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(
-        testRunner=unittest.TextTestRunner(stream=sys.stdout, verbosity=2)
-    )
+    unittest.main()

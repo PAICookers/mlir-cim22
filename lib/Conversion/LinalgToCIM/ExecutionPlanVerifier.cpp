@@ -14,10 +14,10 @@
 namespace mlir::cim {
 namespace {
 const llvm::StringRef kWorkIdentityAttrs[] = {
-    "m_tile", "n_tile", "k_tile", "work_id", "group_id", "core_idx",
-    "macro_idx", "cim.mapping"};
+    "m_tile",   "n_tile",   "k_tile",    "work_id",
+    "group_id", "core_idx", "macro_idx", "cim.mapping"};
 const llvm::StringRef kGroupIdentityAttrs[] = {"group_id", "core_idx",
-                                                "cim.mapping"};
+                                               "cim.mapping"};
 
 int64_t getI64(Operation *op, StringRef name) {
   return cast<IntegerAttr>(op->getAttr(name)).getInt();
@@ -122,8 +122,7 @@ LogicalResult verifyTransaction(TransactionOp transaction) {
         return input.emitError("CIM transaction input must be a transaction "
                                "block argument");
       if (!group.inputs.empty() &&
-          failed(requireSame(group.inputs.front(), input,
-                             kGroupIdentityAttrs)))
+          failed(requireSame(group.inputs.front(), input, kGroupIdentityAttrs)))
         return failure();
       if (!group.inputs.empty() &&
           getElementType(group.inputs.front().getInput()) != inputElementType)
@@ -184,8 +183,7 @@ LogicalResult verifyTransaction(TransactionOp transaction) {
             "result element type does not match configured data mode");
       expectedResults.push_back(readback.getResult());
     }
-    if (cursor >= operations.size() ||
-        !isa<GroupBarrierOp>(operations[cursor]))
+    if (cursor >= operations.size() || !isa<GroupBarrierOp>(operations[cursor]))
       return rejectExpected(transaction, operations, cursor,
                             "cim.group_barrier");
     if (failed(requireSame(group.inputs.front(), operations[cursor++],

@@ -2,7 +2,10 @@
 #include "CIM22/Execution/Runtime.h"
 #include "CIM22/Execution/CIMRunner.h"
 #include "CIM22/Execution/ModelABI.h"
+#include "CIM22/Runtime/CIMBoardRunner.h"
+#include "CIM22/Runtime/UsbCIMDevice.h"
 #include "Session.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
 #include <cstring>
@@ -49,6 +52,8 @@ extern "C" void *cim22_session_load_shared(const char *path, char *error,
                               capacity);
     return nullptr;
   }
+  if (session->model.backend == cim22::runtime::RuntimeBackend::Software)
+    session->runner = std::make_unique<::cim22::execution::CIMSoftwareRunner>();
   session->invoke = model->invoke;
   return session.release();
 #else
@@ -58,13 +63,6 @@ extern "C" void *cim22_session_load_shared(const char *path, char *error,
 #endif
 }
 
-extern "C" const void *cim22_session_output_schema(void *handle, size_t *size) {
-  auto *session = static_cast<Session *>(handle);
-  if (!session || !size)
-    return nullptr;
-  *size = session->model.outputSchema.size();
-  return session->model.outputSchema.data();
-}
 extern "C" void
 _mlir_ciface_cim22_dispatch(int64_t id, StridedMemRefType<uint16_t, 2> *input,
                             StridedMemRefType<uint16_t, 2> *output) {
@@ -86,11 +84,17 @@ _mlir_ciface_cim22_dispatch(int64_t id, StridedMemRefType<uint16_t, 2> *input,
     inputs.push_back({{}, {input->data + input->offset + i * 64, 64}});
   for (int64_t i = 0; i < output->sizes[0]; ++i)
     outputs.push_back({{}, {output->data + output->offset + i * 16, 16}});
-  ::cim22::execution::CIMSoftwareRunner runner;
+  if (!session.runner) {
+    session.error =
+        session.model.backend == cim22::runtime::RuntimeBackend::USB
+            ? "USB runtime is not configured; call configure_usb first"
+            : "runtime backend is unavailable";
+    return;
+  }
   ::cim22::execution::CIMRunOutputs runOutputs{outputs};
   ++session.dispatches;
-  if (auto error =
-          runner.run(session.model.transactions[id], {inputs}, runOutputs))
+  if (auto error = session.runner->run(session.model.transactions[id], {inputs},
+                                       runOutputs))
     session.error =
         session.model.kernelNames[id] + ": " + llvm::toString(std::move(error));
 }
@@ -177,4 +181,132 @@ extern "C" int cim22_session_invoke(void *handle, void **buffers,
   s.invoke(packed.data());
   activeSession = previous;
   return s.error.empty() ? 0 : 1;
+}
+
+extern "C" int cim22_session_configure_usb(void *handle,
+                                           const CIM22UsbConfig *config,
+                                           char *error, size_t capacity) {
+  if (!handle || !config) {
+    cim22::runtime::copyError("invalid USB runtime configuration", error,
+                              capacity);
+    return 1;
+  }
+  auto &session = *static_cast<Session *>(handle);
+  std::lock_guard<std::mutex> lock(session.mutex);
+  if (session.model.backend != cim22::runtime::RuntimeBackend::USB) {
+    cim22::runtime::copyError("model artifact backend is not USB", error,
+                              capacity);
+    return 1;
+  }
+  if (config->word_byte_order > 1) {
+    cim22::runtime::copyError("invalid USB word byte order", error, capacity);
+    return 1;
+  }
+  // Stop the receive loop before checking so late errors cannot be discarded.
+  if (session.device)
+    session.device->close();
+  if (session.device && session.device->isFaulted()) {
+    cim22::runtime::copyError(
+        "USB session is faulted; close the Session, reset FPGA/chip, "
+        "then create a new Session",
+        error, capacity);
+    return 1;
+  }
+#ifdef CIM22_HAS_USB
+  cim22::runtime::UsbCIMDeviceConfig deviceConfig;
+  deviceConfig.vendorId = config->vendor_id;
+  deviceConfig.productId = config->product_id;
+  if (config->bus_number != 0xff)
+    deviceConfig.busNumber = config->bus_number;
+  if (config->device_address != 0xff)
+    deviceConfig.deviceAddress = config->device_address;
+  deviceConfig.interfaceNumber = config->interface_number;
+  deviceConfig.alternateSetting = config->alternate_setting;
+  deviceConfig.bulkInEndpoint = config->bulk_in_endpoint;
+  deviceConfig.bulkOutEndpoint = config->bulk_out_endpoint;
+  deviceConfig.physicalLink = config->physical_link;
+  deviceConfig.logicalChannel = config->logical_channel;
+  deviceConfig.wordByteOrder =
+      config->word_byte_order == 1
+          ? cim22::runtime::UsbWordByteOrder::LittleEndian
+          : cim22::runtime::UsbWordByteOrder::BigEndian;
+  deviceConfig.transferTimeoutMs = config->transfer_timeout_ms;
+  deviceConfig.receivePollTimeoutMs = config->receive_poll_timeout_ms;
+  deviceConfig.responseTimeoutMs = config->response_timeout_ms;
+  // Release the interface before replacing a healthy device. A failed open
+  // leaves dispatch disabled; transport faults cannot be cleared by
+  // replacement.
+  session.runner.reset();
+  session.device.reset();
+  auto device = cim22::runtime::createUsbCIMDevice(deviceConfig);
+  if (auto failure = device->open()) {
+    cim22::runtime::copyError(llvm::toString(std::move(failure)), error,
+                              capacity);
+    return 1;
+  }
+  session.device = std::move(device);
+  session.runner = std::make_unique<cim22::runtime::CIMBoardRunner>(
+      *session.device, cim22::runtime::CIMBoardRunPolicy{});
+  return 0;
+#else
+  cim22::runtime::copyError("CIM22 runtime was built without Linux libusb",
+                            error, capacity);
+  return 1;
+#endif
+}
+
+extern "C" int64_t cim22_session_num_readbacks(void *handle, int64_t id) {
+  auto *session = static_cast<Session *>(handle);
+  if (!session || id < 0 ||
+      static_cast<size_t>(id) >= session->model.transactions.size())
+    return -1;
+  return session->model.transactions[id].getReadbacks().size();
+}
+
+extern "C" int cim22_session_capture_usb(void *handle, int64_t id,
+                                         const uint16_t *inputs,
+                                         size_t inputCount, uint64_t *flits,
+                                         size_t flitCount) {
+  if (!handle)
+    return 1;
+  auto &session = *static_cast<Session *>(handle);
+  std::lock_guard<std::mutex> lock(session.mutex);
+  session.error.clear();
+  if (session.model.backend != cim22::runtime::RuntimeBackend::USB ||
+      !session.device) {
+    session.error = "raw capture requires a configured USB model";
+    return 1;
+  }
+  if (id < 0 || static_cast<size_t>(id) >= session.model.transactions.size()) {
+    session.error = "invalid capture transaction index";
+    return 1;
+  }
+  const auto &transaction = session.model.transactions[id];
+  if (!inputs || !flits ||
+      inputCount != transaction.getDynamicInputs().size() * 64 ||
+      flitCount != transaction.getReadbacks().size() * 7) {
+    session.error = "raw capture buffer element count mismatch";
+    return 1;
+  }
+  SmallVector<::cim22::execution::CIMInputView> views;
+  for (auto [index, binding] :
+       llvm::enumerate(transaction.getDynamicInputs())) {
+    if (binding.dataType != ::cim22::execution::CIMDataType::BF16) {
+      session.error = "raw capture ABI requires BF16 input bits";
+      return 1;
+    }
+    views.push_back({{}, {inputs + index * 64, 64}});
+  }
+  cim22::runtime::CIMBoardRunner runner(*session.device, {});
+  auto response = runner.capture(transaction, {views});
+  if (!response) {
+    session.error = llvm::toString(response.takeError());
+    return 1;
+  }
+  for (const auto &readback : response->readbacks) {
+    auto *row = flits + readback.outputIndex * 7;
+    row[0] = readback.headerFlit;
+    std::copy(readback.bodyFlits.begin(), readback.bodyFlits.end(), row + 1);
+  }
+  return 0;
 }

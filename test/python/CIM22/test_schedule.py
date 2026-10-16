@@ -1,5 +1,4 @@
 import re
-import sys
 import unittest
 from collections import Counter
 from pathlib import Path
@@ -140,6 +139,4 @@ class ScheduleVerificationTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(
-        testRunner=unittest.TextTestRunner(stream=sys.stdout, verbosity=2)
-    )
+    unittest.main()

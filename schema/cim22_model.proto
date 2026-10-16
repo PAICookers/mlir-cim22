@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+package cim22.artifact.v1;
+option optimize_for = LITE_RUNTIME;
+
+// Unknown descriptive fields may be ignored. During development, writers emit
+// data_format_version 1 and readers do not enforce it.
+message ModelArtifact {
+  uint32 data_format_version = 1;       // 1 during development.
+  repeated TensorSignature inputs = 3;
+  repeated TensorSignature outputs = 4;
+  repeated Kernel kernels = 5;          // Position is the native dispatch index.
+  RuntimeBackend runtime_backend = 6;
+}
+
+enum RuntimeBackend {
+  // An absent backend defaults to software; the compiler selects explicitly.
+  SOFTWARE = 0;
+  USB = 1;
+}
+
+enum DataType {
+  DATA_TYPE_UNSPECIFIED = 0;
+  INT8 = 1;
+  BF16 = 2;
+  FP32 = 3;
+}
+
+// Boundary tensors are static, contiguous CPU FP32; empty dimensions is rank 0.
+message TensorSignature {
+  repeated int64 dimensions = 1 [packed = true];
+  DataType data_type = 2;
+}
+
+message Kernel {
+  string kernel_name = 1;
+  Transaction transaction = 2;
+}
+
+message Transaction {
+  string target_profile = 1;
+  int64 target_profile_version = 2;
+  int64 execution_plan_version = 3;
+  repeated Group groups = 4;
+  repeated StaticWeight weights = 5;
+  repeated Packet packets = 6;
+  repeated InputBinding inputs = 7;
+  repeated ReadbackBinding readbacks = 8;
+  repeated fixed64 flits = 9 [packed = true];
+}
+
+message Group {
+  optional int64 group_id = 1;
+  repeated Work works = 2;
+}
+
+message Work {
+  optional int64 work_id = 1;
+  optional int64 core_slot = 2;
+  optional int64 macro_slot = 3;
+  repeated sfixed32 route = 4 [packed = true]; // Exactly 6 components.
+}
+
+message StaticWeight {
+  optional int64 group_id = 1;
+  optional int64 work_id = 2;
+  optional int64 core_slot = 3;
+  optional int64 macro_slot = 4;
+  string resource = 5;
+  repeated sfixed32 route = 6 [packed = true];
+  repeated sfixed32 words = 7 [packed = true]; // 256 raw packed weight words.
+  bytes values = 8;                            // 16 * 64 signed byte bit patterns.
+  bytes exponents = 9;                         // 16 unsigned byte exponents.
+  DataType data_type = 10;
+}
+
+enum PacketKind {
+  PACKET_KIND_UNSPECIFIED = 0;
+  CONTROL = 1;
+  WEIGHT = 2;
+  WEIGHT_EXPONENT = 3;
+  WORK = 4;
+  INPUT_CACHE_WRITE = 5;
+  RETURN_ROUTE = 6;
+  OUTPUT_CACHE_READ = 7;
+}
+
+// -1 denotes an unused binding/address, as in CIMFramePacket. Persist it
+// explicitly: a missing identity field must not silently become valid slot 0.
+message Packet {
+  PacketKind kind = 1;
+  repeated sfixed32 route = 2 [packed = true];
+  optional int64 group_id = 3;
+  optional int64 work_id = 4;
+  optional int64 macro_slot = 5;
+  optional int64 cache_address = 6;
+  repeated sfixed32 test_core = 7 [packed = true]; // Exactly 3 components.
+  DataType data_type = 8;
+}
+
+message InputBinding {
+  optional int64 group_id = 1;
+  optional int64 work_id = 2;
+  optional int64 macro_slot = 3;
+  optional int64 input_slot = 4;
+  DataType data_type = 5;
+  optional int64 input_cache_address = 6;
+}
+
+message ReadbackBinding {
+  optional int64 group_id = 1;
+  optional int64 work_id = 2;
+  optional int64 macro_slot = 3;
+  optional int64 output_cache_address = 4;
+  repeated sfixed32 route = 5 [packed = true];
+  repeated sfixed32 test_core = 6 [packed = true];
+  DataType data_type = 7;
+}

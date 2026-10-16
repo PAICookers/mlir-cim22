@@ -8,7 +8,7 @@ config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
 config.suffixes = [".mlir", ".test"]
 config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = os.path.join(config.mlir_cim22_obj_root, "test")
-config.excludes = ["CMakeLists.txt", "Inputs", "README.md"]
+config.excludes = ["CMakeLists.txt", "Inputs", "README.md", "demo"]
 
 llvm_config.use_default_substitutions()
 config.substitutions = [
@@ -21,6 +21,8 @@ config.substitutions.append(
     ("%mlir_c_runner_utils", f'"{config.mlir_c_runner_utils}"')
 )
 config.substitutions.append(("%cim22_runtime", f'"{config.cim22_runtime}"'))
+if config.cim22_runtime_usb:
+    config.available_features.add("cim22_runtime_usb")
 if config.python_version.startswith("3.12."):
     config.available_features.add("python312")
 
@@ -31,7 +33,9 @@ tool_dirs = [
 llvm_config.add_tool_substitutions(
     [
         "FileCheck",
+        "split-file",
         "mlir-runner",
+        "mlir-cim22-model-data-test",
         "mlir-cim22-bf16-support-test",
         "mlir-cim22-cimframe-codec-test",
         "mlir-cim22-cim-executable-test",
@@ -39,6 +43,8 @@ llvm_config.add_tool_substitutions(
         "mlir-cim22-int8-weight-layout-test",
         "mlir-cim22-cim-software-runner-test",
         "mlir-cim22-cim-executable-runner-test",
+        "mlir-cim22-cim-device-runtime-test",
+        "mlir-cim22-usb-runtime-test",
         "mlir-cim22-onnx-import",
         "mlir-cim22-opt",
     ],

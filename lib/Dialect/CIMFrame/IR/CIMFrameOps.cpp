@@ -206,9 +206,8 @@ LogicalResult mlir::cimframe::verifyCIMFrameModule(ModuleOp module) {
     if (isa<ControlInt8PacketOp, ControlBF16PacketOp, WorkOncePacketOp,
             CIMInt8WeightPacketOp, WeightExponentPacketOp,
             CIMBF16WeightPacketOp, WriteInputCacheInt8PacketOp,
-            WriteInputCacheBF16PacketOp,
-            ConfigureTestReturnRoutePacketOp, ReadOutputCacheInt8PacketOp,
-            ReadOutputCacheBF16PacketOp>(op))
+            WriteInputCacheBF16PacketOp, ConfigureTestReturnRoutePacketOp,
+            ReadOutputCacheInt8PacketOp, ReadOutputCacheBF16PacketOp>(op))
       firstPacket = firstPacket ? firstPacket : &op;
   }
 

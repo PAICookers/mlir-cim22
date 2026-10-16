@@ -1,4 +1,3 @@
-import sys
 import unittest
 
 import int8_reference as reference
@@ -46,4 +45,4 @@ class StaticWeightVerificationTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(testRunner=unittest.TextTestRunner(stream=sys.stdout))
+    unittest.main()

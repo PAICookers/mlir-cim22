@@ -1,0 +1,69 @@
+//===- CIMDevice.h - CIM22 hardware device boundary -----------*- C++ -*-===//
+//
+// Licensed under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef CIM22_RUNTIME_CIMDEVICE_H
+#define CIM22_RUNTIME_CIMDEVICE_H
+
+#include "CIM22/Execution/CIMExecutable.h"
+
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Error.h"
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+namespace cim22::runtime {
+
+// One ordered CIM flit batch followed by an optional board pacing delay.
+// Backends may split a batch into physical transfers, but must not reorder its
+// flits or apply the delay before the complete batch is written.
+struct CIMDeviceOperation {
+  llvm::SmallVector<uint64_t> flits;
+  uint32_t postDelayMs = 0;
+};
+
+struct CIMDeviceReadbackCommand {
+  size_t outputIndex = 0;
+  execution::CIMDataType dataType = execution::CIMDataType::Int8;
+  CIMDeviceOperation request;
+};
+
+// One complete, transport-neutral CIM22 transaction. Device backends only
+// package these operations for their physical link and recover response flits.
+struct CIMDeviceProgram {
+  std::vector<CIMDeviceOperation> operations;
+  std::vector<CIMDeviceReadbackCommand> readbacks;
+};
+
+struct CIMDeviceReadback {
+  size_t outputIndex = 0;
+  uint64_t headerFlit = 0;
+  std::array<uint64_t, 6> bodyFlits{};
+};
+
+struct CIMDeviceResponse {
+  std::vector<CIMDeviceReadback> readbacks;
+};
+
+class CIMDevice {
+public:
+  virtual ~CIMDevice() = default;
+
+  virtual llvm::Error open() = 0;
+  virtual llvm::Error execute(const CIMDeviceProgram &program,
+                              CIMDeviceResponse &response) = 0;
+  // A transport/protocol fault requires hardware reset and a new Session.
+  virtual bool isFaulted() = 0;
+  virtual void close() = 0;
+};
+
+} // namespace cim22::runtime
+
+#endif // CIM22_RUNTIME_CIMDEVICE_H

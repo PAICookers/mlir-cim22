@@ -1,4 +1,5 @@
-//===- CIMTransaction.cpp - CIM22 target executable compiler -----*- C++ -*-===//
+//===- CIMTransaction.cpp - CIM22 target executable compiler -----*- C++
+//-*-===//
 //
 // Licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -26,11 +27,11 @@
 #include <cstdint>
 
 namespace mlir::cim22::target {
-using ::cim22::execution::CIMTransaction;
 using ::cim22::execution::CIMDataType;
 using ::cim22::execution::CIMFramePacket;
 using ::cim22::execution::CIMGroup;
 using ::cim22::execution::CIMPacketKind;
+using ::cim22::execution::CIMTransaction;
 using ::cim22::execution::CIMWork;
 using ::cim22::execution::DynamicInputBinding;
 using ::cim22::execution::ReadbackBinding;
@@ -279,9 +280,8 @@ FailureOr<CIMTransaction> compileCIMTransaction(ModuleOp module) {
       continue;
     }
     if (auto packet = dyn_cast<cimframe::CIMInt8WeightPacketOp>(op)) {
-      FailureOr<StaticWeightSection> weight =
-          buildStaticWeight(packet.getOperation(), packet.getWords(),
-                            CIMDataType::Int8);
+      FailureOr<StaticWeightSection> weight = buildStaticWeight(
+          packet.getOperation(), packet.getWords(), CIMDataType::Int8);
       if (failed(weight))
         return failure();
       auto route = packet.getRoute();
@@ -297,13 +297,11 @@ FailureOr<CIMTransaction> compileCIMTransaction(ModuleOp module) {
       continue;
     }
     if (auto packet = dyn_cast<cimframe::CIMBF16WeightPacketOp>(op)) {
-      FailureOr<StaticWeightSection> weight =
-          buildStaticWeight(packet.getOperation(), packet.getWords(),
-                            CIMDataType::BF16);
+      FailureOr<StaticWeightSection> weight = buildStaticWeight(
+          packet.getOperation(), packet.getWords(), CIMDataType::BF16);
       if (failed(weight))
         return failure();
-      auto exponent =
-          cast<cimframe::WeightExponentPacketOp>(op.getPrevNode());
+      auto exponent = cast<cimframe::WeightExponentPacketOp>(op.getPrevNode());
       for (auto [wordIndex, rawWord] :
            llvm::enumerate(exponent.getExponentWords())) {
         const uint64_t word = llvm::bit_cast<uint64_t>(rawWord);
@@ -364,126 +362,146 @@ FailureOr<CIMTransaction> compileCIMTransaction(ModuleOp module) {
     if (!transaction)
       continue;
     for (Operation &op : transaction.getBody().front().without_terminator()) {
-    if (auto input = dyn_cast<cim::ConfigureInputOp>(op)) {
-      auto group = readI64(input, "group_id");
-      auto work = readI64(input, "work_id");
-      auto macro = readI64(input, "macro_idx");
-      if (failed(group) || failed(work) || failed(macro))
-        return failure();
-      auto type = dyn_cast<RankedTensorType>(input.getInput().getType());
-      if (!type || type.getRank() != 1 || type.getDimSize(0) != 64 ||
-          (!type.getElementType().isSignlessInteger(8) &&
-           !type.getElementType().isBF16())) {
-        input.emitError(
-            "CIM executable requires input tensor<64xi8> or tensor<64xbf16>");
-        return failure();
+      if (auto input = dyn_cast<cim::ConfigureInputOp>(op)) {
+        auto group = readI64(input, "group_id");
+        auto work = readI64(input, "work_id");
+        auto macro = readI64(input, "macro_idx");
+        if (failed(group) || failed(work) || failed(macro))
+          return failure();
+        auto type = dyn_cast<RankedTensorType>(input.getInput().getType());
+        if (!type || type.getRank() != 1 || type.getDimSize(0) != 64 ||
+            (!type.getElementType().isSignlessInteger(8) &&
+             !type.getElementType().isBF16())) {
+          input.emitError(
+              "CIM executable requires input tensor<64xi8> or tensor<64xbf16>");
+          return failure();
+        }
+        const CIMDataType dataType = type.getElementType().isBF16()
+                                         ? CIMDataType::BF16
+                                         : CIMDataType::Int8;
+        auto route = readRoute(input, "cim.mapping");
+        if (failed(route))
+          return failure();
+        CIMGroup *groupPtr = nullptr;
+        auto groupIt = findGroup(groups, *group);
+        if (failed(groupIt)) {
+          groups.push_back(CIMGroup{*group, {}});
+          groupPtr = &groups.back();
+        } else {
+          groupPtr = *groupIt;
+        }
+        if (succeeded(findWork(*groupPtr, *work))) {
+          input.emitError("CIM executable rejects duplicate work binding");
+          return failure();
+        }
+        auto core = readI64(input, "core_idx");
+        if (failed(core))
+          return failure();
+        if (*core >= 20 || *macro > 1)
+          return input.emitError("CIM executable requires core_idx in [0, 19] "
+                                 "and macro_idx in [0, 1]");
+        groupPtr->works.push_back(CIMWork{*work, *core, *macro, *route});
+        auto argument = dyn_cast<BlockArgument>(input.getInput());
+        if (!argument || argument.getOwner() != &transaction.getBody().front())
+          return input.emitError(
+              "CIM executable requires a transaction input argument");
+        auto hostArgument = dyn_cast<BlockArgument>(
+            transaction.getOperand(argument.getArgNumber()));
+        // Split kernels address Host arguments; unsplit plans receive prepared
+        // transaction operands from the caller instead of executing Host SSA.
+        int64_t inputSlot = argument.getArgNumber();
+        if (hostArgument &&
+            hostArgument.getOwner() == &function.getBody().front())
+          inputSlot = hostArgument.getArgNumber();
+        if (auto attr = input->getAttrOfType<IntegerAttr>("input_slot")) {
+          if (!attr.getType().isSignlessInteger(64) || attr.getInt() < 0)
+            return input.emitError("CIM executable requires input_slot >= 0");
+          inputSlot = attr.getInt();
+        }
+        int64_t inputCacheAddress = 0;
+        if (auto attr =
+                input->getAttrOfType<IntegerAttr>("input_cache_address")) {
+          if (!attr.getType().isSignlessInteger(64) || attr.getInt() < 0 ||
+              attr.getInt() >= 8)
+            return input.emitError(
+                "CIM executable requires input_cache_address in [0, 7]");
+          inputCacheAddress = attr.getInt();
+        }
+        inputs.push_back(DynamicInputBinding{*group, *work, *macro, inputSlot,
+                                             dataType, inputCacheAddress});
+        packets.push_back(CIMFramePacket{CIMPacketKind::InputCacheWrite});
+        packets.back().route = *route;
+        packets.back().groupId = *group;
+        packets.back().workId = *work;
+        packets.back().macroSlot = *macro;
+        packets.back().dataType = dataType;
+        continue;
       }
-      const CIMDataType dataType = type.getElementType().isBF16()
-                                       ? CIMDataType::BF16
-                                       : CIMDataType::Int8;
-      auto route = readRoute(input, "cim.mapping");
-      if (failed(route))
-        return failure();
-      CIMGroup *groupPtr = nullptr;
-      auto groupIt = findGroup(groups, *group);
-      if (failed(groupIt)) {
-        groups.push_back(CIMGroup{*group, {}});
-        groupPtr = &groups.back();
-      } else {
-        groupPtr = *groupIt;
+      if (auto readback = dyn_cast<cim::ReadbackOp>(op)) {
+        auto group = readI64(readback, "group_id");
+        auto work = readI64(readback, "work_id");
+        auto macro = readI64(readback, "macro_idx");
+        if (failed(group) || failed(work) || failed(macro))
+          return failure();
+        if (*macro > 1)
+          return readback.emitError(
+              "CIM executable requires macro_idx in [0, 1]");
+        auto type = dyn_cast<RankedTensorType>(readback.getResult().getType());
+        if (!type || type.getRank() != 1 || type.getDimSize(0) != 16 ||
+            (!type.getElementType().isSignlessInteger(21) &&
+             !type.getElementType().isBF16())) {
+          readback.emitError(
+              "CIM executable requires readback tensor<16xi21> or "
+              "tensor<16xbf16>");
+          return failure();
+        }
+        const CIMDataType dataType = type.getElementType().isBF16()
+                                         ? CIMDataType::BF16
+                                         : CIMDataType::Int8;
+        auto route = readRoute(readback, "cim.mapping");
+        auto testCore = readTestCore(readback.getOperation());
+        auto address = readOutputAddress(readback);
+        if (failed(route) || failed(testCore) || failed(address))
+          return failure();
+        auto groupIt = findGroup(groups, *group);
+        if (failed(groupIt) || failed(findWork(**groupIt, *work))) {
+          readback.emitError("CIM executable readback references unknown work");
+          return failure();
+        }
+        readbacks.push_back(ReadbackBinding{*group, *work, *macro, *address,
+                                            *route, *testCore, dataType});
+        packets.push_back(CIMFramePacket{CIMPacketKind::ReturnRoute});
+        packets.back().route = *route;
+        packets.back().groupId = *group;
+        packets.back().workId = *work;
+        packets.back().macroSlot = *macro;
+        packets.back().testCore = *testCore;
+        packets.back().dataType = dataType;
+        packets.push_back(CIMFramePacket{CIMPacketKind::Control});
+        packets.back().route = *route;
+        packets.back().groupId = *group;
+        packets.back().workId = *work;
+        packets.back().macroSlot = *macro;
+        packets.back().dataType = dataType;
+        packets.push_back(CIMFramePacket{CIMPacketKind::OutputCacheRead});
+        packets.back().route = *route;
+        packets.back().groupId = *group;
+        packets.back().workId = *work;
+        packets.back().macroSlot = *macro;
+        packets.back().cacheAddress = *address;
+        packets.back().dataType = dataType;
+        continue;
       }
-      if (succeeded(findWork(*groupPtr, *work))) {
-        input.emitError("CIM executable rejects duplicate work binding");
-        return failure();
+      if (auto once = dyn_cast<cim::OnceOp>(op)) {
+        auto group = readI64(once, "group_id");
+        auto route = readRoute(once, "cim.mapping");
+        if (failed(group) || failed(route))
+          return failure();
+        CIMFramePacket packet{CIMPacketKind::Work};
+        packet.route = *route;
+        packet.groupId = *group;
+        packets.push_back(packet);
       }
-      auto core = readI64(input, "core_idx");
-      if (failed(core))
-        return failure();
-      if (*core >= 20 || *macro > 1)
-        return input.emitError("CIM executable requires core_idx in [0, 19] "
-                               "and macro_idx in [0, 1]");
-      groupPtr->works.push_back(CIMWork{*work, *core, *macro, *route});
-      int64_t inputSlot = *work;
-      if (auto attr = input->getAttrOfType<IntegerAttr>("input_slot")) {
-        if (!attr.getType().isSignlessInteger(64) || attr.getInt() < 0)
-          return input.emitError("CIM executable requires input_slot >= 0");
-        inputSlot = attr.getInt();
-      }
-      inputs.push_back(
-          DynamicInputBinding{*group, *work, *macro, inputSlot, dataType});
-      packets.push_back(CIMFramePacket{CIMPacketKind::InputCacheWrite});
-      packets.back().route = *route;
-      packets.back().groupId = *group;
-      packets.back().workId = *work;
-      packets.back().macroSlot = *macro;
-      packets.back().dataType = dataType;
-      continue;
-    }
-    if (auto readback = dyn_cast<cim::ReadbackOp>(op)) {
-      auto group = readI64(readback, "group_id");
-      auto work = readI64(readback, "work_id");
-      auto macro = readI64(readback, "macro_idx");
-      if (failed(group) || failed(work) || failed(macro))
-        return failure();
-      if (*macro > 1)
-        return readback.emitError(
-            "CIM executable requires macro_idx in [0, 1]");
-      auto type = dyn_cast<RankedTensorType>(readback.getResult().getType());
-      if (!type || type.getRank() != 1 || type.getDimSize(0) != 16 ||
-          (!type.getElementType().isSignlessInteger(21) &&
-           !type.getElementType().isBF16())) {
-        readback.emitError(
-            "CIM executable requires readback tensor<16xi21> or "
-            "tensor<16xbf16>");
-        return failure();
-      }
-      const CIMDataType dataType = type.getElementType().isBF16()
-                                       ? CIMDataType::BF16
-                                       : CIMDataType::Int8;
-      auto route = readRoute(readback, "cim.mapping");
-      auto testCore = readTestCore(readback.getOperation());
-      auto address = readOutputAddress(readback);
-      if (failed(route) || failed(testCore) || failed(address))
-        return failure();
-      auto groupIt = findGroup(groups, *group);
-      if (failed(groupIt) || failed(findWork(**groupIt, *work))) {
-        readback.emitError("CIM executable readback references unknown work");
-        return failure();
-      }
-      readbacks.push_back(ReadbackBinding{*group, *work, *macro, *address,
-                                         *route, *testCore, dataType});
-      packets.push_back(CIMFramePacket{CIMPacketKind::ReturnRoute});
-      packets.back().route = *route;
-      packets.back().groupId = *group;
-      packets.back().workId = *work;
-      packets.back().macroSlot = *macro;
-      packets.back().testCore = *testCore;
-      packets.back().dataType = dataType;
-      packets.push_back(CIMFramePacket{CIMPacketKind::Control});
-      packets.back().route = *route;
-      packets.back().groupId = *group;
-      packets.back().workId = *work;
-      packets.back().macroSlot = *macro;
-      packets.back().dataType = dataType;
-      packets.push_back(CIMFramePacket{CIMPacketKind::OutputCacheRead});
-      packets.back().route = *route;
-      packets.back().groupId = *group;
-      packets.back().workId = *work;
-      packets.back().macroSlot = *macro;
-      packets.back().cacheAddress = *address;
-      packets.back().dataType = dataType;
-      continue;
-    }
-    if (auto once = dyn_cast<cim::OnceOp>(op)) {
-      auto group = readI64(once, "group_id");
-      auto route = readRoute(once, "cim.mapping");
-      if (failed(group) || failed(route))
-        return failure();
-      CIMFramePacket packet{CIMPacketKind::Work};
-      packet.route = *route;
-      packet.groupId = *group;
-      packets.push_back(packet);
-    }
     }
   }
   if (groups.empty() || inputs.empty() || readbacks.empty()) {
@@ -500,12 +518,16 @@ FailureOr<CIMTransaction> compileCIMTransaction(ModuleOp module) {
             << work.workId;
         return failure();
       } else {
-        auto input = llvm::find_if(inputs, [&](const DynamicInputBinding &item) {
-          return item.groupId == group.groupId && item.workId == work.workId;
-        });
-        auto readback = llvm::find_if(readbacks, [&](const ReadbackBinding &item) {
-          return item.groupId == group.groupId && item.workId == work.workId;
-        });
+        auto input =
+            llvm::find_if(inputs, [&](const DynamicInputBinding &item) {
+              return item.groupId == group.groupId &&
+                     item.workId == work.workId;
+            });
+        auto readback =
+            llvm::find_if(readbacks, [&](const ReadbackBinding &item) {
+              return item.groupId == group.groupId &&
+                     item.workId == work.workId;
+            });
         if (input == inputs.end() || readback == readbacks.end() ||
             input->dataType != (**weight).dataType ||
             readback->dataType != (**weight).dataType) {
@@ -516,10 +538,10 @@ FailureOr<CIMTransaction> compileCIMTransaction(ModuleOp module) {
       }
 
   return CIMTransaction(profile.getValue().str(), profileVersion.getInt(),
-                       schema.getInt(), std::move(groups), std::move(weights),
-                       std::move(packets), std::move(inputs),
-                       std::move(readbacks),
-                       std::vector<uint64_t>(flits.begin(), flits.end()));
+                        schema.getInt(), std::move(groups), std::move(weights),
+                        std::move(packets), std::move(inputs),
+                        std::move(readbacks),
+                        std::vector<uint64_t>(flits.begin(), flits.end()));
 }
 
 } // namespace mlir::cim22::target

@@ -37,11 +37,12 @@ def main() -> None:
         first_input = np.ones((2, 65), dtype=np.float32)
         first = session(first_input)[0]
         np.testing.assert_array_equal(first_input, np.ones((2, 65), np.float32))
-        np.testing.assert_array_equal(first, np.full((2, 17), 66, np.float32))
+        np.testing.assert_array_equal(first, np.full((2, 17), 131, np.float32))
         second = session(first_input * 2)[0]
-        np.testing.assert_array_equal(second, np.full((2, 17), 131, np.float32))
-        np.testing.assert_array_equal(first, np.full((2, 17), 66, np.float32))
+        np.testing.assert_array_equal(second, np.full((2, 17), 261, np.float32))
+        np.testing.assert_array_equal(first, np.full((2, 17), 131, np.float32))
         np.testing.assert_array_equal(session(first_input)[0], first)
+        np.testing.assert_array_equal(first_input, np.ones((2, 65), np.float32))
         if session.dispatch_count == 0 or np.shares_memory(first, second):
             raise AssertionError("Missing dispatch or shared output storage")
         try:
@@ -59,7 +60,7 @@ def main() -> None:
                 pass
             else:
                 raise AssertionError("Invalid ABI input accepted")
-    np.testing.assert_array_equal(first, np.full((2, 17), 66, np.float32))
+    np.testing.assert_array_equal(first, np.full((2, 17), 131, np.float32))
     try:
         session(first_input)
     except RuntimeError:

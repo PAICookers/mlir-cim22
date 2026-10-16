@@ -4,27 +4,32 @@ import ctypes
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
+from importlib.resources import files
 from pathlib import Path
+from typing import Literal
 
 import torch
+from torch_mlir import fx
+from torch_mlir.compiler_utils import OutputType
 
-from cim22._schema import encode_outputs
-from cim22.model import CompiledProgram, load_compiled
-from cim22.runtime import compiler_library, runtime_library
+from .runtime import Session, compiler_library, runtime_library
+
+type RuntimeBackend = Literal["software", "usb"]
 
 
 def _emit_object(
-    packet: Path, object_file: Path, schema: bytes, library: Path
+    packet: Path,
+    object_file: Path,
+    library: Path,
+    runtime: RuntimeBackend = "usb",
 ) -> None:
-    native = ctypes.CDLL(str(compiler_library(library)))
+    native = ctypes.CDLL(compiler_library(library))
     emit = native.cim22_compile_object
     emit.argtypes = [
         ctypes.c_char_p,
         ctypes.c_char_p,
-        ctypes.c_void_p,
-        ctypes.c_size_t,
+        ctypes.c_char_p,
         ctypes.c_char_p,
         ctypes.c_size_t,
     ]
@@ -33,8 +38,7 @@ def _emit_object(
     if emit(
         os.fsencode(packet),
         os.fsencode(object_file),
-        schema,
-        len(schema),
+        runtime.encode(),
         error,
         len(error),
     ):
@@ -49,49 +53,24 @@ def _run(command: list[str], stage: str) -> None:
         raise RuntimeError(f"CIM22 {stage} failed:\n{result.stderr}")
 
 
-def compile_exported(
-    program: torch.export.ExportedProgram,
-    *,
-    optimizer: Path | None = None,
-    library: Path | None = None,
+def _compile(
+    graph: torch.fx.GraphModule,
+    *example_inputs: torch.Tensor,
     artifact_path: Path | None = None,
     debug_dir: Path | None = None,
-) -> CompiledProgram:
-    """Compile a reset-state, static inference program to a Linux shared library.
+    runtime: RuntimeBackend = "usb",
+) -> Session:
+    """Compile a functional ATen graph; return its internal flat runtime.
 
-    Args:
-        program: Exported model with flat positional tensor inputs and frozen
-            weights. Export after resetting any model state.
-        optimizer: mlir-cim22-opt executable; defaults to CIM22_OPT or PATH.
-        library: Native execution library, with compiler library beside it.
-        artifact_path: Optional new .so file to retain for independent loading.
-            Otherwise the library is temporary and lives through the session.
-        debug_dir: Optional new directory retaining the intermediate pt2, MLIR
-            and object files. Inference never reads this directory.
-
-    Returns:
-        A callable using compiled CPU code and the candidate BF16 software runner.
-        Each invocation starts from the exported state and retains recurrence
-        within that invocation. Outputs have independent ownership.
+    The loaded Session owns the code after temporary files are removed.
+    Optional artifact/debug paths retain diagnostics for this specialization.
     """
-    if sys.platform != "linux" or sys.version_info[:2] != (3, 12):
-        raise RuntimeError("CIM22 compilation requires Linux and Python 3.12")
-    if not isinstance(program, torch.export.ExportedProgram):
-        raise TypeError("Expected a torch.export.ExportedProgram")
-    if program.range_constraints:
-        raise ValueError("CIM22 requires static shapes")
-    example_args, example_kwargs = program.example_inputs
-    if example_kwargs or not all(
-        isinstance(v, torch.Tensor) for v in example_args
-    ):
-        raise ValueError("CIM22 requires flat positional tensor inputs")
-    schema = encode_outputs(program.call_spec.out_spec)
-    library = runtime_library(library)
-    compiler_library(library)
-    executable = str(optimizer) if optimizer else os.environ.get("CIM22_OPT")
-    executable = executable or shutil.which("mlir-cim22-opt")
+    library = runtime_library()
+    executable = os.environ.get("CIM22_OPT") or str(
+        files("cim22") / "bin" / "mlir-cim22-opt"
+    )
     linker = os.environ.get("CIM22_CC") or shutil.which("cc")
-    if not executable or not linker:
+    if not Path(executable).is_file() or not linker:
         raise ValueError(
             "CIM22 compilation needs mlir-cim22-opt and a C linker (cc)"
         )
@@ -102,28 +81,19 @@ def compile_exported(
         if artifact_path.exists() or artifact_path.is_symlink():
             raise FileExistsError(f"Artifact already exists: {artifact_path}")
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    if debug_dir is not None and (debug_dir.exists() or debug_dir.is_symlink()):
-        raise FileExistsError(f"Debug directory already exists: {debug_dir}")
     with tempfile.TemporaryDirectory(
         prefix=".cim22-",
         dir=artifact_path.parent if artifact_path is not None else None,
     ) as temporary:
         folder = Path(temporary)
-        exported = folder / "model.pt2"
         linalg = folder / "model.linalg.mlir"
         packet = folder / "model.packet.mlir"
         object_file = folder / "model.o"
         shared = folder / "model.so"
-        torch.export.save(program, exported)
-        _run(
-            [
-                sys.executable,
-                str(Path(__file__).with_name("_import.py")),
-                str(exported),
-                str(linalg),
-            ],
-            "torch-mlir import",
+        module = fx.export_and_import(
+            graph, *example_inputs, output_type=OutputType.LINALG_ON_TENSORS
         )
+        linalg.write_text(str(module), encoding="utf-8")
         _run(
             [
                 executable,
@@ -134,7 +104,7 @@ def compile_exported(
             ],
             "CIM lowering",
         )
-        _emit_object(packet, object_file, schema, library)
+        _emit_object(packet, object_file, library, runtime)
         # Bind model-local function names locally; different loaded models may
         # all have an entry called main. The common runtime remains external.
         _run(
@@ -152,17 +122,17 @@ def compile_exported(
             ],
             "shared-library link",
         )
-        compiled = load_compiled(shared, library=library)
+        session = Session(shared, library=library)
         try:
             if debug_dir is not None:
                 debug_dir.mkdir(parents=True)
-                for path in (exported, linalg, packet, object_file):
+                for path in (linalg, packet, object_file):
                     shutil.copyfile(path, debug_dir / path.name)
             if artifact_path is not None:
                 # Atomic publication on the same filesystem, without replacing
                 # an existing artifact if a concurrent compilation won the race.
                 os.link(shared, artifact_path)
         except BaseException:
-            compiled.close()
+            session.close()
             raise
-    return compiled
+    return session

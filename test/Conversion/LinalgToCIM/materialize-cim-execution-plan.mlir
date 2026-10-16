@@ -4,6 +4,19 @@
 // RUN: FileCheck %s < %t.once
 
 module {
+  func.func @single_work(%input: tensor<64xi8>) -> tensor<1x16xi21>
+      attributes {cim.placement_policy = "core-major-dual-macro-v1",
+                  cim.route_policy = "lower-left-maximal-xy-v1",
+                  cim.target_profile = "cim22-4x5-v1",
+                  cim.target_profile_version = 1 : i64} {
+    %weight = arith.constant dense<1> : tensor<16x64xi8>
+    %partial = cim.vmm %input, %weight {cim.transaction_idx = 0 : i64, cim.mapping = {core_coord = array<i64: 0, 0>, destination = array<i64: 0, 0>, ingress = array<i64: 0, 0>, route = array<i64: 0, 0, 0, 0, 0, 0>, source = array<i64: 0, 0>}, core_idx = 0 : i64, group_id = 0 : i64, k_tile = 0 : i64, m_tile = 0 : i64, macro_idx = 0 : i64, n_tile = 0 : i64, work_id = 0 : i64} : tensor<64xi8>, tensor<16x64xi8> -> tensor<16xi21>
+    %expanded = tensor.expand_shape %partial [[0, 1]] output_shape [16, 1] : tensor<16xi21> into tensor<16x1xi21>
+    %empty = tensor.empty() : tensor<1x16xi21>
+    %output = linalg.transpose ins(%expanded : tensor<16x1xi21>) outs(%empty : tensor<1x16xi21>) permutation = [1, 0]
+    return %output : tensor<1x16xi21>
+  }
+
   func.func @two_work(%input0: tensor<64xi8>, %input1: tensor<64xi8>) -> tensor<16xi32>
       attributes {cim.placement_policy = "core-major-dual-macro-v1",
                   cim.route_policy = "lower-left-maximal-xy-v1",
@@ -26,6 +39,13 @@ module {
 
 // CHECK: cim.static_weight @__cim_weight_two_work_s0_w0 = dense<1> : tensor<16x64xi8>
 // CHECK-NEXT: cim.static_weight @__cim_weight_two_work_s0_w1 = dense<2> : tensor<16x64xi8>
+// CHECK: func.func @single_work
+// CHECK: %[[SINGLE:.*]] = "cim.transaction"
+// CHECK: %[[RESHAPED:.*]] = tensor.expand_shape %[[SINGLE]]
+// CHECK: %[[EMPTY:.*]] = tensor.empty()
+// CHECK-NEXT: %[[OUTPUT:.*]] = linalg.transpose ins(%[[RESHAPED]] : tensor<16x1xi21>) outs(%[[EMPTY]] : tensor<1x16xi21>) permutation = [1, 0]
+// CHECK-NEXT: return %[[OUTPUT]] : tensor<1x16xi21>
+
 // CHECK: func.func @two_work
 // CHECK-SAME: cim.execution_plan_schema_version = 1 : i64
 // CHECK: %[[TX:.*]]:2 = "cim.transaction"(%arg0, %arg1)

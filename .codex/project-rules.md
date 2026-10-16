@@ -55,6 +55,9 @@ supplier, generated, and third-party code under their existing handling rules.
   applicable supported interpreter.
 - When runtime code needs type aliases or generics, prefer Python 3.12's
   `type Alias = ...` and type-parameter syntax.
+- Use `object` for values that require narrowing, including deliberately invalid
+  test inputs. Use `Any` at dynamic third-party interfaces when their operations
+  cannot be described accurately with the available types.
 - Public NumPy arrays use explicit dtypes and `numpy.typing.NDArray`. Document
   tensor dtype, shape, layout, ownership, and lifetime where they are part of an
   API contract; validate them at runtime before crossing native/ABI boundaries.
@@ -92,6 +95,46 @@ supplier, generated, and third-party code under their existing handling rules.
 - For rules/docs-only changes, check `git diff --check`, links, and consistency
   with Python metadata and Ruff configuration. Do not claim source execution
   or runtime validation when only documentation was checked.
+
+## Build And Tests
+
+- Keep one Python project under `python/`; do not restore root Python metadata
+  or a second setuptools build. scikit-build-core drives the root CMake project
+  and packages `cim22`, the optimizer and compiler/runtime libraries together.
+- Default to Release with tests and the ONNX diagnostic importer disabled.
+  Debug is a standard CMake build type, not a separate runtime ABI or backend.
+  Enable `MLIRCIM22_INCLUDE_TESTS` and `MLIRCIM22_ENABLE_ONNX` explicitly for
+  native testing; enable the Python `compiler` extra and `dev` group as needed.
+- Use the pinned Protobuf/protoc pair from FetchContent. ONNX is optional and
+  shares these targets; do not reintroduce system-package selection branches.
+  USB builds require Linux and libusb; `CIM22_ENABLE_USB=OFF` builds software
+  support only. USB artifacts must not silently fall back to software.
+- Reinstall the editable package after native, TableGen, schema or CMake edits
+  with `uv sync --project python --reinstall-package mlir-cim22-runtime`, using
+  the same build directory and required CMake options. Build-environment changes
+  may reset cached settings. `uv --offline` does not disable CMake downloads.
+  Finish relinking before tests load libraries, then restart applications.
+- Run pytest from `python/`; use native fixtures only where tests need them.
+  Reuse immutable compiled fixtures for boundary checks. Keep independent
+  numeric/layout oracles and mutation tests that cover distinct semantics.
+- lit owns the native suite and invokes Python unittest helpers through `.test`
+  wrappers. Use exit status for unittest success and FileCheck for compiler or
+  diagnostic output. Resolve LLVM tools explicitly through lit substitutions.
+  Keep native test assertions enabled in Release as well as Debug.
+- Use host `ruff` and `clang-format`; exclude generated and supplier sources.
+  After packaging changes, inspect sdist contents and run installed inference
+  outside the source directory without native-library environment overrides.
+- `torch.compile` is the application entry point. Keep readonly fixed weights
+  constant for CIM lowering and dynamic weights on Host. Reuse AOTAutograd for
+  mutations/aliases; do not recreate output schemas or standalone loading APIs
+  for excluded application scenarios. Native Session returns flat tensors.
+- During development, emit `data_format_version=1` without enforcing it. Python
+  Protobuf bindings live under `python/tests/_generated` and are test-only;
+  regenerate them with the CMake target after schema edits.
+- Keep `.cbmignore` repository-relative and limited to general indexing scope.
+  Refresh the actual worktree index when requested; inspect persisted graph
+  metadata for machine paths before committing it. Keep local wheels, task
+  records, logs and build outputs untracked; never stage a whole dirty tree.
 
 ## Task Records
 

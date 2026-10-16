@@ -32,7 +32,7 @@ namespace mlir::cimframe {
 
 namespace {
 constexpr llvm::StringLiteral kPlanBindingAttrs[] = {
-    "m_tile",   "n_tile",    "k_tile",     "work_id",
+    "m_tile",   "n_tile",   "k_tile",    "work_id",
     "group_id", "core_idx", "macro_idx", "cim.mapping"};
 
 struct StaticWeightCommandPlan {
@@ -80,7 +80,8 @@ planStaticWeightCommand(cim::ConfigureWeightOp op, func::FuncOp function,
                         OpBuilder &builder) {
   for (NamedAttribute attr : op->getAttrs()) {
     StringRef name = attr.getName().strref();
-    if (name != "resource" && name != cim::CIMDialect::getTransactionIdxAttrName() &&
+    if (name != "resource" &&
+        name != cim::CIMDialect::getTransactionIdxAttrName() &&
         !llvm::is_contained(kPlanBindingAttrs, name)) {
       op.emitOpError("materialize-cim-static-weight-section rejects unexpected "
                      "configure_weight attribute '")
@@ -119,14 +120,14 @@ planStaticWeightCommand(cim::ConfigureWeightOp op, func::FuncOp function,
   DenseI64ArrayAttr exponentWords;
   bool isBF16 = static_cast<bool>(bf16Weight);
   if (int8Weight) {
-    for (auto [index, value] :
-         llvm::enumerate(int8Weight.getValues<APInt>()))
+    for (auto [index, value] : llvm::enumerate(int8Weight.getValues<APInt>()))
       bytes[index] = static_cast<uint8_t>(value.getZExtValue());
   } else {
     std::array<uint16_t, 16 * 64> values{};
     for (auto [index, value] :
          llvm::enumerate(bf16Weight.getValues<APFloat>())) {
-      values[index] = static_cast<uint16_t>(value.bitcastToAPInt().getZExtValue());
+      values[index] =
+          static_cast<uint16_t>(value.bitcastToAPInt().getZExtValue());
       if (((values[index] >> 7) & 0xff) == 0xff)
         return op.emitOpError(
             "materialize-cim-static-weight-section does not support BF16 "
@@ -137,9 +138,9 @@ planStaticWeightCommand(cim::ConfigureWeightOp op, func::FuncOp function,
     for (auto [index, value] : llvm::enumerate(prealigned.mantissas))
       bytes[index] = static_cast<uint8_t>(value);
     const auto exponents = cim22::packBF16WeightExponents(prealigned.exponents);
-    exponentWords = builder.getDenseI64ArrayAttr(
-        {llvm::bit_cast<int64_t>(exponents[0]),
-         llvm::bit_cast<int64_t>(exponents[1])});
+    exponentWords =
+        builder.getDenseI64ArrayAttr({llvm::bit_cast<int64_t>(exponents[0]),
+                                      llvm::bit_cast<int64_t>(exponents[1])});
   }
 
   // HWSRC-046 accepts the logical tile mapping exercised by
@@ -163,11 +164,13 @@ planStaticWeightCommand(cim::ConfigureWeightOp op, func::FuncOp function,
   planBinding.push_back(builder.getNamedAttr("mapping", mapping));
 
   return StaticWeightCommandPlan{
-      op.getLoc(), builder.getDenseI32ArrayAttr(route),
+      op.getLoc(),
+      builder.getDenseI32ArrayAttr(route),
       builder.getI32IntegerAttr(static_cast<int32_t>(macroSlot.getInt())),
       DenseIntElementsAttr::get(
           RankedTensorType::get({256}, builder.getI32Type()), words),
-      exponentWords, isBF16,
+      exponentWords,
+      isBF16,
       builder.getDictionaryAttr(planBinding)};
 }
 
@@ -218,13 +221,13 @@ public:
     for (const StaticWeightCommandPlan &plan : plans) {
       Operation *command = nullptr;
       if (plan.bf16) {
-        command = WriteBF16WeightsOp::create(
-            builder, plan.location, plan.route, plan.macro, plan.words,
-            plan.exponentWords)
-                       .getOperation();
+        command = WriteBF16WeightsOp::create(builder, plan.location, plan.route,
+                                             plan.macro, plan.words,
+                                             plan.exponentWords)
+                      .getOperation();
       } else {
-        command = WriteInt8WeightsOp::create(
-                      builder, plan.location, plan.route, plan.macro, plan.words)
+        command = WriteInt8WeightsOp::create(builder, plan.location, plan.route,
+                                             plan.macro, plan.words)
                       .getOperation();
       }
       command->setAttr(cim::CIMDialect::getPlanBindingAttrName(),
@@ -304,21 +307,21 @@ public:
   void runOnOperation() override {
     ConversionTarget target(getContext());
     target.addIllegalDialect<CIMFrameDialect>();
-    target.addLegalOp<ControlInt8PacketOp, ControlBF16PacketOp, WorkOncePacketOp,
-                      CIMInt8WeightPacketOp, WeightExponentPacketOp,
-                      CIMBF16WeightPacketOp, WriteInputCacheInt8PacketOp,
-                      WriteInputCacheBF16PacketOp,
-                      ConfigureTestReturnRoutePacketOp,
-                      ReadOutputCacheInt8PacketOp,
-                      ReadOutputCacheBF16PacketOp>();
+    target.addLegalOp<
+        ControlInt8PacketOp, ControlBF16PacketOp, WorkOncePacketOp,
+        CIMInt8WeightPacketOp, WeightExponentPacketOp, CIMBF16WeightPacketOp,
+        WriteInputCacheInt8PacketOp, WriteInputCacheBF16PacketOp,
+        ConfigureTestReturnRoutePacketOp, ReadOutputCacheInt8PacketOp,
+        ReadOutputCacheBF16PacketOp>();
     target.markUnknownOpDynamicallyLegal([](Operation *op) {
       return op->getName().getDialectNamespace() !=
              CIMFrameDialect::getDialectNamespace();
     });
 
     RewritePatternSet patterns(&getContext());
-    patterns.add<LowerStartInt8Once, LowerWriteInt8Weights,
-                 LowerWriteBF16Weights>(&getContext());
+    patterns
+        .add<LowerStartInt8Once, LowerWriteInt8Weights, LowerWriteBF16Weights>(
+            &getContext());
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
       signalPassFailure();

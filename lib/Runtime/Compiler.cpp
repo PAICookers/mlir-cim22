@@ -21,9 +21,14 @@
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/ToolOutputFile.h"
 #include <algorithm>
 #include <cstring>
 #include <mutex>
@@ -72,8 +77,9 @@ void addModelDescriptor(llvm::Module &module, StringRef entryName,
 
 // Tensor packing is ordinary Host IR. Stack buffers live only for the native
 // call; returned tensors are materialized before the wrapper returns.
-LogicalResult defineDispatchWrapper(func::FuncOp stub, int64_t id,
-                                    func::FuncOp dispatchFunc) {
+LogicalResult
+defineDispatchWrapper(func::FuncOp stub, int64_t id, func::FuncOp dispatchFunc,
+                      const ::cim22::execution::CIMTransaction &transaction) {
   for (Type type : stub.getArgumentTypes()) {
     auto tensor = dyn_cast<RankedTensorType>(type);
     if (!tensor || tensor.getShape() != ArrayRef<int64_t>{64} ||
@@ -86,21 +92,30 @@ LogicalResult defineDispatchWrapper(func::FuncOp stub, int64_t id,
         !tensor.getElementType().isBF16())
       return stub.emitError("runtime supports BF16 transaction outputs only");
   }
+  if (stub.getNumResults() != transaction.getReadbacks().size())
+    return stub.emitError("runtime readback count differs from Host results");
   Block *block = stub.addEntryBlock();
   OpBuilder builder(block, block->begin());
   Location loc = stub.getLoc();
   Value input = memref::AllocaOp::create(
       builder, loc,
-      MemRefType::get({static_cast<int64_t>(stub.getNumArguments()), 64},
-                      builder.getBF16Type()));
+      MemRefType::get(
+          {static_cast<int64_t>(transaction.getDynamicInputs().size()), 64},
+          builder.getBF16Type()));
   Value output = memref::AllocaOp::create(
       builder, loc,
-      MemRefType::get({static_cast<int64_t>(stub.getNumResults()), 16},
-                      builder.getBF16Type()));
+      MemRefType::get(
+          {static_cast<int64_t>(transaction.getReadbacks().size()), 16},
+          builder.getBF16Type()));
   Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
   Value bound = arith::ConstantIndexOp::create(builder, loc, 64);
   Value one = arith::ConstantIndexOp::create(builder, loc, 1);
-  for (auto [index, argument] : llvm::enumerate(block->getArguments())) {
+  for (auto [index, binding] :
+       llvm::enumerate(transaction.getDynamicInputs())) {
+    if (binding.inputSlot < 0 ||
+        binding.inputSlot >= static_cast<int64_t>(block->getNumArguments()))
+      return stub.emitError("runtime input binding is outside Host arguments");
+    Value argument = block->getArgument(binding.inputSlot);
     Value row = arith::ConstantIndexOp::create(builder, loc, index);
     scf::ForOp::create(
         builder, loc, zero, bound, one, ValueRange{},
@@ -207,7 +222,7 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
     auto transaction = mlir::cim22::target::compileCIMTransaction(*single);
     if (failed(transaction) ||
         failed(defineDispatchWrapper(stub, session.model.transactions.size(),
-                                     dispatchFunc)))
+                                     dispatchFunc, *transaction)))
       return failure();
     session.model.transactions.push_back(std::move(*transaction));
     session.model.kernelNames.push_back(kernel.getSymName().str());
@@ -239,15 +254,6 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
   options.jitCodeGenOptLevel = llvm::CodeGenOptLevel::None;
   // Library loading should not create a process-global perf dump directory.
   options.enablePerfNotificationListener = false;
-  options.enableObjectDump = !objectPath.empty();
-  auto moduleBuilder = [&](Operation *op, llvm::LLVMContext &context) {
-    auto module = translateModuleToLLVMIR(op, context);
-    if (module && !objectPath.empty())
-      addModelDescriptor(*module, entryName,
-                         ::cim22::runtime::encodeModelData(session.model));
-    return module;
-  };
-  options.llvmModuleBuilder = moduleBuilder;
   auto machineBuilder = llvm::orc::JITTargetMachineBuilder::detectHost();
   if (!machineBuilder) {
     session.error = llvm::toString(machineBuilder.takeError());
@@ -262,6 +268,52 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
   if (!machine) {
     session.error = llvm::toString(machine.takeError());
     return failure();
+  }
+  if (!objectPath.empty()) {
+    // AOT emits bytes directly: ExecutionEngine::dumpToObjectFile has no error
+    // result and cannot report an open/write failure to the native caller.
+    llvm::LLVMContext llvmContext;
+    auto module = translateModuleToLLVMIR(host, llvmContext);
+    if (!module)
+      return failure();
+    auto data = ::cim22::runtime::encodeModelData(session.model);
+    if (!data) {
+      session.error = llvm::toString(data.takeError());
+      return failure();
+    }
+    addModelDescriptor(*module, entryName, *data);
+    ExecutionEngine::setupTargetTripleAndDataLayout(module.get(),
+                                                    machine->get());
+    llvm::orc::SimpleCompiler compiler(**machine);
+    auto object = compiler(*module);
+    if (!object) {
+      session.error = llvm::toString(object.takeError());
+      return failure();
+    }
+    // Publish only a complete object; a failed write leaves any prior output
+    // intact. A sibling temporary also makes the final rename atomic.
+    int fd;
+    SmallString<256> temporary;
+    if (auto error = llvm::sys::fs::createUniqueFile(objectPath + ".tmp-%%%%%%",
+                                                     fd, temporary)) {
+      session.error = "cannot create object file: " + error.message();
+      return failure();
+    }
+    llvm::ToolOutputFile output(temporary, fd);
+    output.os() << (*object)->getBuffer();
+    output.os().close();
+    if (output.os().has_error()) {
+      session.error =
+          "cannot write object file: " + output.os().error().message();
+      output.os().clear_error();
+      return failure();
+    }
+    if (auto error = llvm::sys::fs::rename(temporary, objectPath)) {
+      session.error = "cannot publish object file: " + error.message();
+      return failure();
+    }
+    output.keep();
+    return success();
   }
   auto engine = ExecutionEngine::create(host, options, std::move(*machine));
   if (!engine) {
@@ -281,8 +333,6 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
     return failure();
   }
   session.invoke = *invoke;
-  if (!objectPath.empty())
-    (*engine)->dumpToObjectFile(objectPath);
   session.code = std::move(*engine);
   return success();
 }
@@ -297,16 +347,23 @@ extern "C" void *cim22_session_load_packet(const char *path, const char *entry,
     ::cim22::runtime::copyError(session->error, error, capacity);
     return nullptr;
   }
+  session->runner = std::make_unique<::cim22::execution::CIMSoftwareRunner>();
   return session.release();
 }
 
 extern "C" int cim22_compile_object(const char *path, const char *objectPath,
-                                    const void *schema, size_t schemaSize,
-                                    char *error, size_t capacity) {
+                                    const char *backend, char *error,
+                                    size_t capacity) {
   Session session;
-  if (schema && schemaSize)
-    session.model.outputSchema.assign(static_cast<const char *>(schema),
-                                      schemaSize);
+  if (backend && llvm::StringRef(backend) == "software")
+    session.model.backend = ::cim22::runtime::RuntimeBackend::Software;
+  else if (backend && llvm::StringRef(backend) == "usb")
+    session.model.backend = ::cim22::runtime::RuntimeBackend::USB;
+  else {
+    ::cim22::runtime::copyError("unsupported CIM22 runtime backend", error,
+                                capacity);
+    return 1;
+  }
   if (!path || !objectPath || !*objectPath ||
       failed(load(session, path, "main", objectPath))) {
     ::cim22::runtime::copyError(

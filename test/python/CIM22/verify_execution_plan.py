@@ -211,8 +211,12 @@ def _static_symbols(ops: tuple[Op, ...]) -> set[str]:
             raise VerificationError(
                 f"line {op.line_number}: static weight must be tensor<16x64xi8>"
             )
-        if "cim.mapping" in op.body or "cim.transaction_idx" in op.body or any(
-            _integer_optional(op.body, name) is not None for name in COMMON
+        if (
+            "cim.mapping" in op.body
+            or "cim.transaction_idx" in op.body
+            or any(
+                _integer_optional(op.body, name) is not None for name in COMMON
+            )
         ):
             raise VerificationError(
                 f"line {op.line_number}: static weight has work identity"
@@ -269,7 +273,9 @@ def validate_dump(text: str) -> tuple[Op, ...]:
         group = _integer(op.body, "group_id", op.line_number)
         transaction = op.transaction_idx
         if transaction < 0:
-            transaction = _integer(op.body, "cim.transaction_idx", op.line_number)
+            transaction = _integer(
+                op.body, "cim.transaction_idx", op.line_number
+            )
         groups.setdefault((transaction, group), []).append(op)
     transactions = sorted({transaction for transaction, _ in groups})
     if transactions != list(range(len(transactions))):
@@ -277,7 +283,7 @@ def validate_dump(text: str) -> tuple[Op, ...]:
             f"transaction sequence is not dense: {transactions}"
         )
 
-    for (transaction_idx, group_id), group_ops in groups.items():
+    for (_transaction_idx, group_id), group_ops in groups.items():
         dispatches = [op for op in group_ops if op.kind == "dispatch"]
         reads = [op for op in group_ops if op.kind == "readback"]
         if not dispatches:

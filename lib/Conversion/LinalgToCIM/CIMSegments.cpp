@@ -11,8 +11,7 @@ bool isExecutionPlanOp(Operation *op) {
              OnceOp, ReadbackOp, GroupBarrierOp>(op);
 }
 
-SmallVector<CIMTransactionInfo>
-analyzeCIMTransactions(func::FuncOp function) {
+SmallVector<CIMTransactionInfo> analyzeCIMTransactions(func::FuncOp function) {
   SmallVector<CIMTransactionInfo> transactions;
   for (Operation &op : function.getBody().front()) {
     auto transaction = dyn_cast<TransactionOp>(op);

@@ -1,28 +1,41 @@
-"""torch.compile backend: freeze module tensors, compile the captured full graph.
+"""torch.compile backend: functionalize inference, freeze read-only parameters.
 
 Use fullgraph=True and dynamic=False to enforce capture without eager graph
 breaks. This adapter uses Dynamo source metadata from the pinned PyTorch wheel;
 it does not classify CIM operators. MLIR owns that decision.
 """
 
-import copy
-import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import TypedDict
 from uuid import uuid4
 
 import torch
+from torch._dynamo.backends.common import aot_autograd
 from torch._dynamo.source import NNModuleSource, UnspecializedParamBufferSource
+from torch._dynamo.utils import defake
+from torch._functorch._aot_autograd.descriptors import PlainAOTInput
+from torch._functorch._aot_autograd.utils import make_boxed_func
+from torch._guards import TracingContext, tracing
+from torch.utils._python_dispatch import _disable_current_modes
 
-from cim22.compiler import compile_exported
-from cim22.model import CompiledProgram
+from .compiler import RuntimeBackend, _compile
+from .runtime import UsbConfig
+
+type TensorCallable = Callable[..., Sequence[torch.Tensor]]
 
 
-def _module_tensor(node: torch.fx.Node) -> bool:
-    argument = node.meta.get("grapharg")
-    if argument is None:
-        raise RuntimeError("Pinned Dynamo source metadata is missing")
-    source = argument.source
+class BackendOptions(TypedDict, total=False):
+    """Options accepted by torch.compile(..., backend="cim22")."""
+
+    runtime: RuntimeBackend
+    usb_config: UsbConfig
+    artifact_dir: str | Path
+    debug_dir: str | Path
+
+
+def _is_module_input(node: torch.fx.Node) -> bool:
+    source = node.meta["grapharg"].source
     while source is not None:
         if isinstance(source, (NNModuleSource, UnspecializedParamBufferSource)):
             return True
@@ -32,105 +45,100 @@ def _module_tensor(node: torch.fx.Node) -> bool:
 
 def backend(
     graph: torch.fx.GraphModule,
-    example_inputs: Sequence[torch.Tensor],
+    example_inputs: list[torch.Tensor],
     *,
-    options: dict[str, object] | None = None,
-) -> Callable[..., object]:
-    """Build a lazy inference callable; compile on first real-valued invocation.
+    options: BackendOptions | None = None,
+) -> TensorCallable:
+    """Compile sequential inference; Dynamo caches the returned AOT callable.
 
-    Frozen parameters are cloned into a private FX graph. Shape and parameter
-    guards reject changes instead of silently executing an old specialization.
-    Original model classes and SpikingJelly reset methods are untouched.
+    AOTAutograd preserves mutations and input aliases. Read-only parameters are
+    cloned into constants and must remain fixed for this specialization.
     """
     options = options or {}
-    unknown = options.keys() - {"artifact_dir", "debug_dir"}
+    unknown = options.keys() - {
+        "artifact_dir",
+        "debug_dir",
+        "runtime",
+        "usb_config",
+    }
     if unknown:
         raise ValueError(f"Unknown CIM22 backend options: {sorted(unknown)}")
-    directories: dict[str, Path] = {}
-    for key, value in options.items():
-        if not isinstance(value, (str, Path)):
-            raise TypeError(f"CIM22 {key} must be a path")
-        directories[key] = Path(value)
-    graph_name = f"graph-{uuid4().hex}"
-    placeholders = [n for n in graph.graph.nodes if n.op == "placeholder"]
-    if len(placeholders) != len(example_inputs):
-        raise ValueError("Dynamo input metadata differs from graph signature")
-    frozen_indices = {
-        i for i, n in enumerate(placeholders) if _module_tensor(n)
+    runtime = options.get("runtime", "usb")
+    if runtime not in ("software", "usb"):
+        raise ValueError("CIM22 runtime must be 'software' or 'usb'")
+    usb_config = options.get("usb_config")
+    if usb_config is not None and runtime != "usb":
+        raise ValueError("CIM22 usb_config requires runtime='usb'")
+    if torch.is_grad_enabled():
+        raise ValueError(
+            "Use torch.no_grad() or torch.inference_mode() with CIM22"
+        )
+    artifact_dir = options.get("artifact_dir")
+    debug_dir = options.get("debug_dir")
+    parameter_indices = {
+        i
+        for i, node in enumerate(graph.graph.find_nodes(op="placeholder"))
+        if isinstance(example_inputs[i], torch.nn.Parameter)
+        and _is_module_input(node)
     }
-    dynamic_indices = [
-        i for i in range(len(placeholders)) if i not in frozen_indices
-    ]
-    compiled: CompiledProgram | None = None
-    frozen: dict[int, tuple[torch.Tensor, int]] = {}
-    lock = threading.Lock()
+    # Failed device setup may retain artifacts; a retry uses a fresh name.
+    graph_name = f"graph-{uuid4().hex}"
 
-    def invoke(*args: torch.Tensor) -> object:
-        nonlocal compiled
-        if torch.is_grad_enabled():
-            raise ValueError(
-                "Use torch.no_grad() or torch.inference_mode() with CIM22"
+    def _compiler(
+        gm: torch.fx.GraphModule, fake_inputs: Sequence[torch.Tensor]
+    ) -> Callable[[list[torch.Tensor]], tuple[torch.Tensor, ...]]:
+        metadata = TracingContext.get().fw_metadata
+        aliased = {output.base_idx for output in metadata.output_info}
+        input_indices: list[int] = []
+        # The independent torch-mlir export needs its own context.
+        with _disable_current_modes(), tracing(None):
+            for i, node in enumerate(gm.graph.find_nodes(op="placeholder")):
+                source = node.meta.get("desc")
+                mutation = metadata.input_info[i]
+                # Freeze read-only weights, preserving mutations and aliases.
+                if (
+                    not isinstance(source, PlainAOTInput)
+                    or source.idx not in parameter_indices
+                    or mutation.mutates_data
+                    or mutation.mutates_metadata
+                    or i in aliased
+                ):
+                    input_indices.append(i)
+                    continue
+                value = example_inputs[source.idx]
+                name = f"_cim22_frozen_{source.idx}"
+                gm.register_buffer(name, value.detach().clone())
+                with gm.graph.inserting_before(node):
+                    constant = gm.graph.get_attr(name)
+                node.replace_all_uses_with(constant)
+                gm.graph.erase_node(node)
+            gm.recompile()
+            session = _compile(
+                gm,
+                *(defake(fake_inputs[i]) for i in input_indices),
+                artifact_path=(Path(artifact_dir) / f"{graph_name}.so")
+                if artifact_dir is not None
+                else None,
+                debug_dir=Path(debug_dir) / graph_name
+                if debug_dir is not None
+                else None,
+                runtime=runtime,
             )
-        if len(args) != len(placeholders) or not all(
-            isinstance(arg, torch.Tensor) for arg in args
-        ):
-            raise TypeError("CIM22 backend requires static tensor arguments")
-        with lock:
-            if compiled is None:
-                # Dynamo may hand out a lazy GraphModule. Materialize an
-                # ordinary FX module before re-exporting its frozen signature.
-                specialized = torch.fx.GraphModule(
-                    copy.deepcopy(graph), copy.deepcopy(graph.graph)
-                )
-                # Dynamo spells Tensor.data as a C helper which its second
-                # trace cannot capture. In inference, detach preserves the
-                # same storage and values while remaining an ATen operation.
-                for node in specialized.graph.nodes:
-                    if (
-                        node.op == "call_function"
-                        and node.target == torch._C._autograd._get_data_attr
-                    ):
-                        node.target = torch.ops.aten.detach.default
-                nodes = [
-                    n for n in specialized.graph.nodes if n.op == "placeholder"
-                ]
-                for index in frozen_indices:
-                    value = args[index]
-                    if value.device.type != "cpu":
-                        raise TypeError(
-                            "Frozen CIM22 parameters must be on CPU"
-                        )
-                    name = f"_cim22_frozen_{index}"
-                    specialized.register_buffer(name, value.detach().clone())
-                    with specialized.graph.inserting_before(nodes[index]):
-                        constant = specialized.graph.get_attr(name)
-                    nodes[index].replace_all_uses_with(constant)
-                    specialized.graph.erase_node(nodes[index])
-                    frozen[index] = (value, value._version)
-                specialized.graph.lint()
-                specialized.recompile()
-                specialized.eval()
-                program = torch.export.export(
-                    specialized,
-                    tuple(args[i] for i in dynamic_indices),
-                    strict=False,
-                )
-                artifact_dir = directories.get("artifact_dir")
-                debug_dir = directories.get("debug_dir")
-                compiled = compile_exported(
-                    program,
-                    artifact_path=(artifact_dir / f"{graph_name}.so")
-                    if artifact_dir is not None
-                    else None,
-                    debug_dir=debug_dir / graph_name
-                    if debug_dir is not None
-                    else None,
-                )
-            for index, (value, version) in frozen.items():
-                if args[index] is not value or value._version != version:
-                    raise ValueError(
-                        "Frozen CIM22 parameter/state changed; recompile"
-                    )
-            return compiled(*(args[i] for i in dynamic_indices))
+        try:
+            if usb_config is not None:
+                session.configure_usb(usb_config)
+        except BaseException:
+            session.close()
+            raise
 
-    return invoke
+        def run(*values: torch.Tensor) -> tuple[torch.Tensor, ...]:
+            return tuple(
+                torch.from_numpy(array)
+                for array in session(
+                    *(values[i].detach().numpy() for i in input_indices)
+                )
+            )
+
+        return make_boxed_func(run)
+
+    return aot_autograd(fw_compiler=_compiler)(graph, example_inputs)

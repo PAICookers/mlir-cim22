@@ -28,6 +28,19 @@ keep file ownership disjoint.
 - The Python runtime supports only Python 3.12 (`>=3.12,<3.13`). Keep runtime
   package metadata, dependencies, annotations, and validation within that range.
 
+### Build And Test Workflow
+
+- Follow the [shared build and test rules](.codex/project-rules.md#build-and-tests).
+  `python/pyproject.toml` is the only Python project; scikit-build-core invokes
+  the root CMake project and installs its native tools and libraries.
+- Use `torch.compile(..., backend="cim22", fullgraph=True, dynamic=False)`
+  for sequential inference. Select `runtime="software"` in backend options
+  for simulation; the compilation default is USB. Dynamo/AOTAutograd owns
+  output containers, mutation writeback and specialization caching.
+- Keep local wheels, logs and build directories out of commits. Use portable
+  relative paths in shared metadata and code indexes; do not put machine-only
+  exclusions in `.cbmignore`.
+
 ### Code Documentation
 
 - Add concise, language-appropriate comments or docstrings for key code
