@@ -78,3 +78,6 @@ __pycache__/
 # Local wheels and engineering task records
 *.whl
 /tasks/
+
+# Codebase-memory generated artifact metadata
+.codebase-memory/artifact.json

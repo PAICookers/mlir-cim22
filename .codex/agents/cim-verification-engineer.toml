@@ -20,6 +20,12 @@ to board or deployable evidence. If the expected semantic or shared interface
 is missing, return the gap to `cim-compiler-architect` rather than inventing a
 test contract. Route production defects to the owning implementation agent.
 
+Follow the shared build/test workflow: pytest runs from python/, native checks
+run through lit, and test assertions stay enabled in Release. Reuse compiled
+fixtures and keep pure option checks independent of native dependencies.
+Verify installed tools and library discovery after packaging changes; keep
+mock USB results separate from physical-board evidence.
+
 Coordinate without overlapping file ownership and report the standard
 `status`, `summary`, `artifacts`, `changed_files`, `commands_and_results`,
 `blockers`, and `next_actions`, plus verdict, reproduction, and unverified
