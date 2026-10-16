@@ -6,7 +6,11 @@
 - `python` contains numeric oracles, fixture parsers and artifact checks.
 - `Inputs` holds immutable fixtures and is excluded from lit discovery.
 
-Run the compiler suite with `cmake --build build --target check-mlir-cim22`.
+Run the compiler suite with `cmake --build build --target check-mlir-cim22 -j2`.
+Use `LLVM_LIT_ARGS="-sv -j2"` at CMake configuration time to bound test parallelism.
+Assertions remain enabled in test executables for every build type; Release
+still optimizes the production libraries. lit invokes every `test_*.py` helper
+through `.test` wrappers, including supplier manifest rejection checks.
 LLVM/MLIR 22.1.8 supplies `mlir-runner` and `mlir_c_runner_utils`; CMake provides
 their paths. The native packet test requires Linux and Python 3.12 with NumPy.
 See [Python verification](../python/README.md#verification) for the separate uv,
@@ -19,7 +23,7 @@ pytest and Ruff workflow covering the public Python backend and model `.so` ABI.
 | Mixed CIM/Host boundaries, casts, bias, reduction and bounded column reuse | `mixed-bf16-pipeline.mlir`, `mixed-bf16-numerics.test`, `prepare-cim-bf16.mlir` |
 | Candidate BF16 arithmetic | `BF16SupportTest.cpp` checks finite encodings, sign symmetry, zero/subnormals and saturation; `CIMSoftwareRunnerTest.cpp` checks execution |
 | Frame layouts and exports | BF16 fixture replay, reference/multicore export tests, and existing INT8 frame tests |
-| Native runtime contracts | `native-bf16.mlir` checks packet compilation, dispatch and malformed split IR; pytest checks AOT publication, relocated reload, output ownership, ABI rejection and backend caching |
+| Native runtime contracts | `native-bf16.mlir` checks packet compilation, dispatch and malformed split IR; pytest checks AOT publication, input validation, output ownership, ABI rejection and backend caching |
 
 Supplier snapshots retain their original bytes and historical arithmetic
 outputs. BF16 replay now checks only Cache/Weight_EXP/response layouts, with

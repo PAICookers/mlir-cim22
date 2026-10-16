@@ -2,6 +2,7 @@
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 import int8_lowering as lowering
 import int8_reference as reference
@@ -16,7 +17,7 @@ class VerificationError(ValueError):
     pass
 
 
-def _attributes(node: onnx.NodeProto) -> dict[str, object]:
+def _attributes(node: onnx.NodeProto) -> dict[str, Any]:
     return {
         attribute.name: helper.get_attribute_value(attribute)
         for attribute in node.attribute

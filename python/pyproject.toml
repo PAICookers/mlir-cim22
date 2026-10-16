@@ -1,28 +1,51 @@
 [build-system]
-requires = ["setuptools>=69"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=1.1,<1.2"]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "mlir-cim22-runtime"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["numpy>=1.26,<3", "torch==2.14.0", "protobuf==6.31.1"]
+dependencies = ["numpy>=1.26,<3", "torch==2.14.0"]
 
 [project.optional-dependencies]
-compiler = ["torch-mlir==20260930.892"]
+compiler = ["torch-mlir==20260923.885"]
 
 [dependency-groups]
-dev = ["pytest>=8.3,<10", "ruff>=0.17,<0.18"]
+dev = ["onnx==1.21.0", "protobuf==6.31.1", "pytest>=8.3,<10"]
 
 [project.entry-points."torch_dynamo_backends"]
 cim22 = "cim22.backend:backend"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["cim22*"]
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+cmake.source-dir = ".."
+wheel.packages = ["cim22"]
+wheel.install-dir = "cim22"
+wheel.py-api = "py3"
+install.components = ["runtime", "development"]
+sdist.inclusion-mode = "explicit"
+sdist.include = ["pyproject.toml", "cim22/**", "tests/**", "README.md", ".python-version"]
+sdist.exclude = ["**/__pycache__/**", "**/*.pyc", "native/test/demo/**"]
+
+[tool.scikit-build.sdist.force-include]
+"../CMakeLists.txt" = "native/CMakeLists.txt"
+"../LICENSE" = "LICENSE"
+"../cmake" = "native/cmake"
+"../include" = "native/include"
+"../lib" = "native/lib"
+"../schema" = "native/schema"
+"../tools" = "native/tools"
+"../test" = "native/test"
+"tests/_generated" = "native/python/tests/_generated"
+
+[[tool.scikit-build.overrides]]
+if.from-sdist = true
+cmake.source-dir = "native"
 
 [tool.uv]
-required-version = ">=0.13"
+required-version = ">=0.11"
+default-groups = []
 # The compiler wheel and native model ABI currently target Linux x86-64.
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 required-environments = [
@@ -36,7 +59,8 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
-torch-mlir = { url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260930.892-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
+# Place the matching daily development wheel in the repository root.
+torch-mlir = { path = "../torch_mlir-20260923.885-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
 
 [tool.pytest.ini_options]
 minversion = "8.3"
@@ -47,6 +71,15 @@ markers = [
 ]
 
 [tool.ruff]
-extend = "../pyproject.toml"
 target-version = "py312"
-extend-exclude = ["cim22/_generated"]
+line-length = 80
+extend-exclude = ["**/_generated/**"]
+
+[tool.ruff.lint]
+select = ["F", "E9", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["cim22"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/lit.cfg.py" = ["F821"]

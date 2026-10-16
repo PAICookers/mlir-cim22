@@ -17,15 +17,25 @@ def make_model(batch: int = 8, heterogeneous: bool = False) -> onnx.ModelProto:
     if heterogeneous:
         weight = ((3 * k + 5 * n + 1) % 15 - 7).astype(np.int8)
     else:
-        weight = np.broadcast_to(((3 * k + 1) % 15 - 7), (64, 16)).astype(np.int8)
+        weight = np.broadcast_to(((3 * k + 1) % 15 - 7), (64, 16)).astype(
+            np.int8
+        )
     weight[:, 0] = 1
     graph = helper.make_graph(
         [
             helper.make_node("MatMulInteger", ["input", "weight"], ["output"]),
         ],
         "rtl_artifact_multicore",
-        [helper.make_tensor_value_info("input", TensorProto.INT8, [batch, features])],
-        [helper.make_tensor_value_info("output", TensorProto.INT32, [batch, columns])],
+        [
+            helper.make_tensor_value_info(
+                "input", TensorProto.INT8, [batch, features]
+            )
+        ],
+        [
+            helper.make_tensor_value_info(
+                "output", TensorProto.INT32, [batch, columns]
+            )
+        ],
         [
             numpy_helper.from_array(weight, name="weight"),
         ],

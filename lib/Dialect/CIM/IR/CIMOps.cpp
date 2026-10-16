@@ -24,14 +24,8 @@ const llvm::StringRef kScheduleAttrs[] = {"work_id", "group_id"};
 const llvm::StringRef kMappingAttrs[] = {"core_idx", "macro_idx",
                                          "cim.mapping"};
 const llvm::StringRef kExecutionPlanIdentityAttrs[] = {
-    "m_tile",
-    "n_tile",
-    "k_tile",
-    "work_id",
-    "group_id",
-    "core_idx",
-    "macro_idx",
-    "cim.mapping"};
+    "m_tile",   "n_tile",   "k_tile",    "work_id",
+    "group_id", "core_idx", "macro_idx", "cim.mapping"};
 
 unsigned countPresent(Operation *op, ArrayRef<llvm::StringRef> names) {
   return llvm::count_if(names,
@@ -89,13 +83,12 @@ LogicalResult verifyGroupOperation(Operation *op, bool withMapping) {
     return countPresent(op, {"m_tile", "n_tile", "k_tile", "work_id",
                              "core_idx", "macro_idx", "cim.mapping"}) == 0
                ? success()
-               : op->emitOpError(
-                     "must carry only group_id identity");
+               : op->emitOpError("must carry only group_id identity");
   auto core = op->getAttrOfType<IntegerAttr>("core_idx");
   if (!core || !core.getType().isSignlessInteger(64) || core.getInt() < 0)
     return op->emitOpError("expects non-negative i64 core_idx");
-  if (countPresent(
-          op, {"m_tile", "n_tile", "k_tile", "work_id", "macro_idx"}) != 0)
+  if (countPresent(op,
+                   {"m_tile", "n_tile", "k_tile", "work_id", "macro_idx"}) != 0)
     return op->emitOpError(
         "must carry only group_id, core_idx, and cim.mapping "
         "identity");
@@ -226,14 +219,16 @@ LogicalResult TransactionOp::verify() {
       return emitOpError("transaction input and region argument types differ");
   auto yield = dyn_cast<YieldOp>(block.getTerminator());
   if (!yield || yield.getNumOperands() != getNumResults())
-    return emitOpError("expects cim.yield operands to match transaction results");
+    return emitOpError(
+        "expects cim.yield operands to match transaction results");
   for (auto [result, value] : llvm::zip(getResults(), yield.getOperands()))
     if (result.getType() != value.getType())
       return emitOpError("transaction result and yield types differ");
   for (Operation &op : block.without_terminator())
     if (!isa<ConfigureInputOp, ConfigureWeightOp, DispatchOp, OnceOp,
              ReadbackOp, GroupBarrierOp>(&op))
-      return op.emitError("Host operations are not allowed inside cim.transaction");
+      return op.emitError(
+          "Host operations are not allowed inside cim.transaction");
   return success();
 }
 

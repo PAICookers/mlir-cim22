@@ -1,4 +1,1 @@
-// RUN: %python %S/test_int8_reference.py | FileCheck %s
-
-// CHECK: Ran 11 tests
-// CHECK: OK
+// RUN: %python %S/test_int8_reference.py

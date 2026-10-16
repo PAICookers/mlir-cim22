@@ -26,6 +26,8 @@ if(NOT MLIRCIM22_PYTHON_TEST_DEPS_RESULT EQUAL 0)
 endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR})
+# Test assertions must execute even when the compiler is built in Release.
+add_compile_options(-UNDEBUG)
 
 add_executable(mlir-cim22-model-data-test EXCLUDE_FROM_ALL
   Unit/Execution/ModelDataTest.cpp)

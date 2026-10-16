@@ -68,8 +68,7 @@ public:
   virtual ~CIMRunner() = default;
 
   virtual llvm::Error run(const CIMTransaction &executable,
-                          const CIMRunInputs &inputs,
-                          CIMRunOutputs &outputs,
+                          const CIMRunInputs &inputs, CIMRunOutputs &outputs,
                           CIMTraceSink *trace = nullptr) = 0;
 };
 

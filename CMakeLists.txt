@@ -9,8 +9,15 @@ project(MLIRCIM22 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to conform to")
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 find_package(MLIR REQUIRED CONFIG)
+
+option(MLIRCIM22_INCLUDE_TESTS "Build mlir-cim22 tests" OFF)
+option(MLIRCIM22_ENABLE_ONNX "Build the ONNX importer" ${MLIRCIM22_INCLUDE_TESTS})
+if(MLIRCIM22_INCLUDE_TESTS AND NOT MLIRCIM22_ENABLE_ONNX)
+  message(FATAL_ERROR "MLIRCIM22_INCLUDE_TESTS requires MLIRCIM22_ENABLE_ONNX")
+endif()
 
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake/modules)
 include(MLIRCIM22Dependencies)
@@ -38,7 +45,6 @@ add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(tools)
 
-option(MLIRCIM22_INCLUDE_TESTS "Build mlir-cim22 tests" ON)
 if(MLIRCIM22_INCLUDE_TESTS)
   add_subdirectory(test)
 endif()

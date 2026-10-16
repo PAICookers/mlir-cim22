@@ -12,39 +12,85 @@ outputs differ; historical supplier/board evidence is retained separately.
 ## One-time environment setup
 
 Tested: Linux x86-64 (including WSL), Python **3.12**, CPU PyTorch **2.14.0**,
-the **20260930.892** torch-mlir binary wheel, and LLVM/MLIR **22.1.8**.
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) **0.13+**
-and build the native targets from the repository root, then create the Python
-environment:
+the local **20260923.885** torch-mlir binary wheel, and LLVM/MLIR **22.1.8**.
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) **0.11+**
+and supply an LLVM/MLIR CMake package. Place the matching daily torch-mlir
+wheel in the repository root; its filename is recorded as a relative path in
+`python/pyproject.toml`. From the repository root:
 
 ```sh
-cmake --build build --target mlir-cim22-opt cim22_compiler
-export CIM22_OPT=/absolute/path/to/build/bin/mlir-cim22-opt
-export CIM22_RUNTIME_LIBRARY=/absolute/path/to/build/lib/libcim22_runtime.so
-cd python
-uv sync --locked --extra compiler
+export MLIR_DIR=/path/to/llvm-project/build/lib/cmake/mlir
+export CC=clang CXX=clang++
+uv sync --project python --locked --extra compiler
 ```
 
-`python/pyproject.toml` and `python/uv.lock` define this environment separately
-from the repository-root C++/ONNX test environment. `.python-version` selects
-Python 3.12; uv creates `.venv/` and installs this package in editable mode.
-The default dev group supplies pytest and Ruff. PyTorch uses an
+`python/pyproject.toml` and `python/uv.lock` define the single Python environment.
+`.python-version` selects Python 3.12. scikit-build-core invokes CMake while
+installing the package in editable mode; no separate native build is required.
+Native assets are resolved through package resources so editable and regular
+wheel installations use the same lookup.
+The wheel includes `cim22/bin/mlir-cim22-opt` and
+`cim22/lib/libcim22_{runtime,compiler}.so`. The package discovers them without
+environment overrides. `CIM22_OPT`, `CIM22_RUNTIME_LIBRARY`, and
+`CIM22_COMPILER_LIBRARY` remain available for a separate native development build.
+The runtime library executes models; the compiler adapter writes and loads
+native compilation artifacts. Both are required by the `torch.compile` workflow.
+
+The default configuration is Release, with no ONNX importer, native tests, or
+Python dev group. PyTorch uses an
 [explicit CPU index](https://docs.astral.sh/uv/guides/integration/pytorch/), and
-the compiler extra uses a pinned binary wheel from
-[llvm/torch-mlir-release](https://github.com/llvm/torch-mlir-release/releases).
-The lockfile records resolved versions and download hashes. No CUDA packages
-or torch-mlir source checkout are used. Compilation also needs a C linker
-(`cc`, or `CIM22_CC`). Building the native compiler requires LLVM/MLIR;
-its dependencies follow the configured LLVM/MLIR CMake targets, so static
-toolchain builds do not require LLVM/MLIR shared libraries. The compiler
-adapter is `libcim22_compiler.so` beside the runtime, or select it with
-`CIM22_COMPILER_LIBRARY`.
+the compiler extra uses the daily local binary wheel in the repository root;
+update its relative filename and version together when a new wheel is available. The lockfile
+records resolved versions and local wheel metadata. The build backend does not
+use setuptools; PyTorch still declares it as a transitive runtime dependency.
+No CUDA packages or
+torch-mlir source checkout are used. Compilation also needs a C linker (`cc`, or
+`CIM22_CC`). Building requires LLVM/MLIR; a static toolchain build does not need
+LLVM/MLIR shared libraries at runtime. Wheel portability depends on the supplied
+toolchain and system libraries; a local build is not a manylinux certification.
+
+To build a wheel rather than install the editable package:
+
+```sh
+uv build python --wheel
+# Optional: retain a native build cache and limit parallelism.
+uv build python --wheel \
+  -Cbuild-dir=../build/wheel-release -Cbuild.tool-args=-j2
+# Optional: include Debug symbols and the ONNX diagnostic importer.
+uv build python --wheel \
+  -Ccmake.build-type=Debug -Ccmake.define.MLIRCIM22_ENABLE_ONNX=ON
+```
+
+Editable installation reads Python edits directly, but native edits need a
+rebuild and reinstall. After changing C++, CMake, TableGen or the schema, run
+this from the repository root (with `MLIR_DIR`, `CC` and `CXX` set):
+
+```sh
+uv sync --project python --locked --extra compiler --group dev \
+  --reinstall-package mlir-cim22-runtime \
+  -Cbuild-dir=../build/editable -Cbuild.tool-args=-j2 \
+  -Ccmake.build-type=Debug
+```
+
+Reuse the same build directory and options for subsequent rebuilds. Add
+`-Ccmake.define.MLIRCIM22_ENABLE_ONNX=ON` only when that tool is needed. A plain
+`uv run` does not rebuild native files; restart the application after reinstalling
+so it loads the new shared libraries.
+`uv --offline` only controls Python downloads; CMake still needs its native
+dependency sources available locally or over the network.
+
+The optional importer is installed as `cim22/bin/mlir-cim22-onnx-import` and is
+unnecessary for ordinary PyTorch inference. Native tests are enabled separately
+with `MLIRCIM22_INCLUDE_TESTS=ON`; see the [root build guide](../README.md).
 
 Run applications with `uv run --locked --extra compiler python app.py` from
 this directory, or use `uv run --project /path/to/mlir-cim22/python --locked
 --extra compiler python app.py` elsewhere. Keep `--extra compiler` on `uv run`:
 uv synchronizes the requested extras each time. Model-specific dependencies,
 such as SpikingJelly, belong to the application environment.
+
+For prebuilt-wheel prerequisites and the distinction between using and building
+the compiler, see [Linux user prerequisites](../README.md#linux-user-prerequisites).
 
 ## Model user workflow
 
@@ -69,14 +115,14 @@ with torch.inference_mode():
     result2 = compiled(other_input)  # calls the loaded native program
 ```
 
-Inputs must be static contiguous CPU FP32 tensors without gradients. Weights
-must remain fixed. Normal in-place parameter updates are rejected; mutation
-through `.data` after compilation is outside the frozen-parameter contract.
+Inputs must be static contiguous CPU FP32 tensors. Read-only, unaliased
+parameters become frozen weights and must remain fixed. Changes to frozen
+weights are not checked; reset Dynamo's compilation cache before recompiling
+after a weight change.
 Changing shapes may cause Dynamo to build a new specialization. `fullgraph=True`
 prevents graph breaks from silently splitting execution. There is no internal
-eager fallback. Prefer `torch.inference_mode()` for every inference; `no_grad`
-remains supported. Create/load the model outside the inference context so its
-parameters retain the version counters used by the fixed-weight guards.
+eager fallback. Run under `torch.inference_mode()` or `torch.no_grad()`;
+backward computation is not supported.
 Keep input preparation consistent: switching between ordinary tensors and
 tensors created inside `inference_mode` can cause a new Dynamo specialization.
 
@@ -104,76 +150,51 @@ with torch.inference_mode():
 
 For `step_mode="m"`, inputs remain `[T,B,C,H,W]`. T/B are merged and restored
 only around stateless supported contractions. Neuron recurrence stays in the
-compiled Host graph. Cross-call continuation without reset is unsupported.
+compiled Host graph. Reset remains necessary when each inference should start
+from the initial neuron state; tensor state updates otherwise persist normally.
 
 The backend manages temporary shared libraries by default; loaded code lives
 through its session. Optional `options={"artifact_dir": "build/models",
 "debug_dir": "build/ir"}` retains one uniquely named graph `.so` per captured
 specialization and corresponding diagnostic intermediates. Backend artifacts
 use Dynamo's internal graph signature, which may include state outputs.
-Dynamo handles those outputs and Python state assignments. Use explicit export
-below for a standalone model signature.
+Dynamo restores the model's Python containers, constants and state assignments.
+These graph artifacts are internal diagnostics, not a standalone deployment API.
 
-## Save once, load without the compiler
+PyTorch AOTAutograd functionalizes captured in-place operations and supplies
+the runtime wrapper that writes updated inputs, buffers and parameters back.
+Compilation runs in the standard backend callback; Dynamo manages caching and
+wraps compilation failures in `BackendCompilerFailed`.
+Mutable parameters and buffers remain runtime inputs. Parameters returned by
+identity or view also stay dynamic so the wrapper preserves their aliases.
+Only read-only parameters without output aliases are frozen as CIM weights.
+Contractions with runtime weight inputs stay on Host, even with fixed shapes
+and dtypes: CIM lowering needs the weight values at compile time.
+Keep input storage overlap fixed between calls when inputs are mutated.
+Changing independent inputs to shared-storage views can silently produce wrong
+results due to [PyTorch #139789](https://github.com/pytorch/pytorch/issues/139789);
+CIM22 does not add an alias guard for this upstream issue. Run each compiled
+model sequentially. Dynamo guards shape, dtype and layout specialization;
+the native Session still validates each array before passing its pointer to C++.
+Support still depends on the functional operators produced by AOT and lowered
+by torch-mlir: synthetic-base updates for distinct tensors sharing storage
+currently fail in the local wheel. Compilation errors leave inputs unchanged;
+there is no blanket rejection of input, buffer or parameter mutation.
+The private compiler calls torch-mlir's `export_and_import()` directly once
+on the functional graph, then runs native CIM lowering and linking. The runtime
+returns an ordered flat Tensor sequence matching the FX graph. No Python
+output-tree schema is stored or reconstructed by CIM22. Static tensor
+signatures, compiled transactions and weights remain in the internal `.so`;
+native ABI checks remain active. Pure Host graphs and scalar tensors are
+supported.
 
-```python
-from pathlib import Path
-from cim22 import compile_exported, load_compiled
-
-# Export after resetting model state; use flat positional tensor inputs.
-with torch.inference_mode():
-    program = torch.export.export(model, (sample_input,), strict=True)
-    with compile_exported(
-        program, artifact_path=Path("model.so"), runtime="software"
-    ) as runner:
-        result = runner(sample_input)
-
-# This can run in another process with only the execution runtime installed.
-with torch.inference_mode(), load_compiled(Path("model.so")) as runner:
-    result = runner(sample_input)
-```
-
-Only the model `.so` is a model-specific runtime artifact. It embeds CPU code,
-compiled CIM transactions, weights, ordered static tensor signatures, and
-Protobuf output metadata (`schema/cim22_model.proto`). Loading needs no JSON,
-MLIR, `.pt2`, compiler subprocess or JIT.
-Outputs support tensors, tuples, lists, and string-keyed dictionaries, within
-the Protobuf model parser depth limit checked before compilation. The loader checks native ABI version **1**, Protobuf data format version **3** (software) or **4** (USB), and
-numeric contract version **2** separately. Existing custom binary/marshal models
-are rejected with a recompile diagnostic. Recompile old model libraries.
-The payload is parsed once at load into owned runtime data; inference continues
-to use native tensor buffers. Scalar tensors and pure Host models are supported.
-Load trusted models.
-
-Deploy `model.so` with matching `libcim22_runtime.so`, the Python runtime
-package, PyTorch/NumPy and
-normal Linux C/C++ libraries. Python uses `protobuf==6.31.1`; inference needs
-no `protoc`, and the runtime statically links Protobuf lite. Set
-`CIM22_RUNTIME_LIBRARY`, or package the runtime
-under `cim22/lib/`. The deployment process needs neither torch-mlir nor
-`mlir-cim22-opt`, `libcim22_compiler.so`, or MLIR/LLVM compiler shared libraries.
-Models use the build host's Linux architecture with generic CPU codegen.
-Cross-compilation and arbitrary glibc/runtime compatibility are not promised.
-
-For a runtime-only environment using this checkout, run `uv sync --locked
---no-dev` from `python/`, then `uv run --locked --no-dev python app.py`.
-Omit `--extra compiler`; torch-mlir and the development tools are not installed.
-
-`artifact_path` must be a new `.so` filename. A successful build/load publishes
-it atomically without overwriting files. Optional `debug_dir` saves
-pt2/Linalg/packet/object intermediates; inference never reads them. The initial
-AOT implementation uses O0 for bounded compilation of unrolled time graphs;
-Host performance is not optimized.
-
-An explicitly exported reset-state program begins each invocation from the
-captured initial state and preserves recurrence within that invocation. It does
-not synchronize an original Python model's membrane state. Calls on one session
-are serialized. Outputs own their buffers and survive later calls or session
-close. Native runner failures raise errors instead of returning partial outputs.
-
-`cim22.Session(Path("model.so"))` provides the flat NumPy FP32 interface.
-Raw packet loading through `Session` remains a diagnostic/test route requiring
-the compiler adapter/JIT; it is not the deployment path.
+Calls on one low-level Session are serialized. Computed outputs own their
+buffers and survive later calls or Session close. PyTorch restores identity and views of
+input tensors; distinct views of computed outputs do not preserve shared
+storage. Native errors raise exceptions; partial outputs are never returned.
+Diagnostic `.so` files are published atomically without overwriting an existing
+file. The initial Host lowering uses O0 for bounded
+compilation of unrolled time graphs; Host performance is not optimized.
 
 ## Linux USB board diagnostics
 
@@ -186,33 +207,54 @@ development enum numbering. Software models can omit input Cache addresses;
 USB models require them regardless of the format version. Device parameters
 stay in the live Session; they cannot change the compiled backend.
 
-CMake enables USB when Linux `libusb-1.0` development files are available.
-Use `-DCIM22_ENABLE_USB=OFF` for a software-only runtime. Such builds can load USB
-metadata but reject device configuration explicitly.
+CMake enables USB by default and requires Linux, pkg-config, and `libusb-1.0`
+development files; missing dependencies fail configuration. For a software-only
+wheel, use `-Ccmake.define.CIM22_ENABLE_USB=OFF` with uv (or
+`-DCIM22_ENABLE_USB=OFF` with CMake). Such builds need no libusb and can load USB
+metadata, but reject device configuration explicitly.
 
 The Session serializes device operations and claims the configured USB interface
 exclusively through Linux/libusb. A second Session or process claiming that
 interface fails with `LIBUSB_ERROR_BUSY`. Closing or reconfiguring the Session
 releases its claim; failed reconfiguration leaves USB dispatch unavailable.
 Other interfaces on a composite USB device are outside this claim.
+Use one compiled specialization per device. Dynamo caches its Session: deleting
+the compiled wrapper alone does not release the claim. Drop references and call
+`torch.compiler.reset()` when retiring the compiled model before reusing the
+device with another specialization.
 Transport/protocol faults are sticky: reconfiguration and reopen cannot recover
 them. Close the Session, follow the board's FPGA/chip reset procedure, then
 create a new Session. Reopening a Host handle does not reset hardware.
 
 ```python
-from pathlib import Path
-from cim22 import UsbConfig, compile_exported, load_compiled
+from cim22 import UsbConfig
 
-with compile_exported(program, artifact_path=Path("board.so"), runtime="usb"):
-    pass
 config = UsbConfig(
     vendor_id=vendor_id,
     product_id=product_id,
     bulk_in_endpoint=bulk_in,
     bulk_out_endpoint=bulk_out,
 )
-with load_compiled(Path("board.so"), usb_config=config) as runner:
-    raw_flits = runner.session.capture_usb(0, transaction_input_bits)
+compiled = torch.compile(
+    model,
+    backend="cim22",
+    fullgraph=True,
+    dynamic=False,
+    options={"runtime": "usb", "usb_config": config},
+)
+# BF16 tensor inference raises until the response format is qualified.
+```
+
+For raw hardware diagnostics, retain the internal USB `.so` with `artifact_dir` and inspect it through
+`Session`; packet loading is a compiler/JIT test route with software dispatch.
+
+```python
+from pathlib import Path
+from cim22 import Session
+
+with Session(Path("graph-identifier.so")) as session:
+    session.configure_usb(config)
+    raw_flits = session.capture_usb(0, transaction_input_bits)
 ```
 
 `transaction_input_bits` is an aligned, contiguous NumPy `uint16` array shaped
@@ -237,50 +279,59 @@ on a board in this change.
 ## Verification
 
 ```sh
-# From python/, with the native library paths above configured:
-uv run --locked --extra compiler pytest
-uv run --locked --extra compiler ruff check .
-uv run --locked --extra compiler ruff format --check .
-uv lock --check
+# From the repository root, with MLIR_DIR and compiler variables configured:
+uv sync --project python --locked --extra compiler --group dev
+uv run --project python --locked --extra compiler --group dev pytest python/tests
+uv lock --project python --check
 
-# Fast schema rejection tests without building the native compiler:
-uv run --locked pytest -m 'not integration'
+# Fast USB configuration checks without running compilation tests:
+uv run --project python --locked --extra compiler --group dev \
+  pytest python/tests -m 'not integration'
 
+# Use the host-installed Ruff; generated bindings are excluded by configuration.
+ruff check --config python/pyproject.toml python test/python test/lit.cfg.py
+ruff format --check --config python/pyproject.toml python test/python test/lit.cfg.py
 # Apply formatting while editing:
-uv run --locked --extra compiler ruff format .
+ruff format --config python/pyproject.toml python test/python test/lit.cfg.py
 ```
 
-Tests cover the registered backend, static T/B and reset, fixed-weight guards,
-actual candidate-model CIM dispatch, Host/scalar/nested outputs, invalid ABI
-and schema data, output lifetimes and atomic publication. Integration tests
+To test a separate native build after installing the package, set
+`CIM22_OPT` and `CIM22_RUNTIME_LIBRARY` to that build before running pytest.
+
+Use host `clang-format` for project-owned C++ under `include/`, `lib/`, `tools/`,
+and `test/Unit/`; leave generated and third-party sources unchanged.
+
+Tests cover the registered backend, static T/B and reset, shape specialization,
+actual candidate-model CIM dispatch, input/view mutation and buffer writeback,
+Host/scalar/nested outputs, invalid ABI
+and malformed model data, output lifetimes and atomic publication. Integration tests
 fail explicitly if native dependencies are missing; they are not silently
 skipped. Tests share compiled fixtures and use isolated temporary directories.
-A fresh-process test relocates only model and runtime `.so` files, disables
-frontend imports, compiler paths, subprocesses and
-runtime JSON reads, and checks that compiler/MLIR DSOs were not loaded. Generic
-regressions are separate from local model-specific accuracy investigations.
-Ruff inherits the repository lint rules and 80-column formatting, selecting
-Python 3.12 for this package and its tests.
+Generic regressions are separate from local model-specific accuracy investigations.
+Ruff uses `python/pyproject.toml` for the shared lint rules and 80-column
+formatting, selecting Python 3.12 for this package and its tests.
 
 
 ### Protobuf code generation
 
-Default CMake builds reuse ONNX's pinned Protobuf/protoc **31.1**. Generated C++
-lives in the build directory; generated Python ships inside the runtime wheel.
-Installation and inference do not regenerate bindings. After editing the schema:
+CMake builds Protobuf/protoc **31.1** directly, independently of ONNX.
+Generated C++ lives in the build directory; generated Python lives in
+`tests/_generated` for
+model-format and interoperability tests. The runtime wheel needs neither these
+bindings nor the Python `protobuf` dependency, which belongs to the `dev` group.
+After editing the schema:
 
 ```bash
-cmake --build build --target update-cim22-protobuf
-cmake --build build --target check-cim22-protobuf
+cmake --build build/debug --target update-cim22-protobuf
+cmake --build build/debug --target check-cim22-protobuf
 ```
 
-Normal builds never overwrite packaged Python source. `check-mlir-cim22` checks
-binding freshness. System ONNX mode requires a matching Protobuf **31.1.0** CMake
-config exporting `protobuf::protoc` and static `protobuf::libprotobuf-lite`;
-configure fails explicitly if either is missing or incompatible. C++ generation
-and runtime must match exactly. The model `.so` only links the execution runtime,
+Normal builds never overwrite test bindings. `check-mlir-cim22` checks
+binding freshness. The pinned protoc and C++ Protobuf runtime are built
+together and must match exactly. The model `.so` only links the execution runtime,
 not another Protobuf library.
 
-New descriptive fields may be ignored by older readers. Changes to execution
-semantics must upgrade the artifact version. Device handles, ports, timeouts and
-live buffer pointers remain outside the persisted model.
+New descriptive fields may be ignored by older readers. Once compatibility
+checks are enabled, incompatible structural or numeric changes must upgrade
+`data_format_version`. Device handles, ports, timeouts and live buffer pointers
+remain outside the persisted model.

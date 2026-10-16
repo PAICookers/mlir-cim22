@@ -137,15 +137,17 @@ FailureOr<DenseElementsAttr> evaluateDenseTensor(Value value) {
     auto type = dyn_cast<RankedTensorType>(trunc.getType());
     if (succeeded(source) && type && type.getElementType().isBF16() &&
         (*source).getElementType().isF32() &&
-        trunc.getRoundingmode().value_or(arith::RoundingMode::to_nearest_even) ==
+        trunc.getRoundingmode().value_or(
+            arith::RoundingMode::to_nearest_even) ==
             arith::RoundingMode::to_nearest_even)
-      return (*source).mapValues(type.getElementType(), [](const APFloat &value) {
-        APFloat rounded = value;
-        bool losesInfo;
-        rounded.convert(APFloat::BFloat(), APFloat::rmNearestTiesToEven,
-                        &losesInfo);
-        return rounded.bitcastToAPInt();
-      });
+      return (*source).mapValues(
+          type.getElementType(), [](const APFloat &value) {
+            APFloat rounded = value;
+            bool losesInfo;
+            rounded.convert(APFloat::BFloat(), APFloat::rmNearestTiesToEven,
+                            &losesInfo);
+            return rounded.bitcastToAPInt();
+          });
     return failure();
   }
 
@@ -725,8 +727,9 @@ public:
     auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
     auto partialType = RankedTensorType::get({16}, resultType.getElementType());
     auto accumulationType = RankedTensorType::get(
-        {16}, bf16Profile ? static_cast<Type>(rewriter.getF32Type())
-                          : IntegerType::get(op.getContext(), accumulationWidth));
+        {16}, bf16Profile
+                  ? static_cast<Type>(rewriter.getF32Type())
+                  : IntegerType::get(op.getContext(), accumulationWidth));
     SmallVector<Value> tileResults;
     tileResults.reserve(outputSize / 16 + (outputSize % 16 != 0));
 
@@ -808,7 +811,7 @@ public:
         }
         if (bf16Profile) {
           Value extended = arith::ExtFOp::create(rewriter, location,
-                                                accumulationType, partial);
+                                                 accumulationType, partial);
           sum = sum ? arith::AddFOp::create(rewriter, location, sum, extended)
                     : extended;
         } else {
@@ -1576,8 +1579,8 @@ bool isBF16LinearCandidate(linalg::MatmulOp op, bool allowF32 = false) {
     return false;
   bool transposedWeight = isa<linalg::MatmulTransposeBOp>(op.getOperation());
   return hasFloatType(inputs[1], transposedWeight
-                                   ? ArrayRef<int64_t>{output, reduction}
-                                   : ArrayRef<int64_t>{reduction, output});
+                                     ? ArrayRef<int64_t>{output, reduction}
+                                     : ArrayRef<int64_t>{reduction, output});
 }
 
 void normalizeCIMLinear(linalg::MatmulOp op, PatternRewriter &rewriter) {
@@ -1606,28 +1609,25 @@ void normalizeCIMLinear(linalg::MatmulOp op, PatternRewriter &rewriter) {
 
   auto inputEmpty = tensor::EmptyOp::create(
       rewriter, location, ArrayRef<int64_t>{reduction, batch}, bf16);
-  Value normalizedInput =
-      linalg::TransposeOp::create(rewriter, location, inputs[0],
-                                  inputEmpty.getResult(),
-                                  ArrayRef<int64_t>{1, 0})
-          .getResult()
-          .front();
+  Value normalizedInput = linalg::TransposeOp::create(
+                              rewriter, location, inputs[0],
+                              inputEmpty.getResult(), ArrayRef<int64_t>{1, 0})
+                              .getResult()
+                              .front();
   auto normalizedResultType = RankedTensorType::get({output, batch}, bf16);
   Value zero = arith::ConstantOp::create(
       rewriter, location, normalizedResultType,
-      DenseElementsAttr::get(normalizedResultType,
-                             rewriter.getZeroAttr(bf16)));
+      DenseElementsAttr::get(normalizedResultType, rewriter.getZeroAttr(bf16)));
   auto matmul = linalg::MatmulOp::create(
       rewriter, location, TypeRange{normalizedResultType},
       ValueRange{weight, normalizedInput}, ValueRange{zero});
   auto outputEmpty = tensor::EmptyOp::create(
       rewriter, location, ArrayRef<int64_t>{batch, output}, bf16);
-  Value restored =
-      linalg::TransposeOp::create(rewriter, location, matmul.getResult(0),
-                                  outputEmpty.getResult(),
-                                  ArrayRef<int64_t>{1, 0})
-          .getResult()
-          .front();
+  Value restored = linalg::TransposeOp::create(
+                       rewriter, location, matmul.getResult(0),
+                       outputEmpty.getResult(), ArrayRef<int64_t>{1, 0})
+                       .getResult()
+                       .front();
   rewriter.replaceOp(op, restored);
 }
 
@@ -1973,7 +1973,8 @@ public:
                      ValueRange{weight, activation}, ValueRange{zero})
                      .getResult(0);
       // Keep FP32 bias, residuals and shared activation users in their original
-      // precision. Invoking this pass explicitly opts the contraction into BF16.
+      // precision. Invoking this pass explicitly opts the contraction into
+      // BF16.
       rewriter.replaceOpWithNewOp<arith::ExtFOp>(op, resultType, result);
     }
   }
@@ -2339,14 +2340,8 @@ public:
 };
 
 const llvm::StringRef kExecutionPlanIdentityAttrs[] = {
-    "m_tile",
-    "n_tile",
-    "k_tile",
-    "work_id",
-    "group_id",
-    "core_idx",
-    "macro_idx",
-    "cim.mapping"};
+    "m_tile",   "n_tile",   "k_tile",    "work_id",
+    "group_id", "core_idx", "macro_idx", "cim.mapping"};
 constexpr int64_t kOutputCacheRows = 8;
 
 void copyExecutionPlanIdentity(Operation *from, Operation *to) {
@@ -2474,8 +2469,7 @@ public:
         for (size_t groupBegin = sourceBegin; groupBegin < sourceEnd;) {
           size_t groupEnd = groupBegin + 1;
           while (groupEnd < sourceEnd &&
-                 plan.works[groupEnd].groupId ==
-                     plan.works[groupBegin].groupId)
+                 plan.works[groupEnd].groupId == plan.works[groupBegin].groupId)
             ++groupEnd;
           int64_t coreIdx = plan.works[groupBegin].coreIdx;
           if (activeCores.contains(coreIdx) || activeCores.size() == 20) {
@@ -2493,10 +2487,10 @@ public:
             work.vmm->setAttr(
                 CIMDialect::getTransactionIdxAttrName(),
                 identityBuilder.getI64IntegerAttr(work.transactionIdx));
-            work.vmm->setAttr(
-                "group_id", identityBuilder.getI64IntegerAttr(work.groupId));
-            work.vmm->setAttr(
-                "work_id", identityBuilder.getI64IntegerAttr(work.workId));
+            work.vmm->setAttr("group_id",
+                              identityBuilder.getI64IntegerAttr(work.groupId));
+            work.vmm->setAttr("work_id",
+                              identityBuilder.getI64IntegerAttr(work.workId));
           }
           activeCores.insert(coreIdx);
           ++localGroupId;
@@ -2508,19 +2502,16 @@ public:
 
       for (size_t begin = 0; begin < plan.works.size();) {
         size_t end = begin + 1;
-        while (end < plan.works.size() &&
-               plan.works[end].transactionIdx ==
-                   plan.works[begin].transactionIdx)
+        while (end < plan.works.size() && plan.works[end].transactionIdx ==
+                                              plan.works[begin].transactionIdx)
           ++end;
         for (size_t groupBegin = begin; groupBegin < end;) {
           size_t groupEnd = groupBegin + 1;
           while (groupEnd < end &&
-                 plan.works[groupEnd].groupId ==
-                     plan.works[groupBegin].groupId)
+                 plan.works[groupEnd].groupId == plan.works[groupBegin].groupId)
             ++groupEnd;
-          bool validSingleMacro =
-              groupEnd - groupBegin == 1 &&
-              plan.works[groupBegin].macroIdx == 0;
+          bool validSingleMacro = groupEnd - groupBegin == 1 &&
+                                  plan.works[groupBegin].macroIdx == 0;
           bool validDualMacro =
               groupEnd - groupBegin == 2 &&
               plan.works[groupBegin].coreIdx ==
@@ -2542,9 +2533,8 @@ public:
 
       for (size_t begin = 0; begin < plan.works.size();) {
         size_t end = begin + 1;
-        while (end < plan.works.size() &&
-               plan.works[end].transactionIdx ==
-                   plan.works[begin].transactionIdx)
+        while (end < plan.works.size() && plan.works[end].transactionIdx ==
+                                              plan.works[begin].transactionIdx)
           ++end;
 
         llvm::DenseSet<Operation *> segmentWork;
@@ -2632,16 +2622,17 @@ public:
           Value input = plan.works[workIndex].vmm.getInput();
           if (!llvm::is_contained(inputs, input))
             inputs.push_back(input);
-          resultTypes.push_back(plan.works[workIndex].vmm.getResult().getType());
+          resultTypes.push_back(
+              plan.works[workIndex].vmm.getResult().getType());
         }
         OpBuilder builder(plan.works[index].vmm);
         SmallVector<NamedAttribute> attributes;
         attributes.push_back(builder.getNamedAttr(
             CIMDialect::getTransactionIdxAttrName(),
             builder.getI64IntegerAttr(plan.works[index].transactionIdx)));
-        TransactionOp transaction = TransactionOp::create(
-            builder, plan.works[index].vmm.getLoc(), resultTypes, inputs,
-            attributes);
+        TransactionOp transaction =
+            TransactionOp::create(builder, plan.works[index].vmm.getLoc(),
+                                  resultTypes, inputs, attributes);
         Block *body = builder.createBlock(&transaction.getBody());
         for (Value input : inputs)
           body->addArgument(input.getType(), input.getLoc());
@@ -2662,8 +2653,8 @@ public:
               "input_cache_address",
               bodyBuilder.getI64IntegerAttr(
                   work.vmm->getAttrOfType<IntegerAttr>("n_tile").getInt() % 8));
-          auto weight = ConfigureWeightOp::create(bodyBuilder, work.vmm.getLoc(),
-                                                   resources[workIndex]);
+          auto weight = ConfigureWeightOp::create(
+              bodyBuilder, work.vmm.getLoc(), resources[workIndex]);
           copyExecutionPlanIdentity(work.vmm, weight);
         }
         for (size_t groupBegin = index; groupBegin < transactionEnd;) {
@@ -2671,9 +2662,10 @@ public:
           while (groupEnd < transactionEnd &&
                  plan.works[groupEnd].groupId == plan.works[groupBegin].groupId)
             ++groupEnd;
-          for (size_t workIndex = groupBegin; workIndex < groupEnd; ++workIndex) {
-            auto dispatch = DispatchOp::create(bodyBuilder,
-                                                plan.works[workIndex].vmm.getLoc());
+          for (size_t workIndex = groupBegin; workIndex < groupEnd;
+               ++workIndex) {
+            auto dispatch = DispatchOp::create(
+                bodyBuilder, plan.works[workIndex].vmm.getLoc());
             copyExecutionPlanIdentity(plan.works[workIndex].vmm, dispatch);
           }
           WorkPlan &first = plan.works[groupBegin];
@@ -2688,26 +2680,32 @@ public:
           while (groupEnd < transactionEnd &&
                  plan.works[groupEnd].groupId == plan.works[groupBegin].groupId)
             ++groupEnd;
-          for (size_t workIndex = groupBegin; workIndex < groupEnd; ++workIndex) {
+          for (size_t workIndex = groupBegin; workIndex < groupEnd;
+               ++workIndex) {
             WorkPlan &work = plan.works[workIndex];
             auto readback = ReadbackOp::create(bodyBuilder, work.vmm.getLoc(),
-                                                work.vmm.getResult().getType());
+                                               work.vmm.getResult().getType());
             copyExecutionPlanIdentity(work.vmm, readback);
             auto nTile = readNonNegativeI64(work.vmm, "n_tile");
-            auto mapping = work.vmm->getAttrOfType<DictionaryAttr>("cim.mapping");
+            auto mapping =
+                work.vmm->getAttrOfType<DictionaryAttr>("cim.mapping");
             auto route = mapping ? mapping.getAs<DenseI64ArrayAttr>("route")
                                  : DenseI64ArrayAttr();
             if (!nTile || !route || route.size() != 6) {
-              work.vmm.emitOpError("materialize-cim-execution-plan requires "
-                                   "n_tile and a six-element route for readback");
+              work.vmm.emitOpError(
+                  "materialize-cim-execution-plan requires "
+                  "n_tile and a six-element route for readback");
               return signalPassFailure();
             }
             readback->setAttr(
                 "output_cache_address",
                 bodyBuilder.getI64IntegerAttr(*nTile % kOutputCacheRows));
-            readback->setAttr("test_core_xy", bodyBuilder.getI64IntegerAttr(-route[0]));
-            readback->setAttr("test_core_x", bodyBuilder.getI64IntegerAttr(-route[1]));
-            readback->setAttr("test_core_y", bodyBuilder.getI64IntegerAttr(-route[2]));
+            readback->setAttr("test_core_xy",
+                              bodyBuilder.getI64IntegerAttr(-route[0]));
+            readback->setAttr("test_core_x",
+                              bodyBuilder.getI64IntegerAttr(-route[1]));
+            readback->setAttr("test_core_y",
+                              bodyBuilder.getI64IntegerAttr(-route[2]));
             readbacks.push_back(readback);
             readbackValues.push_back(readback.getResult());
           }

@@ -33,6 +33,7 @@ tool_dirs = [
 llvm_config.add_tool_substitutions(
     [
         "FileCheck",
+        "split-file",
         "mlir-runner",
         "mlir-cim22-model-data-test",
         "mlir-cim22-bf16-support-test",

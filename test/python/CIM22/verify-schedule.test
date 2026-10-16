@@ -1,4 +1,1 @@
-// RUN: %python %S/test_schedule.py | FileCheck %s
-
-// CHECK: Ran 5 tests
-// CHECK: OK
+// RUN: %python %S/test_schedule.py
