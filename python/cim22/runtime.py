@@ -5,6 +5,7 @@ import os
 import threading
 import weakref
 from dataclasses import dataclass
+from importlib.resources import files
 from pathlib import Path
 from types import TracebackType
 
@@ -66,7 +67,7 @@ def runtime_library(library: Path | None = None) -> Path:
         library = (
             Path(configured)
             if configured
-            else Path(__file__).parent / "lib" / "libcim22_runtime.so"
+            else Path(str(files("cim22") / "lib" / "libcim22_runtime.so"))
         )
     if not library.is_file():
         raise FileNotFoundError(
@@ -119,10 +120,6 @@ class Session:
             "num_transactions": ([ctypes.c_void_p], ctypes.c_int64),
             "dispatch_count": ([ctypes.c_void_p], ctypes.c_uint64),
             "error": ([ctypes.c_void_p], ctypes.c_char_p),
-            "output_schema": (
-                [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)],
-                ctypes.c_void_p,
-            ),
             "invoke": (
                 [
                     ctypes.c_void_p,
@@ -175,11 +172,6 @@ class Session:
         self.input_shapes = shapes[:num_inputs]
         self.output_shapes = shapes[num_inputs:]
         self.num_transactions = lib.cim22_session_num_transactions(self._handle)
-        size = ctypes.c_size_t()
-        schema = lib.cim22_session_output_schema(
-            self._handle, ctypes.byref(size)
-        )
-        self.output_schema = ctypes.string_at(schema, size.value)
 
     def configure_usb(self, config: UsbConfig) -> None:
         """Open the configured Linux USB device for a USB artifact."""

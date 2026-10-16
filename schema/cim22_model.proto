@@ -7,12 +7,10 @@ option optimize_for = LITE_RUNTIME;
 // data_format_version 1 and readers do not enforce it.
 message ModelArtifact {
   uint32 data_format_version = 1;       // 1 during development.
-  uint32 numeric_contract_version = 2;  // 2, independent of the native ABI (1)
   repeated TensorSignature inputs = 3;
   repeated TensorSignature outputs = 4;
   repeated Kernel kernels = 5;          // Position is the native dispatch index.
-  OutputSchema output_schema = 6;
-  RuntimeBackend runtime_backend = 7;
+  RuntimeBackend runtime_backend = 6;
 }
 
 enum RuntimeBackend {
@@ -117,31 +115,4 @@ message ReadbackBinding {
   repeated sfixed32 route = 5 [packed = true];
   repeated sfixed32 test_core = 6 [packed = true];
   DataType data_type = 7;
-}
-
-message OutputSchema {
-  uint32 version = 1; // 1
-  OutputNode root = 2;
-}
-
-message OutputNode {
-  oneof node {
-    uint32 tensor_leaf = 1; // Zero-based ordinal in depth-first tensor order.
-    OutputSequence tuple = 2;
-    OutputSequence list = 3;
-    OutputDictionary dictionary = 4;
-  }
-}
-
-message OutputSequence {
-  repeated OutputNode children = 1;
-}
-
-message OutputDictionary {
-  repeated OutputEntry entries = 1; // Preserve insertion order; never use map.
-}
-
-message OutputEntry {
-  optional string key = 1;
-  OutputNode value = 2;
 }

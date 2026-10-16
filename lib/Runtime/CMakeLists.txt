@@ -9,22 +9,23 @@ protobuf_generate(LANGUAGE python OUT_VAR _cim22_proto_python
   PROTOC_OUT_DIR "${_cim22_generated}" DEPENDENCIES protobuf::protoc)
 add_custom_target(check-cim22-protobuf
   COMMAND ${CMAKE_COMMAND} -E compare_files "${_cim22_proto_python}"
-    "${PROJECT_SOURCE_DIR}/python/cim22/_generated/cim22_model_pb2.py"
+    "${PROJECT_SOURCE_DIR}/python/tests/_generated/cim22_model_pb2.py"
   DEPENDS ${_cim22_proto_python}
-  COMMENT "Checking packaged Python Protobuf binding freshness" VERBATIM)
+  COMMENT "Checking test Python Protobuf binding freshness" VERBATIM)
 add_custom_target(update-cim22-protobuf
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_cim22_proto_python}"
-    "${PROJECT_SOURCE_DIR}/python/cim22/_generated/cim22_model_pb2.py"
+    "${PROJECT_SOURCE_DIR}/python/tests/_generated/cim22_model_pb2.py"
   DEPENDS ${_cim22_proto_python}
-  COMMENT "Regenerating packaged Python Protobuf binding" VERBATIM)
+  COMMENT "Regenerating test Python Protobuf binding" VERBATIM)
 
 # Execution-only deployment library; Protobuf lite and LLVMSupport are static.
-option(CIM22_ENABLE_USB "Build the Linux libusb runtime when available" ON)
-if(CIM22_ENABLE_USB AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  find_package(PkgConfig QUIET)
-  if(PkgConfig_FOUND)
-    pkg_check_modules(LIBUSB QUIET IMPORTED_TARGET GLOBAL libusb-1.0)
+option(CIM22_ENABLE_USB "Build the Linux libusb runtime" ON)
+if(CIM22_ENABLE_USB)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "USB runtime requires Linux; set CIM22_ENABLE_USB=OFF")
   endif()
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET GLOBAL libusb-1.0)
 endif()
 
 set(_cim22_runtime_sources Runtime.cpp ModelData.cpp CIMBoardRunner.cpp)
@@ -58,3 +59,12 @@ mlir_target_link_libraries(cim22_compiler PRIVATE
   MLIRTargetLLVMIRExport)
 set_target_properties(cim22_runtime cim22_compiler PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "${LLVM_LIBRARY_OUTPUT_INTDIR}")
+
+# Keep the compiler adapter's runtime dependency local to the wheel.
+if(SKBUILD)
+  set_target_properties(cim22_runtime cim22_compiler PROPERTIES
+    INSTALL_RPATH "$ORIGIN")
+  install(TARGETS cim22_runtime cim22_compiler
+    LIBRARY DESTINATION lib
+    COMPONENT runtime)
+endif()

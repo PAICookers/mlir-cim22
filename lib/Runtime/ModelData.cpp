@@ -80,38 +80,6 @@ bool validType(pb::DataType type) {
   return type == pb::INT8 || type == pb::BF16;
 }
 
-llvm::Error validateNode(const pb::OutputNode &node, size_t &ordinal) {
-  switch (node.node_case()) {
-  case pb::OutputNode::kTensorLeaf:
-    if (node.tensor_leaf() != ordinal++)
-      return invalid("output tensor leaf ordinal");
-    break;
-  case pb::OutputNode::kTuple:
-  case pb::OutputNode::kList: {
-    const auto &sequence =
-        node.node_case() == pb::OutputNode::kTuple ? node.tuple() : node.list();
-    for (const auto &child : sequence.children())
-      if (auto error = validateNode(child, ordinal))
-        return error;
-    break;
-  }
-  case pb::OutputNode::kDictionary: {
-    std::set<std::string> keys;
-    for (const auto &entry : node.dictionary().entries()) {
-      if (!entry.has_key() || !entry.has_value() ||
-          !keys.insert(entry.key()).second)
-        return invalid("output dictionary entries");
-      if (auto error = validateNode(entry.value(), ordinal))
-        return error;
-    }
-    break;
-  }
-  default:
-    return invalid("missing or unsupported output node");
-  }
-  return llvm::Error::success();
-}
-
 // Validate presence and fixed arrays before copying into native structs.
 // Slot zero is valid, so optional identity fields distinguish it from absence.
 template <typename Binding>
@@ -261,8 +229,6 @@ llvm::Error validateTransaction(const pb::Transaction &t,
 
 llvm::Error validate(const pb::ModelArtifact &model) {
   // TODO: Enforce data_format_version once the artifact contract stabilizes.
-  if (model.numeric_contract_version() != 2)
-    return invalid("unsupported numeric contract version");
   if (!pb::RuntimeBackend_IsValid(model.runtime_backend()))
     return invalid("unsupported runtime backend");
   for (const auto *tensors : {&model.inputs(), &model.outputs()})
@@ -274,14 +240,6 @@ llvm::Error validate(const pb::ModelArtifact &model) {
         if (dim <= 0 || llvm::MulOverflow(elements, dim, elements))
           return invalid("static tensor shape/element count");
     }
-  if (!model.has_output_schema() || model.output_schema().version() != 1 ||
-      !model.output_schema().has_root())
-    return invalid("missing/unsupported output schema");
-  size_t ordinal = 0;
-  if (auto error = validateNode(model.output_schema().root(), ordinal))
-    return error;
-  if (ordinal != static_cast<size_t>(model.outputs_size()))
-    return invalid("output tensor leaf count");
   std::set<std::string> names;
   for (const auto &kernel : model.kernels()) {
     if (kernel.kernel_name().empty() ||
@@ -431,7 +389,6 @@ llvm::Expected<std::string> encodeModelData(const ModelData &model) {
     return invalid("signature/kernel counts");
   pb::ModelArtifact artifact;
   artifact.set_data_format_version(1);
-  artifact.set_numeric_contract_version(2);
   artifact.set_runtime_backend(
       model.backend == RuntimeBackend::Software ? pb::SOFTWARE : pb::USB);
   for (size_t i = 0; i < model.shapes.size(); ++i) {
@@ -446,23 +403,18 @@ llvm::Expected<std::string> encodeModelData(const ModelData &model) {
     kernel->set_kernel_name(model.kernelNames[i]);
     encodeTransaction(model.transactions[i], *kernel->mutable_transaction());
   }
-  if (!artifact.mutable_output_schema()->ParseFromString(model.outputSchema))
-    return invalid("malformed output schema (old marshal is unsupported)");
   if (auto error = validate(artifact))
     return error;
   std::string bytes;
   if (!artifact.SerializeToString(&bytes))
     return invalid("model serialization failed");
-  // The enclosing model consumes parser depth beyond its standalone schema.
-  pb::ModelArtifact parsed;
-  if (!parsed.ParseFromString(bytes))
-    return invalid("output schema exceeds model parser limit");
   return bytes;
 }
 
 llvm::Error decodeModelData(llvm::StringRef bytes, ModelData &model) {
   pb::ModelArtifact artifact;
-  if (bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+  if (bytes.empty() ||
+      bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max()) ||
       !artifact.ParseFromArray(bytes.data(), static_cast<int>(bytes.size())))
     return invalid("malformed data (old custom binary is unsupported)");
   if (auto error = validate(artifact))
@@ -480,8 +432,6 @@ llvm::Error decodeModelData(llvm::StringRef bytes, ModelData &model) {
     decoded.kernelNames.push_back(kernel.kernel_name());
     decoded.transactions.push_back(decodeTransaction(kernel.transaction()));
   }
-  if (!artifact.output_schema().SerializeToString(&decoded.outputSchema))
-    return invalid("output schema serialization failed");
   model = std::move(decoded);
   return llvm::Error::success();
 }

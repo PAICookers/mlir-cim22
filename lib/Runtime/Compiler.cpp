@@ -351,13 +351,10 @@ extern "C" void *cim22_session_load_packet(const char *path, const char *entry,
   return session.release();
 }
 
-extern "C" int cim22_compile_object_with_backend(
-    const char *path, const char *objectPath, const void *schema,
-    size_t schemaSize, const char *backend, char *error, size_t capacity) {
+extern "C" int cim22_compile_object(const char *path, const char *objectPath,
+                                    const char *backend, char *error,
+                                    size_t capacity) {
   Session session;
-  if (schema && schemaSize)
-    session.model.outputSchema.assign(static_cast<const char *>(schema),
-                                      schemaSize);
   if (backend && llvm::StringRef(backend) == "software")
     session.model.backend = ::cim22::runtime::RuntimeBackend::Software;
   else if (backend && llvm::StringRef(backend) == "usb")
@@ -375,11 +372,4 @@ extern "C" int cim22_compile_object_with_backend(
     return 1;
   }
   return 0;
-}
-
-extern "C" int cim22_compile_object(const char *path, const char *objectPath,
-                                    const void *schema, size_t schemaSize,
-                                    char *error, size_t capacity) {
-  return cim22_compile_object_with_backend(path, objectPath, schema, schemaSize,
-                                           "usb", error, capacity);
 }

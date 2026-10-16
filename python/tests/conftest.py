@@ -6,25 +6,37 @@ import os
 import shutil
 import subprocess
 from collections.abc import Callable
+from contextlib import AbstractContextManager
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
+import torch
 
-from cim22._generated import cim22_model_pb2 as proto
+from cim22.runtime import compiler_library, runtime_library
+
+from ._generated import cim22_model_pb2 as proto
 
 type ModelLibrary = Callable[[bytes, int], Path]
 type EmbeddedModel = Callable[[Path], proto.ModelArtifact]
 
 
+@pytest.fixture(
+    params=[torch.no_grad, torch.inference_mode], ids=["no-grad", "inference"]
+)
+def inference_context(
+    request: pytest.FixtureRequest,
+) -> AbstractContextManager[None]:
+    """Exercise both PyTorch inference paths for mutation and state tests."""
+    return request.param()
+
+
 @pytest.fixture(scope="session")
 def native_runtime() -> Path:
     """Require only execution dependencies for metadata/loader tests."""
-    runtime = os.environ.get("CIM22_RUNTIME_LIBRARY")
-    if runtime is None or not Path(runtime).is_file():
-        pytest.fail("Set CIM22_RUNTIME_LIBRARY to libcim22_runtime.so")
     if shutil.which(os.environ.get("CIM22_CC", "cc")) is None:
         pytest.fail("Install a C linker or set CIM22_CC")
-    return Path(runtime)
+    return runtime_library()
 
 
 @pytest.fixture(scope="session")
@@ -34,16 +46,85 @@ def native_toolchain(native_runtime: Path) -> None:
         pytest.fail(
             "Install the frontend with uv sync --locked --extra compiler"
         )
-    if shutil.which(os.environ.get("CIM22_OPT", "mlir-cim22-opt")) is None:
-        pytest.fail("Set CIM22_OPT to the built mlir-cim22-opt executable")
-    compiler = Path(
-        os.environ.get(
-            "CIM22_COMPILER_LIBRARY",
-            str(native_runtime.with_name("libcim22_compiler.so")),
-        )
+    optimizer = os.environ.get("CIM22_OPT") or str(
+        files("cim22") / "bin" / "mlir-cim22-opt"
     )
-    if not compiler.is_file():
-        pytest.fail("Build cim22_compiler or set CIM22_COMPILER_LIBRARY")
+    if shutil.which(optimizer) is None:
+        pytest.fail("Set CIM22_OPT to the built mlir-cim22-opt executable")
+    compiler_library(native_runtime)
+
+
+@pytest.fixture
+def host_artifact() -> proto.ModelArtifact:
+    model = proto.ModelArtifact(
+        data_format_version=1,
+        runtime_backend=proto.SOFTWARE,
+    )
+    model.outputs.add(data_type=proto.FP32)  # Rank-zero is valid.
+    return model
+
+
+@pytest.fixture
+def transaction_artifact(
+    host_artifact: proto.ModelArtifact,
+) -> proto.ModelArtifact:
+    model = proto.ModelArtifact()
+    model.CopyFrom(host_artifact)
+    transaction = model.kernels.add(kernel_name="kernel").transaction
+    transaction.target_profile = "cim22-4x5-v1"
+    transaction.target_profile_version = 1
+    transaction.execution_plan_version = 1
+    group = transaction.groups.add(group_id=0)
+    group.works.add(work_id=0, core_slot=0, macro_slot=0, route=[0] * 6)
+    transaction.weights.add(
+        group_id=0,
+        work_id=0,
+        core_slot=0,
+        macro_slot=0,
+        resource="weight",
+        route=[0] * 6,
+        words=[0] * 256,
+        values=bytes(1024),
+        exponents=bytes(16),
+        data_type=proto.BF16,
+    )
+    transaction.inputs.add(
+        group_id=0,
+        work_id=0,
+        macro_slot=0,
+        input_slot=0,
+        input_cache_address=0,
+        data_type=proto.BF16,
+    )
+    transaction.readbacks.add(
+        group_id=0,
+        work_id=0,
+        macro_slot=0,
+        output_cache_address=7,
+        route=[0] * 6,
+        test_core=[0] * 3,
+        data_type=proto.BF16,
+    )
+    for kind in (
+        proto.WEIGHT,
+        proto.WEIGHT_EXPONENT,
+        proto.INPUT_CACHE_WRITE,
+        proto.RETURN_ROUTE,
+        proto.CONTROL,
+        proto.OUTPUT_CACHE_READ,
+    ):
+        transaction.packets.add(
+            kind=kind,
+            group_id=0,
+            work_id=0,
+            macro_slot=0,
+            cache_address=7 if kind == proto.OUTPUT_CACHE_READ else -1,
+            route=[0] * 6,
+            test_core=[0] * 3,
+            data_type=proto.BF16,
+        )
+    transaction.flits.extend([0, 2**64 - 1])
+    return model
 
 
 class Descriptor(ctypes.Structure):

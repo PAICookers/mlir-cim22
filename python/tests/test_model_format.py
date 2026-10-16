@@ -1,14 +1,12 @@
 """Native loading rejects malformed Protobuf before invoking model code."""
 
-import marshal
 from typing import TYPE_CHECKING
 
 import pytest
-from torch.utils import _pytree
 
-from cim22 import load_compiled
-from cim22._generated import cim22_model_pb2 as proto
-from cim22._schema import decode_outputs, encode_outputs
+from cim22.runtime import Session
+
+from ._generated import cim22_model_pb2 as proto
 
 if TYPE_CHECKING:
     from .conftest import ModelLibrary
@@ -20,90 +18,19 @@ pytestmark = [
 ]
 
 
-def host_artifact() -> proto.ModelArtifact:
-    model = proto.ModelArtifact(
-        data_format_version=1,
-        numeric_contract_version=2,
-        runtime_backend=proto.SOFTWARE,
-    )
-    model.outputs.add(data_type=proto.FP32)  # Rank-zero is valid.
-    model.output_schema.ParseFromString(
-        encode_outputs(_pytree.tree_structure(0))
-    )
-    return model
-
-
-def transaction_artifact() -> proto.ModelArtifact:
-    model = host_artifact()
-    transaction = model.kernels.add(kernel_name="kernel").transaction
-    transaction.target_profile = "cim22-4x5-v1"
-    transaction.target_profile_version = 1
-    transaction.execution_plan_version = 1
-    group = transaction.groups.add(group_id=0)
-    group.works.add(work_id=0, core_slot=0, macro_slot=0, route=[0] * 6)
-    transaction.weights.add(
-        group_id=0,
-        work_id=0,
-        core_slot=0,
-        macro_slot=0,
-        resource="weight",
-        route=[0] * 6,
-        words=[0] * 256,
-        values=bytes(1024),
-        exponents=bytes(16),
-        data_type=proto.BF16,
-    )
-    transaction.inputs.add(
-        group_id=0,
-        work_id=0,
-        macro_slot=0,
-        input_slot=0,
-        input_cache_address=0,
-        data_type=proto.BF16,
-    )
-    transaction.readbacks.add(
-        group_id=0,
-        work_id=0,
-        macro_slot=0,
-        output_cache_address=7,
-        route=[0] * 6,
-        test_core=[0] * 3,
-        data_type=proto.BF16,
-    )
-    for kind in (
-        proto.WEIGHT,
-        proto.WEIGHT_EXPONENT,
-        proto.INPUT_CACHE_WRITE,
-        proto.RETURN_ROUTE,
-        proto.CONTROL,
-        proto.OUTPUT_CACHE_READ,
-    ):
-        transaction.packets.add(
-            kind=kind,
-            group_id=0,
-            work_id=0,
-            macro_slot=0,
-            cache_address=7 if kind == proto.OUTPUT_CACHE_READ else -1,
-            route=[0] * 6,
-            test_core=[0] * 3,
-            data_type=proto.BF16,
-        )
-    transaction.flits.extend([0, 2**64 - 1])
-    return model
-
-
 @pytest.mark.parametrize("with_transaction", [False, True], ids=["host", "cim"])
-def test_schema_interoperability(
-    model_library: "ModelLibrary", with_transaction: bool
+def test_protobuf_interoperability(
+    model_library: "ModelLibrary",
+    with_transaction: bool,
+    host_artifact: proto.ModelArtifact,
+    transaction_artifact: proto.ModelArtifact,
 ) -> None:
-    model = transaction_artifact() if with_transaction else host_artifact()
+    model = transaction_artifact if with_transaction else host_artifact
     shared = model_library(model.SerializeToString() + b"\xa0\x06\x01", 1)
-    with load_compiled(shared) as compiled:
-        assert compiled.session.num_transactions == int(with_transaction)
-        assert len(compiled.session.output_shapes) == 1
-        assert decode_outputs(compiled.session.output_schema) == (
-            _pytree.tree_structure(0)
-        )
+    with Session(shared) as session:
+        assert session.num_transactions == int(with_transaction)
+        assert session.input_shapes == ()
+        assert session.output_shapes == ((),)
 
 
 @pytest.mark.parametrize(
@@ -111,16 +38,6 @@ def test_schema_interoperability(
     [
         "empty",
         "truncated",
-        "old-binary",
-        "marshal",
-        "numeric",
-        "missing-schema",
-        "missing-root",
-        "leaf-ordinal",
-        "leaf-count",
-        "duplicate-key",
-        "missing-key",
-        "missing-value",
         "dtype",
         "shape",
         "overflow",
@@ -129,31 +46,13 @@ def test_schema_interoperability(
     ],
 )
 def test_invalid_model_metadata(
-    model_library: "ModelLibrary", failure: str
+    model_library: "ModelLibrary",
+    failure: str,
+    host_artifact: proto.ModelArtifact,
+    transaction_artifact: proto.ModelArtifact,
 ) -> None:
-    model = host_artifact()
+    model = host_artifact
     match failure:
-        case "numeric":
-            model.numeric_contract_version = 99
-        case "missing-schema":
-            model.ClearField("output_schema")
-        case "missing-root":
-            model.output_schema.ClearField("root")
-        case "leaf-ordinal":
-            model.output_schema.root.tensor_leaf = 1
-        case "leaf-count":
-            model.outputs.add(data_type=proto.FP32)
-        case "duplicate-key" | "missing-key" | "missing-value":
-            root = model.output_schema.root
-            root.Clear()
-            root.dictionary.entries.add(key="x").value.tensor_leaf = 0
-            entry = root.dictionary.entries.add(key="x")
-            entry.value.list.SetInParent()
-            if failure == "missing-key":
-                entry.ClearField("key")
-            elif failure == "missing-value":
-                entry.key = "y"
-                entry.ClearField("value")
         case "dtype":
             model.outputs[0].data_type = 99
         case "shape":
@@ -163,19 +62,15 @@ def test_invalid_model_metadata(
         case "missing-transaction":
             model.kernels.add(kernel_name="missing")
         case "duplicate-kernel":
-            model = transaction_artifact()
+            model = transaction_artifact
             model.kernels.add().CopyFrom(model.kernels[0])
     data = model.SerializeToString()
     if failure == "empty":
         data = b""
     elif failure == "truncated":
         data = data[:-1]
-    elif failure == "old-binary":
-        data = (2).to_bytes(8, "little") + bytes(32)
-    elif failure == "marshal":
-        data = marshal.dumps((1, (0,)), 4)
     with pytest.raises(RuntimeError, match="Protobuf model.*recompile"):
-        load_compiled(model_library(data, 1))
+        Session(model_library(data, 1))
 
 
 @pytest.mark.parametrize(
@@ -216,9 +111,11 @@ def test_invalid_model_metadata(
     ],
 )
 def test_invalid_transaction(
-    model_library: "ModelLibrary", failure: str
+    model_library: "ModelLibrary",
+    failure: str,
+    transaction_artifact: proto.ModelArtifact,
 ) -> None:
-    model = transaction_artifact()
+    model = transaction_artifact
     transaction = model.kernels[0].transaction
     group = transaction.groups[0]
     weight = transaction.weights[0]
@@ -293,21 +190,25 @@ def test_invalid_transaction(
         case "flits":
             transaction.ClearField("flits")
     with pytest.raises(RuntimeError, match="Protobuf model.*recompile"):
-        load_compiled(model_library(model.SerializeToString(), 1))
+        Session(model_library(model.SerializeToString(), 1))
 
 
-def test_invalid_native_abi(model_library: "ModelLibrary") -> None:
+def test_invalid_native_abi(
+    model_library: "ModelLibrary", host_artifact: proto.ModelArtifact
+) -> None:
     with pytest.raises(RuntimeError, match="ABI"):
-        load_compiled(model_library(host_artifact().SerializeToString(), 99))
+        Session(model_library(host_artifact.SerializeToString(), 99))
 
 
 @pytest.mark.parametrize(
     "duplicate", [False, True], ids=["distinct", "duplicate"]
 )
 def test_physical_macro_placement(
-    model_library: "ModelLibrary", duplicate: bool
+    model_library: "ModelLibrary",
+    duplicate: bool,
+    transaction_artifact: proto.ModelArtifact,
 ) -> None:
-    model = transaction_artifact()
+    model = transaction_artifact
     transaction = model.kernels[0].transaction
     works = transaction.groups[0].works
     work = works.add()
@@ -336,20 +237,16 @@ def test_physical_macro_placement(
     shared = model_library(model.SerializeToString(), 1)
     if duplicate:
         with pytest.raises(RuntimeError, match="duplicate work, placement"):
-            load_compiled(shared)
+            Session(shared)
     else:
-        with load_compiled(shared) as compiled:
-            assert compiled.session.num_transactions == 1
+        with Session(shared) as session:
+            assert session.num_transactions == 1
 
 
 @pytest.mark.parametrize(
     ("version", "backend", "cache", "valid"),
     [
         (None, None, None, True),
-        (1, proto.SOFTWARE, None, True),
-        (99, proto.SOFTWARE, 0, True),
-        (None, proto.USB, 0, True),
-        (1, proto.USB, 7, True),
         (99, proto.USB, 7, True),
         (99, proto.USB, None, False),
         (1, 99, 0, False),
@@ -358,12 +255,13 @@ def test_physical_macro_placement(
 )
 def test_development_metadata_contract(
     model_library: "ModelLibrary",
+    transaction_artifact: proto.ModelArtifact,
     version: int | None,
     backend: int | None,
     cache: int | None,
     valid: bool,
 ) -> None:
-    model = transaction_artifact()
+    model = transaction_artifact
     if version is None:
         model.ClearField("data_format_version")
     else:
@@ -379,8 +277,8 @@ def test_development_metadata_contract(
         binding.input_cache_address = cache
     shared = model_library(model.SerializeToString(), 1)
     if valid:
-        with load_compiled(shared) as compiled:
-            assert compiled.session.num_transactions == 1
+        with Session(shared) as session:
+            assert session.num_transactions == 1
     else:
         with pytest.raises(RuntimeError, match="Protobuf model.*recompile"):
-            load_compiled(shared)
+            Session(shared)

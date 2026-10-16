@@ -63,13 +63,6 @@ extern "C" void *cim22_session_load_shared(const char *path, char *error,
 #endif
 }
 
-extern "C" const void *cim22_session_output_schema(void *handle, size_t *size) {
-  auto *session = static_cast<Session *>(handle);
-  if (!session || !size)
-    return nullptr;
-  *size = session->model.outputSchema.size();
-  return session->model.outputSchema.data();
-}
 extern "C" void
 _mlir_ciface_cim22_dispatch(int64_t id, StridedMemRefType<uint16_t, 2> *input,
                             StridedMemRefType<uint16_t, 2> *output) {

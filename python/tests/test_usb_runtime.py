@@ -7,11 +7,11 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 import torch
+from torch._dynamo.exc import BackendCompilerFailed
 
-from cim22 import UsbConfig, compile_exported, load_compiled
-from cim22._generated import cim22_model_pb2 as proto
+from cim22 import Session, UsbConfig
 
-from .test_model_format import host_artifact, transaction_artifact
+from ._generated import cim22_model_pb2 as proto
 
 if TYPE_CHECKING:
     from .conftest import EmbeddedModel, ModelLibrary
@@ -50,21 +50,18 @@ def test_usb_config_rejects_truncation(
         replace(usb_config, **{field: value})
 
 
-def test_usb_config_explicit_device(usb_config: UsbConfig) -> None:
-    configured = replace(usb_config, bus_number=1, device_address=2)
-    assert (configured.bus_number, configured.device_address) == (1, 2)
-
-
 @pytest.mark.integration
 def test_usb_session_checks(
-    model_library: "ModelLibrary", usb_config: UsbConfig
+    model_library: "ModelLibrary",
+    usb_config: UsbConfig,
+    transaction_artifact: proto.ModelArtifact,
 ) -> None:
-    model = transaction_artifact()
+    model = transaction_artifact
     model.runtime_backend = proto.USB
-    compiled = load_compiled(model_library(model.SerializeToString(), 1))
+    compiled = Session(model_library(model.SerializeToString(), 1))
     with compiled:
-        assert compiled.session.num_transactions == 1
-        capture = compiled.session.capture_usb
+        assert compiled.num_transactions == 1
+        capture = compiled.capture_usb
         inputs = np.zeros((1, 64), dtype=np.uint16)
         with pytest.raises(RuntimeError, match="configured USB"):
             capture(0, inputs)
@@ -84,22 +81,24 @@ def test_usb_session_checks(
         with pytest.raises(ValueError, match="transaction index"):
             capture(1, inputs)
     with pytest.raises(RuntimeError, match="closed"):
-        compiled.session.configure_usb(usb_config)
+        compiled.configure_usb(usb_config)
     with pytest.raises(RuntimeError, match="closed"):
-        compiled.session.capture_usb(0, inputs)
+        compiled.capture_usb(0, inputs)
 
 
 @pytest.mark.integration
 def test_software_session_rejects_usb(
-    model_library: "ModelLibrary", usb_config: UsbConfig
+    model_library: "ModelLibrary",
+    usb_config: UsbConfig,
+    host_artifact: proto.ModelArtifact,
 ) -> None:
-    model = host_artifact()
+    model = host_artifact
     model.ClearField("runtime_backend")
     with (
-        load_compiled(model_library(model.SerializeToString(), 1)) as compiled,
+        Session(model_library(model.SerializeToString(), 1)) as compiled,
         pytest.raises(RuntimeError, match="backend is not USB"),
     ):
-        compiled.session.configure_usb(usb_config)
+        compiled.configure_usb(usb_config)
 
 
 @pytest.mark.integration
@@ -111,15 +110,21 @@ def test_compiled_usb_backend(
     tmp_path: Path, embedded_model: "EmbeddedModel", options: dict[str, str]
 ) -> None:
     value = torch.ones(1, 64)
-    program = torch.export.export(torch.nn.Linear(64, 16).eval(), (value,))
-    artifact = tmp_path / "usb.so"
-    with compile_exported(
-        program, artifact_path=artifact, **options
-    ) as compiled:
-        assert compiled.session.num_transactions > 0
-        with pytest.raises(RuntimeError, match="USB runtime is not configured"):
-            compiled(value)
+    compiled = torch.compile(
+        torch.nn.Linear(64, 16).eval(),
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"artifact_dir": tmp_path, **options},
+    )
+    with (
+        torch.inference_mode(),
+        pytest.raises(RuntimeError, match="USB runtime is not configured"),
+    ):
+        compiled(value)
+    (artifact,) = tmp_path.glob("*.so")
     model = embedded_model(artifact)
+    assert model.kernels
     assert model.data_format_version == 1
     assert model.runtime_backend == proto.USB
     assert all(
@@ -127,10 +132,74 @@ def test_compiled_usb_backend(
         for kernel in model.kernels
         for binding in kernel.transaction.inputs
     )
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("native_toolchain")
+def test_backend_usb_configuration_failure_closes_session(
+    usb_config: UsbConfig,
+    tmp_path: Path,
+) -> None:
+    from unittest.mock import patch
+
+    value = torch.ones(1, 64)
+    compiled = torch.compile(
+        torch.nn.Linear(64, 16).eval(),
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={
+            "usb_config": usb_config,
+            "artifact_dir": tmp_path / "models",
+            "debug_dir": tmp_path / "ir",
+        },
+    )
+    # Exercise configuration propagation/cleanup without opening physical USB.
     with (
-        load_compiled(artifact) as compiled,
-        pytest.raises(RuntimeError, match="USB runtime is not configured"),
+        torch.inference_mode(),
+        patch.object(
+            Session,
+            "configure_usb",
+            autospec=True,
+            side_effect=[RuntimeError("device unavailable"), None],
+        ) as configure,
     ):
-        compiled(value)
-    with pytest.raises(ValueError, match="runtime must be"):
-        compile_exported(program, runtime="invalid")
+        with pytest.raises(BackendCompilerFailed, match="device unavailable"):
+            compiled(value)
+        # A mock successful configuration cannot open hardware. Reaching the
+        # native dispatch proves retry passed publication and device setup.
+        with pytest.raises(RuntimeError, match="USB runtime is not configured"):
+            compiled(value)
+    assert configure.call_count == 2
+    sessions = [call.args[0] for call in configure.call_args_list]
+    assert all(call.args[1] is usb_config for call in configure.call_args_list)
+    assert len(list((tmp_path / "models").glob("*.so"))) == 2
+    assert len(list((tmp_path / "ir").iterdir())) == 2
+    with pytest.raises(RuntimeError, match="closed"):
+        sessions[0](value.numpy())
+    sessions[1].close()
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"runtime": "invalid"}, "runtime must be"),
+        ({"unknown": True}, "Unknown CIM22"),
+        (
+            {"runtime": "software", "usb_config": UsbConfig(1, 2, 0x81, 1)},
+            "requires runtime='usb'",
+        ),
+    ],
+    ids=["runtime", "unknown-option", "software-usb-config"],
+)
+def test_backend_rejects_invalid_options(
+    options: dict[str, object], message: str
+) -> None:
+    import cim22.backend as adapter
+
+    with pytest.raises(ValueError, match=message):
+        adapter.backend(
+            torch.fx.symbolic_trace(torch.nn.Identity()),
+            [],
+            options=options,
+        )

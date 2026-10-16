@@ -13,7 +13,6 @@ struct ModelData {
   llvm::SmallVector<llvm::SmallVector<int64_t>> shapes;
   std::vector<execution::CIMTransaction> transactions;
   std::vector<std::string> kernelNames;
-  std::string outputSchema;
   int64_t numInputs = 0;
   RuntimeBackend backend = RuntimeBackend::Software;
 };

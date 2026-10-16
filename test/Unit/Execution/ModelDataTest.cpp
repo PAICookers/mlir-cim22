@@ -97,8 +97,6 @@ int main() {
   model.numInputs = 1;
   model.backend = RuntimeBackend::Software;
   model.shapes = {{}, {2, 3}}; // Scalar input, ordered tensor output.
-  // OutputSchema(version=1, root=OutputNode(tensor_leaf=0)).
-  model.outputSchema = std::string("\x08\x01\x12\x02\x08\x00", 6);
   model.kernelNames = {"int8", "bf16"};
   model.transactions = {transaction(CIMDataType::Int8),
                         transaction(CIMDataType::BF16)};
@@ -121,7 +119,7 @@ int main() {
   }
   if (*encoded != *reencoded || decoded.shapes != model.shapes ||
       decoded.kernelNames != model.kernelNames || decoded.numInputs != 1 ||
-      decoded.outputSchema != model.outputSchema)
+      decoded.backend != model.backend)
     return 1;
   if (decoded.transactions.size() != model.transactions.size())
     return 1;
@@ -142,11 +140,11 @@ int main() {
   if (usbDecoded.backend != RuntimeBackend::USB ||
       !sameTransaction(model.transactions[1], usbDecoded.transactions[1]))
     return 1;
-  model.outputSchema.clear();
-  auto missing = encodeModelData(model);
-  if (missing)
+  model.numInputs = static_cast<int64_t>(model.shapes.size()) + 1;
+  auto invalidSignature = encodeModelData(model);
+  if (invalidSignature)
     return 1;
-  llvm::consumeError(missing.takeError());
+  llvm::consumeError(invalidSignature.takeError());
   // Failed decoding leaves the previously owned model intact.
   if (auto error = decodeModelData(std::string("\x02", 1), decoded))
     llvm::consumeError(std::move(error));

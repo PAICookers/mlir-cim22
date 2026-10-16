@@ -29,17 +29,10 @@ void *cim22_session_load_shared(const char *model_file, char *error,
                                 size_t error_capacity);
 void *cim22_session_load_packet(const char *packet_file, const char *entry,
                                 char *error, size_t error_capacity);
-// Compiles for USB by default; use the explicit API for software simulation.
-int cim22_compile_object(const char *packet_file, const char *object_file,
-                         const void *output_schema, size_t schema_size,
-                         char *error, size_t error_capacity);
 // backend must be non-null and name either "software" or "usb".
-int cim22_compile_object_with_backend(const char *packet_file,
-                                      const char *object_file,
-                                      const void *output_schema,
-                                      size_t schema_size, const char *backend,
-                                      char *error, size_t error_capacity);
-const void *cim22_session_output_schema(void *session, size_t *size);
+int cim22_compile_object(const char *packet_file, const char *object_file,
+                         const char *backend, char *error,
+                         size_t error_capacity);
 void cim22_session_destroy(void *session);
 // Results follow inputs in tensor metadata. Returns -1 for an invalid index.
 int64_t cim22_session_num_inputs(void *session);

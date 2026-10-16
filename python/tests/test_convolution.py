@@ -1,9 +1,13 @@
 """Real wheel imports retain grouped Conv bias while dispatching CIM work."""
 
+from pathlib import Path
+from typing import TYPE_CHECKING
+
 import pytest
 import torch
 
-from cim22 import compile_exported
+if TYPE_CHECKING:
+    from .conftest import EmbeddedModel
 
 pytestmark = [
     pytest.mark.integration,
@@ -17,7 +21,11 @@ pytestmark = [
     ids=["multiplier-zero-bias", "multiplier-bias", "grouped-bias"],
 )
 def test_grouped_convolution_bias_offloads(
-    input_channels: int, output_channels: int, bias_scale: float
+    input_channels: int,
+    output_channels: int,
+    bias_scale: float,
+    tmp_path: Path,
+    embedded_model: "EmbeddedModel",
 ) -> None:
     """Exercise expanded channel bias from the pinned torch-mlir importer."""
     model = torch.nn.Conv2d(
@@ -36,14 +44,17 @@ def test_grouped_convolution_bias_offloads(
     with torch.inference_mode():
         expected = model(value)
         expected_other = model(other)
-        program = torch.export.export(model, (value,), strict=True)
-        with compile_exported(program, runtime="software") as compiled:
-            assert compiled.session.num_transactions > 0
-            torch.testing.assert_close(
-                compiled(value), expected, rtol=0, atol=0
-            )
-            assert compiled.session.dispatch_count > 0
-            torch.testing.assert_close(
-                compiled(other), expected_other, rtol=0, atol=0
-            )
-            torch.testing.assert_close(value, original, rtol=0, atol=0)
+        compiled = torch.compile(
+            model,
+            backend="cim22",
+            fullgraph=True,
+            dynamic=False,
+            options={"runtime": "software", "artifact_dir": tmp_path},
+        )
+        torch.testing.assert_close(compiled(value), expected, rtol=0, atol=0)
+        torch.testing.assert_close(
+            compiled(other), expected_other, rtol=0, atol=0
+        )
+        torch.testing.assert_close(value, original, rtol=0, atol=0)
+    (artifact,) = tmp_path.glob("*.so")
+    assert embedded_model(artifact).kernels, "Expected real CIM offload"
