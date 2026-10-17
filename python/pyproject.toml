@@ -30,6 +30,8 @@ wheel.install-dir = "cim22"
 wheel.py-api = "py3"
 wheel.force-include = { "LICENSE" = "${SKBUILD_METADATA_DIR}/licenses/LICENSE" }
 install.components = ["runtime", "dev"]
+# Frontend output is ignored by Git but must also survive sdist -> wheel.
+sdist.include = ["cim22/web/static/**"]
 
 [tool.scikit-build.sdist.force-include]
 "../CMakeLists.txt" = "native/CMakeLists.txt"
