@@ -128,6 +128,24 @@ def test_host_shape_specialization_and_cache() -> None:
         assert compiler.call_count == 2
 
 
+def test_layer_norm_decomposition() -> None:
+    """AOT decomposes composite operators while preserving affine parameters."""
+    model = torch.nn.LayerNorm(4).eval()
+    with torch.no_grad():
+        model.weight.copy_(torch.tensor([0.5, 1.0, 1.5, 2.0]))
+        model.bias.copy_(torch.tensor([1.0, -1.0, 0.0, 0.5]))
+    values = torch.tensor([[1.0, 2.0, 4.0, 8.0], [3.0, 3.0, 3.0, 3.0]])
+    with torch.inference_mode():
+        compiled = torch.compile(
+            model,
+            backend="cim22",
+            fullgraph=True,
+            dynamic=False,
+            options={"runtime": "software"},
+        )
+        torch.testing.assert_close(compiled(values), model(values))
+
+
 def test_runtime_weights_stay_on_host(tmp_path: Path) -> None:
     def linear(value: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
         return torch.nn.functional.linear(value, weight)

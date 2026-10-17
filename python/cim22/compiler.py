@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 import torch
+from torch._dynamo.utils import dynamo_timed
 from torch_mlir import fx
 from torch_mlir.compiler_utils import OutputType
 
@@ -90,39 +91,49 @@ def _compile(
         packet = folder / "model.packet.mlir"
         object_file = folder / "model.o"
         shared = folder / "model.so"
-        module = fx.export_and_import(
-            graph, *example_inputs, output_type=OutputType.LINALG_ON_TENSORS
-        )
-        linalg.write_text(str(module), encoding="utf-8")
-        _run(
-            [
-                executable,
-                str(linalg),
-                "--cim-bf16-pipeline=stage=packet max-kernel-columns=1",
-                "-o",
-                str(packet),
-            ],
-            "CIM lowering",
-        )
-        _emit_object(packet, object_file, library, runtime)
+        with dynamo_timed("cim22.torch_mlir"):
+            module = fx.export_and_import(
+                graph,
+                *example_inputs,
+                output_type=OutputType.LINALG_ON_TENSORS,
+                # AOTAutograd already applied the torch-mlir decompositions.
+                decomposition_table={},
+            )
+        with dynamo_timed("cim22.serialize"):
+            linalg.write_text(str(module), encoding="utf-8")
+        with dynamo_timed("cim22.lowering"):
+            _run(
+                [
+                    executable,
+                    str(linalg),
+                    "--cim-bf16-pipeline=stage=packet max-kernel-columns=1",
+                    "-o",
+                    str(packet),
+                ],
+                "CIM lowering",
+            )
+        with dynamo_timed("cim22.object"):
+            _emit_object(packet, object_file, library, runtime)
         # Bind model-local function names locally; different loaded models may
         # all have an entry called main. The common runtime remains external.
-        _run(
-            [
-                linker,
-                "-shared",
-                "-Wl,-z,defs",
-                "-Wl,-Bsymbolic-functions",
-                "-Wl,-rpath,$ORIGIN",
-                str(object_file),
-                str(library),
-                "-lm",
-                "-o",
-                str(shared),
-            ],
-            "shared-library link",
-        )
-        session = Session(shared, library=library)
+        with dynamo_timed("cim22.link"):
+            _run(
+                [
+                    linker,
+                    "-shared",
+                    "-Wl,-z,defs",
+                    "-Wl,-Bsymbolic-functions",
+                    "-Wl,-rpath,$ORIGIN",
+                    str(object_file),
+                    str(library),
+                    "-lm",
+                    "-o",
+                    str(shared),
+                ],
+                "shared-library link",
+            )
+        with dynamo_timed("cim22.load"):
+            session = Session(shared, library=library)
         try:
             if debug_dir is not None:
                 debug_dir.mkdir(parents=True)
