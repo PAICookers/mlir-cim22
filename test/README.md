@@ -1,36 +1,16 @@
-# MLIR-CIM22 Tests
+# 测试体系
 
-- `Dialect`, `Conversion`, `Frontend`, and `Target` mirror production ownership.
-- `Integration` exercises compiler pipelines across components.
-- `Unit` contains C++ API tests invoked by lit wrappers.
-- `python` contains numeric oracles, fixture parsers and artifact checks.
-- `Inputs` holds immutable fixtures and is excluded from lit discovery.
+本目录供开发者和 AI agent 定位原生测试；按被测层次组织：
 
-Run the compiler suite with `cmake --build build --target check-mlir-cim22 -j2`.
-Use `LLVM_LIT_ARGS="-sv -j2"` at CMake configuration time to bound test parallelism.
-Assertions remain enabled in test executables for every build type; Release
-still optimizes the production libraries. lit invokes every `test_*.py` helper
-through `.test` wrappers, including supplier manifest rejection checks.
-LLVM/MLIR 22.1.8 supplies `mlir-runner` and `mlir_c_runner_utils`; CMake provides
-their paths. The native packet test requires Linux and Python 3.12 with NumPy.
-See [Python verification](../python/README.md#verification) for the separate uv,
-pytest and Ruff workflow covering the public Python backend and model `.so` ABI.
-
-| Coverage | Tests |
+| 位置 | 职责 |
 | --- | --- |
-| Conv layouts, groups, channel multiplier, stride/dilation/padding | `normalize-cim-conv*.mlir`, `normalize-cim-conv-numerics.test`: original and normalized CPU execution against a scalar oracle |
-| Shared constant batch weights, resource tensors, transposes and Host fallback | `shared-batch-linear.mlir`; Python backend test checks distinct T/B rows and temporal reset |
-| Mixed CIM/Host boundaries, casts, bias, reduction and bounded column reuse | `mixed-bf16-pipeline.mlir`, `mixed-bf16-numerics.test`, `prepare-cim-bf16.mlir` |
-| Candidate BF16 arithmetic | `BF16SupportTest.cpp` checks finite encodings, sign symmetry, zero/subnormals and saturation; `CIMSoftwareRunnerTest.cpp` checks execution |
-| Frame layouts and exports | BF16 fixture replay, reference/multicore export tests, and existing INT8 frame tests |
-| Native runtime contracts | `native-bf16.mlir` checks packet compilation, dispatch and malformed split IR; pytest checks AOT publication, input validation, output ownership, ABI rejection and backend caching |
+| `Dialect/`、`Conversion/`、`Frontend/`、`Target/` | 对应生产模块的 IR、转换、导入和目标输出测试 |
+| `Integration/` | 跨阶段编译流水线与数值验证 |
+| `Unit/` | C++ API 单元测试，由 lit 包装调用 |
+| `python/` | 独立数值 oracle、fixture 解析和产物检查，由 `.test` 包装调用 |
+| `Inputs/` | 不可变测试输入与参考数据，不参与 lit 测试发现 |
+| [../python/tests/](../python/tests/) | 独立的 pytest 测试，覆盖 Python 后端、原生接口及软件执行 |
 
-Supplier snapshots retain their original bytes and historical arithmetic
-outputs. BF16 replay now checks only Cache/Weight_EXP/response layouts, with
-three mutations proving rejection; it does not use supplier arithmetic as the
-candidate runner's oracle. See [fixture provenance](Inputs/CIM22/bf16/README.md).
+原生测试由 lit 统一组织；Python 包测试由 pytest 组织。新增测试放入对应层次，优先扩展已有测试。
 
-Mathematical BF16 references test compiler indexing and precision boundaries;
-candidate-runner tests cover the selected shared-exponent approximation.
-Neither establishes bit-exact hardware behavior. All executable fixtures live
-in this repository; model-specific experiments and local tools are not required.
+环境准备与运行命令见 [BUILDING](../BUILDING.md#测试与开发)。
