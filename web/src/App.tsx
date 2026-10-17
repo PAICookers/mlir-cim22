@@ -80,23 +80,18 @@ const duration = (value: number | null | undefined) =>
       ? `${Math.ceil(value)} 秒`
       : `${Math.floor(value / 60)} 分 ${Math.ceil(value % 60)} 秒`;
 
-async function request(path: string, body?: object): Promise<Snapshot> {
-  const response = await fetch(
-    path,
-    body
-      ? {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        }
-      : undefined,
-  );
-  const data = await response.json();
-  if (!response.ok)
+async function request(path: string, body: object): Promise<void> {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const data = await response.json();
     throw new Error(
       typeof data.detail === "string" ? data.detail : "操作失败，请检查输入",
     );
-  return data;
+  }
 }
 
 export default function App() {
@@ -112,16 +107,13 @@ export default function App() {
 
   useEffect(() => {
     let disposed = false;
-    Promise.all([
-      request("/api/state"),
-      fetch("/api/defaults").then((r) => r.json()),
-    ])
-      .then(([state, defaults]) => {
+    let initialized = false;
+    fetch("/api/defaults")
+      .then((r) => r.json())
+      .then((defaults) => {
         if (disposed) return;
-        setTask(state.task);
-        setWeights(state.task?.weights ?? defaults.weights);
-        setDataset(state.task?.dataset ?? defaults.dataset);
-        setShowImport(!state.task);
+        setWeights((value) => value || defaults.weights);
+        setDataset((value) => value || defaults.dataset);
       })
       .catch((e) => {
         if (!disposed) setError(String(e.message));
@@ -131,8 +123,20 @@ export default function App() {
       setConnected(true);
       setError("");
     };
-    events.onmessage = (event) =>
-      setTask((JSON.parse(event.data) as Snapshot).task);
+    // Only this ordered stream updates tasks; HTTP replies may arrive late.
+    events.onmessage = (event) => {
+      if (disposed) return;
+      const { task } = JSON.parse(event.data) as Snapshot;
+      setTask(task);
+      if (!initialized) {
+        initialized = true;
+        setShowImport(!task);
+        if (task) {
+          setWeights(task.weights);
+          setDataset(task.dataset);
+        }
+      }
+    };
     events.onerror = () => setConnected(false);
     return () => {
       disposed = true;
@@ -144,8 +148,7 @@ export default function App() {
     setPending(true);
     setError("");
     try {
-      const result = await request(path, body);
-      setTask(result.task);
+      await request(path, body);
       if (path === "/api/import") {
         setShowImport(false);
         setPage(0);

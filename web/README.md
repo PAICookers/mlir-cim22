@@ -114,6 +114,8 @@ CSV 的 label/prediction 保存模型索引（0–10）；界面将索引映射�
   **已中断**，从 CSV 恢复完成数。续跑重新编译，既有 CSV 行保持不变。
 - 恢复前核对模型、权重、样本内容和执行环境；变化后必须新建测试，
   不允许将不同环境的结果混合。已完成的任务不会被新导入覆盖。
+  执行环境包含 Python 后端代码和原生库；升级后旧结果仍可查看，
+  但需要重新导入再运行。
 
 结果目录结构：
 
@@ -139,7 +141,12 @@ uv run --locked --extra compiler --extra web --group dev ruff check cim22/web te
 uv run --locked --extra compiler --extra web --group dev ruff format --check cim22/web tests/test_web.py
 cd ../web
 pnpm build
+pnpm exec playwright install chromium
+pnpm test
 ```
+
+浏览器回归测试模拟 API/SSE 的不同到达顺序，不需要模型或测试集。
+已有受支持的浏览器时可设置 `PLAYWRIGHT_CHANNEL`（例如 `msedge`）。
 
 任务测试覆盖取消/续跑、未完成样本重试、CSV 提交失败、服务重启、
 互斥计算、类别映射和本地 API。真实模型检查需要外部 DVS 模型包和
