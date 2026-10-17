@@ -2,6 +2,8 @@
 
 本 Python 项目将 `cim22` 注册为 `torch.compile` 后端。模型经 torch-mlir 导入后，由原生编译器完成 CPU/CIM 划分、编译和链接，再由运行时执行。
 
+固定 DVS 模型的本地浏览器界面见 [DVS 工作台](../web/README.md)，支持导入、编译、对比测试、取消、续跑和 CSV 结果。安装时增加 `web` extra；构建后的前端随 wheel 分发，用户不需要 Node.js。
+
 发行包 `mlir-cim22` 已包含 Python 模块、`mlir-cim22-opt` 和两个原生库。安装 torch-mlir 后即可使用，无需单独安装本项目的 C++ 工具。
 
 ## 安装
