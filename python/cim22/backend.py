@@ -18,6 +18,7 @@ from torch._functorch._aot_autograd.descriptors import PlainAOTInput
 from torch._functorch._aot_autograd.utils import make_boxed_func
 from torch._guards import TracingContext, tracing
 from torch.utils._python_dispatch import _disable_current_modes
+from torch_mlir.extras.fx_decomp_util import get_decomposition_table
 
 from .compiler import RuntimeBackend, _compile
 from .runtime import UsbConfig
@@ -141,4 +142,7 @@ def backend(
 
         return make_boxed_func(run)
 
-    return aot_autograd(fw_compiler=_compiler)(graph, example_inputs)
+    # Decompose during AOT's existing trace instead of tracing the graph again.
+    return aot_autograd(
+        fw_compiler=_compiler, decompositions=get_decomposition_table()
+    )(graph, example_inputs)

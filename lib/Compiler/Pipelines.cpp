@@ -55,6 +55,8 @@ constexpr StringLiteral hostPipeline =
     "buffer-deallocation-pipeline,"
     "convert-bufferization-to-memref,"
     "lower-cim-host-copies,convert-linalg-to-loops,expand-strided-metadata,"
+    // Fold static descriptors and loop bounds before expanding control flow.
+    "canonicalize,cse,"
     "lower-affine,"
     "convert-scf-to-cf,arith-expand{include-bf16=true},"
     "convert-math-to-llvm,convert-arith-to-llvm,"

@@ -21,6 +21,7 @@
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
@@ -167,7 +168,7 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
     return success();
   });
   auto module = parseSourceFile<ModuleOp>(path, &context);
-  if (!module || failed(verify(*module)))
+  if (!module)
     return failure();
   auto parts = getCIMSplitParts(*module);
   if (failed(parts))
@@ -206,9 +207,17 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
     if (!stub || !stub.isDeclaration() ||
         stub.getFunctionType() != kernel.getFunctionType())
       return kernel.emitError("missing Host transaction declaration");
+    llvm::SmallDenseSet<Attribute> resources;
+    kernel.walk([&](cim::ConfigureWeightOp weight) {
+      resources.insert(weight.getResourceAttr());
+    });
     OwningOpRef<ModuleOp> single(ModuleOp::create(kernel.getLoc()));
     for (Operation &op : device.getBody()->getOperations()) {
       if (isa<func::FuncOp>(op))
+        continue;
+      // Unrelated static weights need not be cloned and verified per kernel.
+      if (auto weight = dyn_cast<cim::StaticWeightOp>(op);
+          weight && !resources.contains(FlatSymbolRefAttr::get(weight)))
         continue;
       auto binding = op.getAttrOfType<DictionaryAttr>("cim.plan_binding");
       if (binding) {

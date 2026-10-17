@@ -3,12 +3,19 @@
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
+import torch
 
 from cim22.compiler import _emit_object
 from cim22.runtime import Session
+
+from ._generated import cim22_model_pb2 as proto
+
+if TYPE_CHECKING:
+    from .conftest import EmbeddedModel
 
 pytestmark = [
     pytest.mark.integration,
@@ -108,3 +115,69 @@ def test_runtime_entry_preserves_input(packet: Path, visibility: str) -> None:
     with Session(packet) as session:
         np.testing.assert_array_equal(session(value)[0], np.full_like(value, 2))
     np.testing.assert_array_equal(value, np.ones_like(value))
+
+
+def test_packet_parser_rejects_invalid_return(packet: Path) -> None:
+    packet.write_text(
+        packet.read_text().replace(
+            ") -> tensor<2x3xf32>", ") -> tensor<1x3xf32>"
+        )
+    )
+    with pytest.raises(RuntimeError, match="return"):
+        Session(packet)
+
+
+@pytest.mark.usefixtures("native_toolchain")
+def test_multiple_kernels_retain_distinct_weight_resources(
+    tmp_path: Path, embedded_model: "EmbeddedModel"
+) -> None:
+    """Per-kernel extraction retains every referenced weight and packet."""
+
+    class TwoWeights(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first = torch.nn.Linear(64, 32, bias=False)
+            self.second = torch.nn.Linear(64, 16, bias=False)
+            with torch.no_grad():
+                self.first.weight.fill_(1.0)
+                self.second.weight.fill_(2.0)
+
+        def forward(
+            self, value: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            return self.first(value), self.second(value)
+
+    compiled = torch.compile(
+        TwoWeights().eval(),
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"runtime": "software", "artifact_dir": tmp_path},
+    )
+    value = torch.ones(1, 64)
+    expected = (torch.full((1, 32), 64.0), torch.full((1, 16), 128.0))
+    with torch.inference_mode():
+        for actual, reference in zip(compiled(value), expected, strict=True):
+            torch.testing.assert_close(actual, reference, rtol=0, atol=0)
+    (artifact,) = tmp_path.glob("*.so")
+    model = embedded_model(artifact)
+    assert len(model.kernels) == 2
+    assert sorted(len(k.transaction.weights) for k in model.kernels) == [1, 2]
+    assert (
+        len({w.resource for k in model.kernels for w in k.transaction.weights})
+        == 3
+    )
+    for kernel in model.kernels:
+        transaction = kernel.transaction
+        assert len(transaction.inputs) == len(transaction.weights)
+        assert len(transaction.readbacks) == len(transaction.weights)
+        assert sum(p.kind == proto.WEIGHT for p in transaction.packets) == len(
+            transaction.weights
+        )
+        assert transaction.flits
+    with Session(artifact) as session:
+        assert session.num_transactions == 2
+        for actual, reference in zip(
+            session(value.numpy()), expected, strict=True
+        ):
+            np.testing.assert_array_equal(actual, reference.numpy())
