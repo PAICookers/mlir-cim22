@@ -37,6 +37,10 @@ class DvsEngine:
             "runtime": digest(runtime_library()),
             "compiler": digest(compiler_library(runtime_library())),
             "adapter": digest(Path(__file__)),
+            "python_backend": {
+                name: digest(Path(__file__).parents[1] / name)
+                for name in ("backend.py", "compiler.py", "runtime.py")
+            },
         }
         identity_path = directory / "environment.json"
         if identity_path.exists() and read_json(identity_path) != identity:

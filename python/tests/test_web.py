@@ -324,3 +324,40 @@ def test_engine_resets_before_each_call_and_excludes_postprocessing(
     assert instance.infer("cim", sample) == (0, 2.0)
     assert instance.infer("original", sample) == (0, 0.25)
     assert trace == ["reset", "call", "trim"] * 3
+
+
+@pytest.mark.parametrize(
+    "changed_source", ["backend.py", "compiler.py", "runtime.py"]
+)
+def test_resume_rejects_changed_python_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    inputs: Inputs,
+    changed_source: str,
+) -> None:
+    pytest.importorskip("spikingjelly")
+    from cim22.web import engine
+
+    revisions = {}
+    monkeypatch.setattr(engine.torch, "set_num_interop_threads", lambda _: None)
+    monkeypatch.setattr(
+        engine, "runtime_library", lambda: tmp_path / "runtime.so"
+    )
+    monkeypatch.setattr(
+        engine, "compiler_library", lambda _: tmp_path / "compiler.so"
+    )
+    monkeypatch.setattr(
+        engine, "digest", lambda path: revisions.get(path.name, "unchanged")
+    )
+
+    def reach_model_load(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("model loading reached")
+
+    monkeypatch.setattr(engine.torch, "load", reach_model_load)
+    config = make_config(*inputs)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="model loading reached"):
+            engine.DvsEngine(config, tmp_path)
+    revisions[changed_source] = "updated"
+    with pytest.raises(ValueError, match="运行环境已变化"):
+        engine.DvsEngine(config, tmp_path)
