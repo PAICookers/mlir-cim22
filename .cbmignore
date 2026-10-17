@@ -1,11 +1,21 @@
-# Agent configuration and vendored skills are not project source.
-/.agents/
-/.claude/
-/.codex/
+# Default deny: only the implementation, build, test and schema trees below
+# enter Codebase Memory. This protects local documents, models and metadata.
+/*
+!/CMakeLists.txt
+!/cmake/
+!/cmake/**
+!/include/
+!/include/**
+!/lib/
+!/lib/**
+!/tools/
+!/tools/**
+!/test/
+!/test/**
+!/python/
+!/python/**
+!/schema/
+!/schema/**
 
-# Hardware references and local project notes use dedicated document indexes.
-/docs/
-/tasks/
-
-# Do not index the generated graph artifact itself.
-/.codebase-memory/
+# Generated bindings are checked against schema/cim22_model.proto by CMake.
+/python/cim22/_generated/

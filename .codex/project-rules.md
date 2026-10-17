@@ -31,10 +31,10 @@ supplier, generated, and third-party code under their existing handling rules.
 
 ### Version And Formatting
 
-- The Python runtime supports only Python 3.12. Declare
-  `requires-python = ">=3.12,<3.13"` in runtime package metadata and run runtime
-  imports and tests with that interpreter, including after annotation changes.
-  Do not add older-version compatibility shims or use Python 3.13+ APIs.
+- Follow the range declared in `python/pyproject.toml`; Python 3.12 is the
+  validated baseline for runtime imports and tests. Other interpreter and
+  dependency combinations are unverified until tested, so keep source within
+  the declared range and record the tested combination.
 - Use four spaces, 80-column formatting, and Ruff. Preserve the existing Ruff
   lint rules; use target `py312` when checking runtime source and its tests or
   examples.
@@ -53,8 +53,9 @@ supplier, generated, and third-party code under their existing handling rules.
   and annotation names imported only under `TYPE_CHECKING`, unless those names
   are also available at runtime. Check annotations import successfully on the
   applicable supported interpreter.
-- When runtime code needs type aliases or generics, prefer Python 3.12's
-  `type Alias = ...` and type-parameter syntax.
+- When runtime code needs type aliases or generics, prefer syntax supported by
+  the declared Python range; version-specific syntax requires matching metadata
+  and validation.
 - Use `object` for values that require narrowing, including deliberately invalid
   test inputs. Use `Any` at dynamic third-party interfaces when their operations
   cannot be described accurately with the available types.
@@ -84,10 +85,10 @@ supplier, generated, and third-party code under their existing handling rules.
 
 ### Verification
 
-- For runtime changes, select Python 3.12 explicitly in the runtime environment.
-  Run focused tests and import smoke checks first; expand to the relevant runtime
-  suite when shared behavior changes. Keep compiler/software checks distinct
-  from board evidence.
+- For runtime changes, run focused tests and import smoke checks with the
+  validated interpreter first; expand to the relevant runtime suite when shared
+  behavior changes. Other interpreters remain unverified. Keep compiler/software
+  checks distinct from board evidence.
 - Run `ruff check` and `ruff format --check` on touched project-owned Python
   files. Select `--target-version py312` for runtime checks. Do not reformat
   unrelated or supplier code, or add a second lint policy that conflicts with
@@ -110,7 +111,7 @@ supplier, generated, and third-party code under their existing handling rules.
   USB builds require Linux and libusb; `CIM22_ENABLE_USB=OFF` builds software
   support only. USB artifacts must not silently fall back to software.
 - Reinstall the editable package after native, TableGen, schema or CMake edits
-  with `uv sync --project python --reinstall-package mlir-cim22-runtime`, using
+  with `uv sync --project python --reinstall-package mlir-cim22`, using
   the same build directory and required CMake options. Build-environment changes
   may reset cached settings. `uv --offline` does not disable CMake downloads.
   Finish relinking before tests load libraries, then restart applications.
@@ -131,10 +132,29 @@ supplier, generated, and third-party code under their existing handling rules.
 - During development, emit `data_format_version=1` without enforcing it. Python
   Protobuf bindings live under `python/tests/_generated` and are test-only;
   regenerate them with the CMake target after schema edits.
-- Keep `.cbmignore` repository-relative and limited to general indexing scope.
+- Keep `.cbmignore` repository-relative and prefer a narrow allowlist of source,
+  build, test and schema directories; exclude local documents, models, reports,
+  task records and metadata by default.
   Refresh the actual worktree index when requested; inspect persisted graph
   metadata for machine paths before committing it. Keep local wheels, task
   records, logs and build outputs untracked; never stage a whole dirty tree.
+
+### Codebase Memory
+
+- Codebase Memory walks the repository filesystem, so untracked source and
+  documentation are indexed unless excluded by `.cbmignore` or an indexer
+  skip-list. Git tracking status is not an indexing boundary.
+- Use `index_repository` with the registered project name, `full` mode and
+  persistence when refreshing this checkout. The current project is
+  `home-kafcoppelia-WORK-mlir-pku-cim22`; resolve it with `list_projects` if the
+  registration changes.
+- The persisted graph stores relative paths. Before sharing an export, remove
+  checkout and Git-directory metadata, compact/recompress the SQLite graph, and
+  verify that no machine paths remain. Keep the live index bound to this
+  checkout.
+- Check index coverage and read reported partial ranges before relying on graph
+  results. A clean coverage result is best-effort evidence, not proof of
+  completeness.
 
 ## Task Records
 

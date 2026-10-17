@@ -25,8 +25,10 @@ keep file ownership disjoint.
 - Follow the [shared Python rules](.codex/project-rules.md#python) for
   project-owned Python source, tests, and examples. Keep detailed conventions
   there so the main agent and role agents use one rule source.
-- The Python runtime supports only Python 3.12 (`>=3.12,<3.13`). Keep runtime
-  package metadata, dependencies, annotations, and validation within that range.
+- Follow the range declared in `python/pyproject.toml`; Python 3.12 is the
+  validated baseline. Other interpreter and dependency combinations are
+  unverified until tested; record the tested combination when changing runtime
+  code.
 
 ### Build And Test Workflow
 
