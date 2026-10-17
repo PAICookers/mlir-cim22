@@ -1,37 +1,36 @@
 [build-system]
-requires = ["scikit-build-core>=1.1,<1.2"]
+requires = ["scikit-build-core>=1.0"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "mlir-cim22-runtime"
-version = "0.1.0"
-requires-python = ">=3.12,<3.13"
-dependencies = ["numpy>=1.26,<3", "torch==2.14.0"]
+name = "mlir-cim22"
+version = "1.0.0"
+requires-python = ">=3.12"
+dependencies = ["numpy>=1.26,<3", "torch>=2.14,<3"]
 
 [project.optional-dependencies]
 compiler = ["torch-mlir==20260923.885"]
 
 [dependency-groups]
-dev = ["onnx==1.21.0", "protobuf==6.31.1", "pytest>=8.3,<10"]
+dev = ["onnx>=1.21.0,<2", "protobuf>=6.31.1", "pytest>=8.3,<10"]
 
 [project.entry-points."torch_dynamo_backends"]
 cim22 = "cim22.backend:backend"
 
 [tool.scikit-build]
 minimum-version = "build-system.requires"
-build-dir = "build/{wheel_tag}/{build_type}/{state}"
+build-dir = "build"
 cmake.source-dir = ".."
 wheel.packages = ["cim22"]
 wheel.install-dir = "cim22"
 wheel.py-api = "py3"
-install.components = ["runtime", "development"]
-sdist.inclusion-mode = "explicit"
-sdist.include = ["pyproject.toml", "cim22/**", "tests/**", "README.md", ".python-version"]
-sdist.exclude = ["**/__pycache__/**", "**/*.pyc", "native/test/demo/**"]
+wheel.force-include = { "LICENSE" = "${SKBUILD_METADATA_DIR}/licenses/LICENSE" }
+install.components = ["runtime", "dev"]
 
 [tool.scikit-build.sdist.force-include]
 "../CMakeLists.txt" = "native/CMakeLists.txt"
 "../LICENSE" = "LICENSE"
+"../BUILDING.md" = "BUILDING.md"
 "../cmake" = "native/cmake"
 "../include" = "native/include"
 "../lib" = "native/lib"
@@ -45,13 +44,8 @@ if.from-sdist = true
 cmake.source-dir = "native"
 
 [tool.uv]
-required-version = ">=0.11"
-default-groups = []
 # The compiler wheel and native model ABI currently target Linux x86-64.
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
-required-environments = [
-    "sys_platform == 'linux' and platform_machine == 'x86_64'",
-]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -64,7 +58,6 @@ torch = { index = "pytorch-cpu" }
 torch-mlir = { path = "../torch_mlir-20260923.885-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
 
 [tool.pytest.ini_options]
-minversion = "8.3"
 testpaths = ["tests"]
 addopts = "-ra --strict-config --strict-markers --import-mode=importlib"
 markers = [
