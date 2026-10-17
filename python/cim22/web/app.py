@@ -94,7 +94,9 @@ def create_app(root: Path, model_dir: Path) -> FastAPI:
             raise HTTPException(400, str(error)) from error
 
     @app.post("/api/action")
-    def action(body: ActionRequest) -> Document:
+    async def action(body: ActionRequest) -> Document:
+        # Linux PDEATHSIG follows the spawning thread. Keep process creation
+        # on the service event loop, not an expendable HTTP pool thread.
         return app.state.manager.start(body.action)
 
     @app.post("/api/cancel")

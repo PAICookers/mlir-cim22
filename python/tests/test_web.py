@@ -2,8 +2,13 @@
 
 import multiprocessing as mp
 import time
+from collections.abc import Callable
+from multiprocessing.connection import Connection
 from multiprocessing.synchronize import Event
 from pathlib import Path
+from threading import Thread
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -25,6 +30,7 @@ from cim22.web.storage import (
     validate_config,
 )
 from cim22.web.worker import run_samples
+from cim22.web.worker import worker_main as compute_worker
 
 type Inputs = tuple[Path, Path, Path]
 
@@ -278,6 +284,78 @@ def test_worker_death_is_explicitly_interrupted(
         assert manager.process is None
     finally:
         manager.close()
+
+
+def _worker_with_stub_model(
+    directory: Path,
+    commands: Connection,
+    cancel: Event,
+    parent_pid: int,
+    first_action: str,
+) -> None:
+    """Exercise the real worker lifecycle without model/compiler dependencies."""
+
+    class StubEngine:
+        def __init__(self, config: object, directory: Path) -> None:
+            pass
+
+        def compile(self, phase: Callable[[str], None]) -> float:
+            return 0.0
+
+    with patch.dict(
+        "sys.modules",
+        {"cim22.web.engine": SimpleNamespace(DvsEngine=StubEngine)},
+    ):
+        compute_worker(directory, commands, cancel, parent_pid, first_action)
+
+
+def test_http_thread_retirement_keeps_compute_worker_alive(
+    tmp_path: Path,
+    inputs: Inputs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anyio._backends._asyncio import _threadpool_workers
+
+    from cim22.web import manager as implementation
+
+    monkeypatch.setattr(implementation, "worker_main", _worker_with_stub_model)
+    app = create_app(tmp_path / "results", inputs[0])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post(
+            "/api/import",
+            json={"weights": str(inputs[1]), "dataset": str(inputs[2])},
+        )
+        assert response.status_code == 200
+        assert (
+            client.post("/api/action", json={"action": "compile"}).status_code
+            == 200
+        )
+        deadline = time.monotonic() + 10
+        while True:
+            state = client.get("/api/state").json()["task"]
+            if state["status"] == "ready":
+                break
+            assert state["status"] != "interrupted", state["error"]
+            assert time.monotonic() < deadline, state
+            time.sleep(0.01)
+
+        async def retire_request_threads() -> list[Thread]:
+            # Use AnyIO's actual retirement operation without its idle timeout.
+            # The service event loop remains alive throughout this test.
+            workers = list(_threadpool_workers.get())
+            for worker in workers:
+                worker.stop()
+            return workers
+
+        process = app.state.manager.process
+        for thread in client.portal.call(retire_request_threads):
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+        process.join(timeout=0.2)
+        assert process.is_alive(), f"worker exited with {process.exitcode}"
+        state = client.get("/api/state").json()["task"]
+        assert state["status"] == "ready"
+        assert state["compiled"]
 
 
 def test_engine_resets_before_each_call_and_excludes_postprocessing(
