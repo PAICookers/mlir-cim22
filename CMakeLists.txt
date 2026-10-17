@@ -6,12 +6,24 @@ endif()
 
 project(MLIRCIM22 LANGUAGES C CXX)
 
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
+   NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+  message(FATAL_ERROR "mlir-cim22 currently supports Linux x86_64 only")
+endif()
+
 set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to conform to")
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 find_package(MLIR REQUIRED CONFIG)
+if(NOT LLVM_VERSION_MAJOR EQUAL 22)
+  message(FATAL_ERROR "mlir-cim22 requires LLVM/MLIR 22")
+endif()
+if(NOT LLVM_PACKAGE_VERSION VERSION_EQUAL "22.1.8")
+  message(WARNING
+    "LLVM/MLIR ${LLVM_PACKAGE_VERSION} is unvalidated; the tested baseline is 22.1.8")
+endif()
 
 option(MLIRCIM22_INCLUDE_TESTS "Build mlir-cim22 tests" OFF)
 option(MLIRCIM22_ENABLE_ONNX "Build the ONNX importer" ${MLIRCIM22_INCLUDE_TESTS})
