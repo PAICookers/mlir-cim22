@@ -19,6 +19,7 @@ cim22 = "cim22.backend:backend"
 
 [tool.scikit-build]
 minimum-version = "build-system.requires"
+build-dir = "build/{wheel_tag}/{build_type}/{state}"
 cmake.source-dir = ".."
 wheel.packages = ["cim22"]
 wheel.install-dir = "cim22"
