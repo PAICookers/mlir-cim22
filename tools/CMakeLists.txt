@@ -5,5 +5,5 @@ install(TARGETS mlir-cim22-opt
 if(MLIRCIM22_ENABLE_ONNX)
   add_subdirectory(mlir-cim22-onnx-import)
   install(TARGETS mlir-cim22-onnx-import
-    RUNTIME DESTINATION bin COMPONENT development)
+    RUNTIME DESTINATION bin COMPONENT dev)
 endif()
