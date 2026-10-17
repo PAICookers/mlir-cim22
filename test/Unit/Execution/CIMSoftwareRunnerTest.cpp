@@ -373,18 +373,5 @@ int main(int argc, char **argv) {
   bf16InputStorage[0] = 0x3f80;
   expectError(runner.run(mixed, bf16Inputs, bf16Outputs));
 
-  CIMUartRunner uartRunner;
-  std::array<std::array<int8_t, kCIMInputElements>, 4> inputStorage{};
-  std::array<std::array<int32_t, kCIMOutputElements>, 4> outputStorage{};
-  std::array<CIMInputView, 4> inputViews{};
-  std::array<CIMOutputView, 4> outputViews{};
-  for (size_t index = 0; index < 4; ++index) {
-    inputViews[index].values = llvm::ArrayRef<int8_t>(inputStorage[index]);
-    outputViews[index].values =
-        llvm::MutableArrayRef<int32_t>(outputStorage[index]);
-  }
-  CIMRunInputs inputs{llvm::ArrayRef<CIMInputView>(inputViews)};
-  CIMRunOutputs outputs{llvm::MutableArrayRef<CIMOutputView>(outputViews)};
-  expectError(uartRunner.run(executable, inputs, outputs));
   return 0;
 }

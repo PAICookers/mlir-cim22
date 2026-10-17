@@ -79,13 +79,6 @@ public:
                   CIMTraceSink *trace = nullptr) override;
 };
 
-class CIMUartRunner final : public CIMRunner {
-public:
-  llvm::Error run(const CIMTransaction &executable, const CIMRunInputs &inputs,
-                  CIMRunOutputs &outputs,
-                  CIMTraceSink *trace = nullptr) override;
-};
-
 } // namespace cim22::execution
 
 #endif // CIM22_EXECUTION_CIMRUNNER_H

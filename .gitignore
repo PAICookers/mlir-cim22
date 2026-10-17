@@ -73,11 +73,6 @@ __pycache__/
 .ruff_cache/
 
 # Local editor configuration
-/.vscode/
+.vscode/
 
-# Local wheels and engineering task records
-*.whl
-/tasks/
-
-# Codebase-memory generated artifact metadata
-.codebase-memory/artifact.json
+skills-lock.json
