@@ -10,9 +10,13 @@ dependencies = ["numpy>=1.26,<3", "torch>=2.14,<3"]
 
 [project.optional-dependencies]
 compiler = ["torch-mlir==20260923.885"]
+web = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "spikingjelly==0.0.0.0.14"]
+
+[project.scripts]
+cim22-web = "cim22.web.__main__:main"
 
 [dependency-groups]
-dev = ["onnx>=1.21.0,<2", "protobuf>=6.31.1", "pytest>=8.3,<10"]
+dev = ["onnx>=1.21.0,<2", "protobuf>=6.31.1", "pytest>=8.3,<10", "httpx>=0.28,<1", "ruff>=0.11,<1"]
 
 [project.entry-points."torch_dynamo_backends"]
 cim22 = "cim22.backend:backend"
@@ -26,6 +30,8 @@ wheel.install-dir = "cim22"
 wheel.py-api = "py3"
 wheel.force-include = { "LICENSE" = "${SKBUILD_METADATA_DIR}/licenses/LICENSE" }
 install.components = ["runtime", "dev"]
+# Frontend output is ignored by Git but must also survive sdist -> wheel.
+sdist.include = ["cim22/web/static/**"]
 
 [tool.scikit-build.sdist.force-include]
 "../CMakeLists.txt" = "native/CMakeLists.txt"
