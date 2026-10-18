@@ -1,7 +1,9 @@
-# Default deny: only the implementation, build, test and schema trees below
-# enter Codebase Memory. This protects local documents, models and metadata.
+# Default deny: only reviewed build guides and implementation/test trees below
+# enter Codebase Memory. This excludes local documents, models and metadata.
 /*
 !/CMakeLists.txt
+!/README.md
+!/BUILDING.md
 !/cmake/
 !/cmake/**
 !/include/
@@ -16,6 +18,8 @@
 !/python/**
 !/schema/
 !/schema/**
+!/web/
+!/web/**
 
 # Generated bindings are checked against schema/cim22_model.proto by CMake.
 /python/cim22/_generated/
