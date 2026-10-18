@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -39,7 +39,7 @@ def create_app(root: Path, model_dir: Path) -> FastAPI:
     """Create one local service. Its lifespan owns the exclusive worker lock."""
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.manager = TaskManager(root, model_dir)
         try:
             yield

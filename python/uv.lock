@@ -328,6 +328,7 @@ compiler = [
 web = [
     { name = "fastapi" },
     { name = "spikingjelly" },
+    { name = "torch-mlir" },
     { name = "uvicorn" },
 ]
 
@@ -337,16 +338,16 @@ dev = [
     { name = "onnx" },
     { name = "protobuf" },
     { name = "pytest" },
-    { name = "ruff" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.115,<1" },
     { name = "numpy", specifier = ">=1.26,<3" },
-    { name = "spikingjelly", marker = "extra == 'web'", specifier = "==0.0.0.0.14" },
+    { name = "spikingjelly", marker = "extra == 'web'", specifier = ">=0.0.0.0.12,<1" },
     { name = "torch", specifier = ">=2.14,<3", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "torch-mlir", marker = "extra == 'compiler'", path = "../torch_mlir-20260923.885-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+    { name = "torch-mlir", marker = "extra == 'compiler'", path = "torch_mlir-20261001-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+    { name = "torch-mlir", marker = "extra == 'web'", path = "torch_mlir-20261001-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
     { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.34,<1" },
 ]
 provides-extras = ["compiler", "web"]
@@ -357,7 +358,6 @@ dev = [
     { name = "onnx", specifier = ">=1.21.0,<2" },
     { name = "protobuf", specifier = ">=6.31.1" },
     { name = "pytest", specifier = ">=8.3,<10" },
-    { name = "ruff", specifier = ">=0.11,<1" },
 ]
 
 [[package]]
@@ -565,16 +565,6 @@ wheels = [
 ]
 
 [[package]]
-name = "ruff"
-version = "0.17.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f9/e7/e6d5749983b020e6cb1055abec0a6f361a8e94f0184cdcf56d4760995f02/ruff-0.17.1.tar.gz", hash = "sha256:5bb796c5112e9fb9527f2ef2faa0a130d6312d19de92bcfaddd70dbb2d41020f", size = 5323349, upload-time = "2026-10-15T15:23:18.64Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/62/86/5566290219708ce2928f3a29c4f843a1185b341ec6111c4631a33c5ceced/ruff-0.17.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a6ef98e51de8ef38082f90653ceeb84944bd7673783eea13e1647c5b9b064189", size = 10350811, upload-time = "2026-10-15T15:22:54.401Z" },
-    { url = "https://files.pythonhosted.org/packages/49/fb/db15b4f8fa24a1e36b99e1401f42ef6df16ee299a48670d5d262b771e7d7/ruff-0.17.1-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:ce05e6f3973611d9550a600e04bb531061e368baba31610eb57c1509a8f21a0a", size = 10765716, upload-time = "2026-10-15T15:23:08.092Z" },
-]
-
-[[package]]
 name = "scipy"
 version = "1.18.1"
 source = { registry = "https://pypi.org/simple" }
@@ -681,14 +671,14 @@ wheels = [
 
 [[package]]
 name = "torch-mlir"
-version = "20260923.885"
-source = { path = "../torch_mlir-20260923.885-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
+version = "20261001"
+source = { path = "torch_mlir-20261001-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
 dependencies = [
     { name = "numpy" },
     { name = "packaging" },
 ]
 wheels = [
-    { filename = "torch_mlir-20260923.885-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:43a77a61ae44b07c7263e384e6a812568797f1bec40cadcf124533cb951e374e" },
+    { filename = "torch_mlir-20261001-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e02ab29293ec2eba0a573ef20a154ecafd0ab1e8b305979fca2e2ac0b48e2b34" },
 ]
 
 [package.metadata]

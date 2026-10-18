@@ -207,7 +207,7 @@ export default function App() {
         <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
           <div>
             <div className="eyebrow mb-2">
-              DVS GESTURE · INFERENCE COMPARISON
+              DVS GESTURE · 推理对比
             </div>
             <h1 className="text-3xl font-semibold tracking-tight">
               让模型结果，一目了然。
@@ -218,7 +218,7 @@ export default function App() {
           </div>
           <div className="flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-4 py-2 text-xs font-medium text-primary">
             <Cpu size={14} />
-            软件 runner<span className="mx-1 text-blue-200">|</span>本地单任务
+            软件运行器<span className="mx-1 text-blue-200">|</span>本地单任务
           </div>
         </div>
         {(!connected || error || task?.error) && (
@@ -240,7 +240,7 @@ export default function App() {
                   <FileBox size={19} className="text-primary" />
                   模型与编译
                 </h2>
-                <span className="eyebrow">01 / PREPARE</span>
+                <span className="eyebrow">01 / 准备</span>
               </div>
             </CardHeader>
             <CardContent>
@@ -391,7 +391,7 @@ export default function App() {
                   <Activity size={19} className="text-primary" />
                   运行控制
                 </h2>
-                <span className="eyebrow">02 / RUN</span>
+                <span className="eyebrow">02 / 运行</span>
               </div>
             </CardHeader>
             <CardContent className="flex flex-1 flex-col">
@@ -516,7 +516,7 @@ export default function App() {
                       {side === "original" ? "原始模型" : "CIM 模型"}
                     </h3>
                     <span className="rounded-md bg-muted px-2 py-1 text-[11px] text-muted-foreground">
-                      {side === "original" ? "PyTorch · CPU" : "软件 runner"}
+                      {side === "original" ? "PyTorch · CPU" : "软件运行器"}
                     </span>
                   </div>
                   <div className="mt-5 grid grid-cols-2 gap-4">

@@ -2,14 +2,11 @@
 
 import ctypes
 import importlib.util
-import os
 import sys
 import time
 from collections.abc import Callable
 from importlib.metadata import version
 from pathlib import Path
-
-os.environ["PYTORCH_JIT"] = "0"
 
 import numpy as np
 import torch
