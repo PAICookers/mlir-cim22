@@ -1,8 +1,8 @@
-"""Integration with the pinned wheels, LLVM Host, and candidate CIM runner.
+"""Integration with the selected wheels, LLVM Host, and candidate CIM runner.
 
-Run with the installed compiler extra and Python 3.12. No replacement kernel
-or eager fallback is used; unit weights make expected numbers exact under the
-candidate model.
+Run with an installed torch-mlir Release wheel and Python 3.12. No replacement
+kernel or eager fallback is used; unit weights make expected numbers exact under
+the candidate model.
 """
 
 from collections.abc import Iterator
@@ -126,6 +126,20 @@ def test_host_shape_specialization_and_cache() -> None:
         for value in values:
             torch.testing.assert_close(compiled(value), host_only(value))
         assert compiler.call_count == 2
+
+
+def test_host_relu_deallocation() -> None:
+    """Host selects require Arith's promised buffer-deallocation interface."""
+    values = torch.tensor([[-2.0, 0.0, 3.0]])
+    with torch.inference_mode():
+        compiled = torch.compile(
+            torch.relu,
+            backend="cim22",
+            fullgraph=True,
+            dynamic=False,
+            options={"runtime": "software"},
+        )
+        torch.testing.assert_close(compiled(values), torch.relu(values))
 
 
 def test_layer_norm_decomposition() -> None:
