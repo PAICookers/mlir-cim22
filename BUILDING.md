@@ -87,6 +87,9 @@ build/native/bin/mlir-cim22-onnx-import --help
 
 ### 构建 wheel
 
+发布包含 Web 界面的 wheel 前，先按 [Web 构建说明](web/README.md#从源码构建)
+生成静态页面。该产物随 wheel 和 sdist 分发，终端用户无需 Node.js。
+
 设置好上述工具链变量后执行：
 
 ```sh
@@ -102,16 +105,18 @@ cim22/
   bin/mlir-cim22-opt
   lib/libcim22_compiler.so
   lib/libcim22_runtime.so
+  web/static/index.html
+  web/static/assets/
 ```
 
 按 [Python 安装指南](python/README.md#安装)安装该 wheel 和 torch-mlir，再运行自检脚本。普通用户仍需系统 `cc` 和链接开发环境来编译模型。本机构建只保证面向本机 ABI；可移植 manylinux 分发还需独立构建和验收。
 
 ### Editable 开发安装
 
-从 [torch-mlir releases](https://github.com/llvm/torch-mlir-release/releases) 下载下列文件，放在**仓库根目录**，与 `tool.uv.sources` 的路径一致：
+从 [torch-mlir releases](https://github.com/llvm/torch-mlir/releases) 下载与当前后端兼容的 wheel，放在 **`python/` 目录**，与 `tool.uv.sources` 的路径一致：
 
 ```text
-torch_mlir-20260923.885-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+torch_mlir-<compatible-release>-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
 ```
 
 然后执行：
@@ -122,9 +127,9 @@ CMAKE_BUILD_PARALLEL_LEVEL=4 uv sync --project python --python 3.12 \
 uv run --project python --no-sync python python/examples/torch_compile.py
 ```
 
-该命令创建 `python/.venv`，安装 CPU PyTorch、torch-mlir 和本项目的 editable 版本，并构建原生组件。`compiler` extra 选择 torch-mlir；`--no-dev` 跳过默认开发依赖。预编译用户的 `.venv` 与这里的 `python/.venv` 是不同环境。
+该命令创建 `python/.venv`，安装 CPU PyTorch、torch-mlir 和本项目的 editable 版本，并构建原生组件。`compiler` extra 选择 torch-mlir；`--no-dev` 只跳过默认开发依赖。预编译用户的 `.venv` 与这里的 `python/.venv` 是不同环境。
 
-元数据允许 Python `>=3.12`、Torch `>=2.14,<3`；当前回归基线为 Python 3.12、CPU Torch 2.14.1、torch-mlir 20260923.885。更新依赖后需要重新验证后端。
+元数据允许 Python `>=3.12`、Torch `>=2.14,<3` 和任意 torch-mlir 版本；当前回归使用与后端匹配的 Release wheel。更新依赖后需要重新验证后端。
 
 ### 构建目录与配置变体
 
@@ -195,7 +200,9 @@ uv lock --project python --check
 uv build --python 3.12 python --sdist --out-dir wheelhouse
 ```
 
-解包后，在解包目录构建 wheel；同样需要配置 `MLIR_DIR`：
+解包到全新目录后，在解包目录构建 wheel；同样需要配置 `MLIR_DIR`。
+重新验收修改过的 sdist 时不要复用旧解包/构建目录：归一化的文件时间戳
+可能使增量构建错误地沿用旧目标文件。
 
 ```sh
 uv build --python 3.12 --wheel
