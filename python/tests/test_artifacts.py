@@ -166,8 +166,8 @@ def test_embedded_protobuf_contract(
 ) -> None:
     _, path = compiled_graph
     model = embedded_model(path)
-    assert model.data_format_version == 1
-    assert model.runtime_backend == proto.SOFTWARE
+    assert model.schema_version == 1
+    assert model.backend == proto.SOFTWARE
     assert list(model.inputs[0].dimensions) == [2, 3, 65]
     assert [list(value.dimensions) for value in model.outputs] == [
         [2, 3, 17],

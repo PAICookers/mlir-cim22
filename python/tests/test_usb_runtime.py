@@ -57,7 +57,7 @@ def test_usb_session_checks(
     transaction_artifact: proto.ModelArtifact,
 ) -> None:
     model = transaction_artifact
-    model.runtime_backend = proto.USB
+    model.backend = proto.USB
     compiled = Session(model_library(model.SerializeToString(), 1))
     with compiled:
         assert compiled.num_transactions == 1
@@ -93,7 +93,7 @@ def test_software_session_rejects_usb(
     host_artifact: proto.ModelArtifact,
 ) -> None:
     model = host_artifact
-    model.ClearField("runtime_backend")
+    model.ClearField("backend")
     with (
         Session(model_library(model.SerializeToString(), 1)) as compiled,
         pytest.raises(RuntimeError, match="backend is not USB"),
@@ -125,8 +125,8 @@ def test_compiled_usb_backend(
     (artifact,) = tmp_path.glob("*.so")
     model = embedded_model(artifact)
     assert model.kernels
-    assert model.data_format_version == 1
-    assert model.runtime_backend == proto.USB
+    assert model.schema_version == 1
+    assert model.backend == proto.USB
     assert all(
         binding.HasField("input_cache_address")
         for kernel in model.kernels
