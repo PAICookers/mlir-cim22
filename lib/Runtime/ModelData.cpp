@@ -25,7 +25,7 @@ pb::DataType encodeType(CIMDataType type) {
   case CIMDataType::BF16:
     return pb::BF16;
   }
-  return pb::DATA_TYPE_UNSPECIFIED;
+  return pb::UNSPECIFIED;
 }
 CIMDataType decodeType(pb::DataType type) {
   switch (type) {
@@ -88,9 +88,8 @@ bool hasBinding(const Binding &b) {
 }
 llvm::Error validateTransaction(const pb::Transaction &t,
                                 bool requireUSBFields) {
-  if (t.target_profile() != "cim22-4x5-v1" || t.target_profile_version() != 1 ||
-      t.execution_plan_version() != 1)
-    return invalid("unsupported transaction profile/version");
+  if (t.target_profile() != "cim22-4x5-v1")
+    return invalid("unsupported transaction profile");
   using Key = std::pair<int64_t, int64_t>;
   std::set<int64_t> groups;
   std::map<Key, const pb::Work *> works;
@@ -228,8 +227,8 @@ llvm::Error validateTransaction(const pb::Transaction &t,
 }
 
 llvm::Error validate(const pb::ModelArtifact &model) {
-  // TODO: Enforce data_format_version once the artifact contract stabilizes.
-  if (!pb::RuntimeBackend_IsValid(model.runtime_backend()))
+  // TODO: Enforce schema_version once the artifact contract stabilizes.
+  if (!pb::RuntimeBackend_IsValid(model.backend()))
     return invalid("unsupported runtime backend");
   for (const auto *tensors : {&model.inputs(), &model.outputs()})
     for (const auto &tensor : *tensors) {
@@ -246,7 +245,7 @@ llvm::Error validate(const pb::ModelArtifact &model) {
         !names.insert(kernel.kernel_name()).second || !kernel.has_transaction())
       return invalid("missing/duplicate kernel name or transaction");
     if (auto error = validateTransaction(kernel.transaction(),
-                                         model.runtime_backend() == pb::USB))
+                                         model.backend() == pb::USB))
       return error;
   }
   return llvm::Error::success();
@@ -277,8 +276,6 @@ void decodeArray(const Field &from, Array &to) {
 
 void encodeTransaction(const CIMTransaction &from, pb::Transaction &to) {
   to.set_target_profile(from.getTargetProfile().str());
-  to.set_target_profile_version(from.getTargetProfileVersion());
-  to.set_execution_plan_version(from.getExecutionPlanVersion());
   for (const auto &g : from.getGroups()) {
     auto *group = to.add_groups();
     group->set_group_id(g.groupId);
@@ -374,8 +371,8 @@ CIMTransaction decodeTransaction(const pb::Transaction &from) {
     decodeArray(b.test_core(), readback.testCore);
     readbacks.push_back(readback);
   }
-  return CIMTransaction(from.target_profile(), from.target_profile_version(),
-                        from.execution_plan_version(), std::move(groups),
+  // Stored schema v1 uses the compiler's current native transaction contract.
+  return CIMTransaction(from.target_profile(), 1, 1, std::move(groups),
                         std::move(weights), std::move(packets),
                         std::move(inputs), std::move(readbacks),
                         {from.flits().begin(), from.flits().end()});
@@ -388,9 +385,9 @@ llvm::Expected<std::string> encodeModelData(const ModelData &model) {
       model.kernelNames.size() != model.transactions.size())
     return invalid("signature/kernel counts");
   pb::ModelArtifact artifact;
-  artifact.set_data_format_version(1);
-  artifact.set_runtime_backend(
-      model.backend == RuntimeBackend::Software ? pb::SOFTWARE : pb::USB);
+  artifact.set_schema_version(1);
+  artifact.set_backend(model.backend == RuntimeBackend::Software ? pb::SOFTWARE
+                                                                 : pb::USB);
   for (size_t i = 0; i < model.shapes.size(); ++i) {
     auto *tensor = i < static_cast<size_t>(model.numInputs)
                        ? artifact.add_inputs()
@@ -399,6 +396,10 @@ llvm::Expected<std::string> encodeModelData(const ModelData &model) {
     encodeArray(model.shapes[i], tensor->mutable_dimensions());
   }
   for (size_t i = 0; i < model.transactions.size(); ++i) {
+    const auto &transaction = model.transactions[i];
+    if (transaction.getTargetProfileVersion() != 1 ||
+        transaction.getExecutionPlanVersion() != 1)
+      return invalid("unsupported native transaction version");
     auto *kernel = artifact.add_kernels();
     kernel->set_kernel_name(model.kernelNames[i]);
     encodeTransaction(model.transactions[i], *kernel->mutable_transaction());
@@ -420,9 +421,8 @@ llvm::Error decodeModelData(llvm::StringRef bytes, ModelData &model) {
   if (auto error = validate(artifact))
     return error;
   ModelData decoded;
-  decoded.backend = artifact.runtime_backend() == pb::USB
-                        ? RuntimeBackend::USB
-                        : RuntimeBackend::Software;
+  decoded.backend = artifact.backend() == pb::USB ? RuntimeBackend::USB
+                                                  : RuntimeBackend::Software;
   decoded.numInputs = artifact.inputs_size();
   for (const auto *tensors : {&artifact.inputs(), &artifact.outputs()})
     for (const auto &tensor : *tensors)

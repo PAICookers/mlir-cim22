@@ -8,7 +8,9 @@
 
 ## 安装
 
-以下命令均在**仓库根目录**执行，面向已有预编译 wheel 的用户。只有源码时，先阅读 [源码构建](../BUILDING.md#pytorch-编译后端)。
+以下命令均在**仓库根目录**执行。你可以直接安装维护者提供的预编译 wheel，也可以先从源码构建本项目 wheel；两条路径都需要在同一个 Python 虚拟环境中安装兼容的 torch-mlir Release wheel。
+
+### 使用预编译 wheel
 
 准备 Linux x86-64、Python 3.12 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。首次模型编译还需要系统 `cc`、链接器和 C 开发文件。包含 USB 支持的 wheel 还需要 libusb 动态库，即使选择软件运行时也一样。例如 Ubuntu：
 
@@ -18,7 +20,7 @@ sudo apt-get install build-essential libusb-1.0-0
 
 预编译用户不需要 LLVM/MLIR、CMake 或 protoc；其他系统动态库要求以所用 wheel 的构建环境说明为准。
 
-将维护者提供且适配本机系统 ABI 的 `mlir_cim22-*.whl`，以及从 [torch-mlir releases](https://github.com/llvm/torch-mlir-release/releases) 下载与当前后端兼容的 `torch_mlir-*.whl` 放入 `downloads/`。目录中每种 wheel 只保留一个版本，然后执行：
+将维护者提供且适配本机系统 ABI 的 `mlir_cim22-*.whl`，以及从 [torch-mlir releases](https://github.com/llvm/torch-mlir/releases) 下载与当前后端兼容的 `torch_mlir-*.whl` 放入 `downloads/`。目录中每种 wheel 只保留一个版本，然后执行：
 
 ```sh
 uv venv --python 3.12 .venv
@@ -37,7 +39,37 @@ CIM22 torch.compile software execution passed (0, 65, 129).
 
 它验证自定义 `nn.Module`、编译和三次软件执行。自己的应用也使用这个虚拟环境。
 
-当前验证环境为 Python 3.12、CPU PyTorch 2.14.1 和 torch-mlir 20260923.885。包元数据允许 Python `>=3.12`、PyTorch `>=2.14,<3`，不代表所有组合均已测试。本机编译的 `linux_x86_64` wheel 可能依赖较新的 glibc 及系统动态库；应使用维护者明确标注适用环境的构建。
+当前验证环境为 Python 3.12.15、CPU PyTorch 2.14.1 和 torch-mlir 20261001。包元数据允许 Python `>=3.12`、PyTorch `>=2.14,<3` 和任意 torch-mlir 版本，不代表所有组合均已测试。本机编译的 `linux_x86_64` wheel 可能依赖较新的 glibc 及系统动态库；应使用维护者明确标注适用环境的构建。
+
+### 从源码构建并安装 wheel
+
+源码构建需要先按 [源码构建指南](../BUILDING.md#环境与依赖) 准备 LLVM/MLIR、CMake、Ninja 和本项目的 CMake 依赖。构建 wheel 本身不需要安装 PyTorch 或 torch-mlir：
+
+若要提供 Web 界面，需先按 [Web 构建说明](../web/README.md#从源码构建)
+生成前端静态页面，再执行以下命令。
+
+```sh
+CMAKE_BUILD_PARALLEL_LEVEL=4 uv build --python 3.12 python \
+  --wheel --out-dir wheelhouse
+```
+
+然后创建一个自己的 Python 3.12 虚拟环境，并把 torch-mlir Release wheel 和刚构建的本项目 wheel 安装到同一个环境：
+
+```sh
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python \
+  --index-url https://download.pytorch.org/whl/cpu 'torch>=2.14,<3'
+uv pip install --python .venv/bin/python \
+  ./downloads/torch_mlir-*.whl ./wheelhouse/mlir_cim22-*.whl
+```
+
+如果已有自己的虚拟环境，将命令中的 `.venv/bin/python` 替换为该环境的 Python 路径即可。安装完成后，用该环境运行应用或本目录的自检脚本：
+
+```sh
+.venv/bin/python python/examples/torch_compile.py
+```
+
+预编译安装和源码构建安装都要求 torch-mlir wheel、`mlir-cim22` wheel 与应用使用同一个虚拟环境。当前发行目标是 Linux x86-64；其他平台和 ABI 组合需要单独构建与验证。
 
 ## 最小模型
 
@@ -121,7 +153,7 @@ torch.Size([1, 16])
 
 USB 原始诊断可通过 `cim22.Session`、`UsbConfig` 和 `capture_usb` 使用，具体数组与生命周期契约见 [runtime.py](cim22/runtime.py)。USB 传输故障后需关闭 Session 并按设备流程复位；重新打开 Host 句柄不会复位硬件。
 
-## 从源码构建与测试
+## 开发与测试
 
 完整步骤见 [BUILDING](../BUILDING.md#pytorch-编译后端)：准备 LLVM/MLIR 后，可生成 wheel 或构建 editable 安装。Python 源码修改立即可见；C++、TableGen、schema 或 CMake 修改需要显式重建。
 

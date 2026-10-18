@@ -93,6 +93,9 @@ supplier, generated, and third-party code under their existing handling rules.
   files. Select `--target-version py312` for runtime checks. Do not reformat
   unrelated or supplier code, or add a second lint policy that conflicts with
   existing rules.
+- Prefer the host `ruff` executable for formatting and linting. Do not add Ruff
+  to project Python dependencies unless the user explicitly requests it; if
+  host Ruff is unavailable, report that formatting could not be run.
 - For rules/docs-only changes, check `git diff --check`, links, and consistency
   with Python metadata and Ruff configuration. Do not claim source execution
   or runtime validation when only documentation was checked.
@@ -129,7 +132,13 @@ supplier, generated, and third-party code under their existing handling rules.
   constant for CIM lowering and dynamic weights on Host. Reuse AOTAutograd for
   mutations/aliases; do not recreate output schemas or standalone loading APIs
   for excluded application scenarios. Native Session returns flat tensors.
-- During development, emit `data_format_version=1` without enforcing it. Python
+- Version serialized model data only with `ModelArtifact.schema_version`;
+  do not duplicate fixed transaction versions in the schema. When deleting
+  fields in any schema message, do not reserve removed fields and renumber the
+  remaining fields compactly unless explicitly requested otherwise. Regenerate
+  bindings, update readers/writers/tests and recompile models after such changes;
+  compact renumbering does not preserve old artifact compatibility.
+  During development, emit `schema_version=1` without enforcing it. Python
   Protobuf bindings live under `python/tests/_generated` and are test-only;
   regenerate them with the CMake target after schema edits.
 - Keep `.cbmignore` repository-relative and prefer a narrow allowlist of source,

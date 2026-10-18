@@ -5,7 +5,8 @@
 using namespace cim22::execution;
 using namespace cim22::runtime;
 
-static CIMTransaction transaction(CIMDataType type) {
+static CIMTransaction transaction(CIMDataType type, int64_t profileVersion = 1,
+                                  int64_t planVersion = 1) {
   CIMWork work{19, 3, 1, {1, 0, 2, 0, 3, 0}};
   StaticWeightSection weight;
   weight.groupId = 7;
@@ -36,7 +37,8 @@ static CIMTransaction transaction(CIMDataType type) {
     p.dataType = type;
     packets.push_back(p);
   }
-  return CIMTransaction("cim22-4x5-v1", 1, 1, {{7, {work}}}, {weight}, packets,
+  return CIMTransaction("cim22-4x5-v1", profileVersion, planVersion,
+                        {{7, {work}}}, {weight}, packets,
                         {{7, 19, 1, 47, type, 6}},
                         {{7, 19, 1, 7, work.route, {1, 2, 3}, type}},
                         {0, UINT64_MAX, UINT64_C(0x123456789abcdef0)});
@@ -140,6 +142,16 @@ int main() {
   if (usbDecoded.backend != RuntimeBackend::USB ||
       !sameTransaction(model.transactions[1], usbDecoded.transactions[1]))
     return 1;
+  // Reject unsupported native versions rather than silently dropping them.
+  for (auto versions : {std::pair{2, 1}, std::pair{1, 2}}) {
+    ModelData unsupported = model;
+    unsupported.transactions[0] =
+        transaction(CIMDataType::Int8, versions.first, versions.second);
+    auto invalidVersion = encodeModelData(unsupported);
+    if (invalidVersion)
+      return 1;
+    llvm::consumeError(invalidVersion.takeError());
+  }
   model.numInputs = static_cast<int64_t>(model.shapes.size()) + 1;
   auto invalidSignature = encodeModelData(model);
   if (invalidSignature)

@@ -76,9 +76,3 @@ __pycache__/
 .vscode/
 
 skills-lock.json
-
-# Local web development/build output (included in built Python wheels).
-/web/node_modules/
-/web/test-results/
-/web/playwright-report/
-/python/cim22/web/static/

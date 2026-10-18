@@ -19,5 +19,6 @@ add_mlir_library(MLIRCIM22Compiler
   MLIRSCFDialect
   MLIRSCFTransforms
   MLIRTensorDialect
+  MLIRTensorInferTypeOpInterfaceImpl
   MLIRTensorTransforms
 )

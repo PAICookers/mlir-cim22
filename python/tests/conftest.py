@@ -44,7 +44,7 @@ def native_toolchain(native_runtime: Path) -> None:
     """Require frontend and compiler dependencies only for compilation tests."""
     if importlib.util.find_spec("torch_mlir") is None:
         pytest.fail(
-            "Install the frontend with uv sync --locked --extra compiler"
+            "Install the torch-mlir Release wheel before running compiler tests"
         )
     optimizer = os.environ.get("CIM22_OPT") or str(
         files("cim22") / "bin" / "mlir-cim22-opt"
@@ -57,8 +57,8 @@ def native_toolchain(native_runtime: Path) -> None:
 @pytest.fixture
 def host_artifact() -> proto.ModelArtifact:
     model = proto.ModelArtifact(
-        data_format_version=1,
-        runtime_backend=proto.SOFTWARE,
+        schema_version=1,
+        backend=proto.SOFTWARE,
     )
     model.outputs.add(data_type=proto.FP32)  # Rank-zero is valid.
     return model
@@ -72,8 +72,6 @@ def transaction_artifact(
     model.CopyFrom(host_artifact)
     transaction = model.kernels.add(kernel_name="kernel").transaction
     transaction.target_profile = "cim22-4x5-v1"
-    transaction.target_profile_version = 1
-    transaction.execution_plan_version = 1
     group = transaction.groups.add(group_id=0)
     group.works.add(work_id=0, core_slot=0, macro_slot=0, route=[0] * 6)
     transaction.weights.add(

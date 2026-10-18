@@ -3,14 +3,13 @@ syntax = "proto3";
 package cim22.artifact.v1;
 option optimize_for = LITE_RUNTIME;
 
-// Unknown descriptive fields may be ignored. During development, writers emit
-// data_format_version 1 and readers do not enforce it.
+// Unknown descriptive fields may be ignored.
 message ModelArtifact {
-  uint32 data_format_version = 1;       // 1 during development.
-  repeated TensorSignature inputs = 3;
-  repeated TensorSignature outputs = 4;
-  repeated Kernel kernels = 5;          // Position is the native dispatch index.
-  RuntimeBackend runtime_backend = 6;
+  uint32 schema_version = 1;           // Versions the entire model schema.
+  repeated TensorSignature inputs = 2;
+  repeated TensorSignature outputs = 3;
+  repeated Kernel kernels = 4;          // Position is the native dispatch index.
+  RuntimeBackend backend = 5;
 }
 
 enum RuntimeBackend {
@@ -20,7 +19,7 @@ enum RuntimeBackend {
 }
 
 enum DataType {
-  DATA_TYPE_UNSPECIFIED = 0;
+  UNSPECIFIED = 0;
   INT8 = 1;
   BF16 = 2;
   FP32 = 3;
@@ -39,14 +38,12 @@ message Kernel {
 
 message Transaction {
   string target_profile = 1;
-  int64 target_profile_version = 2;
-  int64 execution_plan_version = 3;
-  repeated Group groups = 4;
-  repeated StaticWeight weights = 5;
-  repeated Packet packets = 6;
-  repeated InputBinding inputs = 7;
-  repeated ReadbackBinding readbacks = 8;
-  repeated fixed64 flits = 9 [packed = true];
+  repeated Group groups = 2;
+  repeated StaticWeight weights = 3;
+  repeated Packet packets = 4;
+  repeated InputBinding inputs = 5;
+  repeated ReadbackBinding readbacks = 6;
+  repeated fixed64 flits = 7 [packed = true];
 }
 
 message Group {

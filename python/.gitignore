@@ -206,6 +206,12 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
+# Generated frontend output, included in Python wheels and sdists.
+cim22/web/static/
+
+# Local build products and externally supplied development wheels.
+*.whl
+
 # PyPI configuration file
 .pypirc
 

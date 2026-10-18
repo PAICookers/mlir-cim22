@@ -42,6 +42,8 @@ keep file ownership disjoint.
 - Keep local wheels, logs and build directories out of commits. Use portable
   relative paths in shared metadata and code indexes; do not put machine-only
   exclusions in `.cbmignore`.
+- For model schema fields, compatibility, and binding generation, read
+  [schema/README.md](schema/README.md).
 
 ### Code Documentation
 

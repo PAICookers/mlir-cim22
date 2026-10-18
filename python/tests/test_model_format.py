@@ -77,7 +77,6 @@ def test_invalid_model_metadata(
     "failure",
     [
         "profile",
-        "plan-version",
         "missing-id",
         "duplicate-group",
         "duplicate-work",
@@ -125,8 +124,6 @@ def test_invalid_transaction(
     match failure:
         case "profile":
             transaction.target_profile = "unknown"
-        case "plan-version":
-            transaction.execution_plan_version = 99
         case "missing-id":
             group.works[0].ClearField("work_id")
         case "duplicate-group":
@@ -144,7 +141,7 @@ def test_invalid_transaction(
         case "weight-exponents":
             weight.exponents = weight.exponents[:-1]
         case "weight-dtype":
-            weight.data_type = proto.DATA_TYPE_UNSPECIFIED
+            weight.data_type = proto.UNSPECIFIED
         case "weight-work-route":
             group.works[0].route[0] = 1
         case "missing-input":
@@ -263,13 +260,13 @@ def test_development_metadata_contract(
 ) -> None:
     model = transaction_artifact
     if version is None:
-        model.ClearField("data_format_version")
+        model.ClearField("schema_version")
     else:
-        model.data_format_version = version
+        model.schema_version = version
     if backend is None:
-        model.ClearField("runtime_backend")
+        model.ClearField("backend")
     else:
-        model.runtime_backend = backend
+        model.backend = backend
     binding = model.kernels[0].transaction.inputs[0]
     if cache is None:
         binding.ClearField("input_cache_address")

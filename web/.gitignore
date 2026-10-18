@@ -1,0 +1,6 @@
+# Local frontend dependencies and test reports.
+node_modules/
+test-results/
+playwright-report/
+dist/
+.vite/

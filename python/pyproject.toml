@@ -9,14 +9,19 @@ requires-python = ">=3.12"
 dependencies = ["numpy>=1.26,<3", "torch>=2.14,<3"]
 
 [project.optional-dependencies]
-compiler = ["torch-mlir==20260923.885"]
-web = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "spikingjelly==0.0.0.0.14"]
+compiler = ["torch-mlir"]
+web = [
+    "fastapi>=0.115,<1",
+    "spikingjelly>=0.0.0.0.12,<1",
+    "torch-mlir",
+    "uvicorn>=0.34,<1",
+]
 
 [project.scripts]
 cim22-web = "cim22.web.__main__:main"
 
 [dependency-groups]
-dev = ["onnx>=1.21.0,<2", "protobuf>=6.31.1", "pytest>=8.3,<10", "httpx>=0.28,<1", "ruff>=0.11,<1"]
+dev = ["onnx>=1.21.0,<2", "protobuf>=6.31.1", "pytest>=8.3,<10", "httpx>=0.28,<1"]
 
 [project.entry-points."torch_dynamo_backends"]
 cim22 = "cim22.backend:backend"
@@ -31,7 +36,7 @@ wheel.py-api = "py3"
 wheel.force-include = { "LICENSE" = "${SKBUILD_METADATA_DIR}/licenses/LICENSE" }
 install.components = ["runtime", "dev"]
 # Frontend output is ignored by Git but must also survive sdist -> wheel.
-sdist.include = ["cim22/web/static/**"]
+sdist.include = ["cim22/web/static"]
 
 [tool.scikit-build.sdist.force-include]
 "../CMakeLists.txt" = "native/CMakeLists.txt"
@@ -60,8 +65,8 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
-# Place the matching daily development wheel in the repository root.
-torch-mlir = { path = "../torch_mlir-20260923.885-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
+# Place the selected development wheel in the python directory root.
+torch-mlir = { path = "./torch_mlir-20261001-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

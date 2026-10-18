@@ -9,13 +9,14 @@
 | 编译器       | `include/`、`lib/`、`tools/`        | 方言、转换、映射和 `mlir-cim22-opt` 工具 |
 | 运行时       | `lib/Runtime/`、`lib/Execution/`      | 模型加载、CPU/CIM 执行和 Linux USB 通信    |
 | PyTorch 后端 | [python/](python/README.md)                | 将捕获的模型经 torch-mlir 交给本编译器     |
+| 模型格式     | [schema/](schema/README.md)                 | 内嵌模型数据、字段约束与格式维护             |
 | 测试         | [test/](test/README.md)、`python/tests/` | 编译器、数值、接口与软件执行回归           |
 
-Python 发行包名为 `mlir-cim22`，导入包和后端名为 `cim22`。一个 wheel 包含 Python 封装、优化器以及 compiler/runtime 原生库；torch-mlir 需另外安装。
+Python 发行包名为 `mlir-cim22`，导入包和后端名为 `cim22`。一个 wheel 包含 Python 封装、优化器以及 compiler/runtime 原生库；torch-mlir 是后端的必需外部依赖，需另外安装。
 
 ## 快速上手
 
-使用 **Linux x86-64**。建议从已验证的 **Python 3.12、CPU PyTorch 2.14.1、torch-mlir 20260923.885** 环境开始。元数据允许 Python `>=3.12`、PyTorch `>=2.14,<3`；其他版本组合尚需验证。
+使用 **Linux x86-64**。准备 Python 3.12、CPU PyTorch 和从官方 Release 页面下载的、与当前后端兼容的 torch-mlir wheel。项目元数据允许 Python `>=3.12`、PyTorch `>=2.14,<3` 和任意 torch-mlir 版本；具体组合仍需自行验证。
 
 1. 按 [Python 安装指南](python/README.md#安装)准备虚拟环境和两个 wheel。
 2. 从仓库根目录运行最小示例：
