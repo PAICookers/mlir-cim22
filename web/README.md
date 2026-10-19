@@ -66,7 +66,7 @@ npm run build
 Python wheel：
 
 ```sh
-uv build --python 3.12 python --out-dir wheelhouse
+uv build --python 3.12 python --out-dir python/dist
 ```
 
 前端开发服务器可用 `pnpm dev` 启动；它会把 `/api` 请求代理到本地 8000

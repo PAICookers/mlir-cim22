@@ -54,7 +54,7 @@ CIM22 torch.compile software execution passed (0, 65, 129).
 
 ```sh
 CMAKE_BUILD_PARALLEL_LEVEL=4 uv build --python 3.12 python \
-  --wheel --out-dir wheelhouse
+  --wheel --out-dir python/dist
 ```
 
 然后创建一个自己的 Python 3.12 虚拟环境并安装刚构建的本项目 wheel：
@@ -64,7 +64,7 @@ uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python \
   --index-url https://download.pytorch.org/whl/cpu 'torch>=2.14,<3'
 uv pip install --python .venv/bin/python \
-  ./downloads/torch_mlir-*.whl ./wheelhouse/mlir_cim22-*.whl
+  ./downloads/torch_mlir-*.whl ./python/dist/mlir_cim22-*.whl
 ```
 
 如果已有自己的虚拟环境，将命令中的 `.venv/bin/python` 替换为该环境的 Python 路径即可。安装完成后，用该环境运行应用或本目录的自检脚本：
