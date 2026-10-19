@@ -31,7 +31,7 @@ CMake 会下载并构建固定的 **Protobuf/protoc 31.1**；启用 ONNX 时还�
 
 ## 准备 LLVM/MLIR
 
-已有兼容工具链时，只需设置其 `lib/cmake/mlir` 为 `MLIR_DIR`，可跳过本节构建。本项目要求 LLVM/MLIR 主版本 **22**；验证基线是 **22.1.8**，对应提交 `ca7933e47d3a3451d81e72ac174dcb5aa28b59d1`。
+已有兼容工具链时，只需设置其 `lib/cmake/mlir` 为 `MLIR_DIR`，可跳过本节构建。本项目要求 LLVM/MLIR **>=22**；验证版本是 **22.1.8**。
 
 以下在仓库旁建立工具链源码与构建目录：
 
@@ -56,6 +56,17 @@ export MLIR_DIR="$(cd ../llvm-build && pwd)/lib/cmake/mlir"
 ```
 
 静态 PIC 库供本项目链接；torch-mlir 使用自身的 Python 绑定，无需 LLVM Python 绑定。保留工具链源码和构建目录，后续打开新终端时重新设置 `MLIR_DIR`、`CC`、`CXX`。
+
+编辑器出现 `Could not find ... MLIRConfig.cmake` 时，为它使用的构建目录重新配置：
+
+```sh
+cmake -G Ninja -S . -B build -DMLIR_DIR=/path/to/llvm-build/lib/cmake/mlir
+```
+
+`MLIR_DIR` 必须指向包含 `MLIRConfig.cmake` 的目录。编辑器若使用独立构建目录，
+也需设置该目录的配置参数；终端中的环境变量未必传给已启动的编辑器。
+可将个人路径放入不提交的 `CMakeUserPresets.json`，并在编辑器中选择相应 preset；
+不要写进项目的 `CMakeLists.txt`。
 
 ## 编译器本体
 
@@ -109,27 +120,103 @@ cim22/
   web/static/assets/
 ```
 
-按 [Python 安装指南](python/README.md#安装)安装该 wheel 和 torch-mlir，再运行自检脚本。普通用户仍需系统 `cc` 和链接开发环境来编译模型。本机构建只保证面向本机 ABI；可移植 manylinux 分发还需独立构建和验收。
+按 [Python 安装指南](python/README.md#安装)安装该 wheel，再运行自检脚本；项目元数据会声明 torch-mlir 基础依赖。普通用户仍需系统 `cc` 和链接开发环境来编译模型。本机构建只保证面向本机 ABI；可移植 manylinux 分发还需独立构建和验收。
+
+### Linux Release wheel
+
+当前本地候选包（2026-10-18，`py3-none-linux_x86_64`）已通过全新 sdist 构建、
+隔离安装和 124 项定向测试，包含优化器、两个原生库和 Web 静态页面。
+但 compiler/优化器要求 `GLIBC_2.44`，compiler/runtime 要求
+`GLIBCXX_3.4.32`；还依赖系统 zlib、zstd、libusb 及其传递依赖。
+`auditwheel show` 也确认当前只能标记为 `linux_x86_64`。
+它仅适合满足这些要求的已验证环境，不宜作为通用 Linux Release 附件。
+
+面向更多发行版发布时，建议以 `manylinux_2_28_x86_64` 为目标评估以下流程：
+
+1. 在该基线容器中构建 LLVM/MLIR SDK，再构建本项目；不能复用新宿主机编译的静态库。
+2. 先生成前端，再从全新 sdist 构建 wheel。检查所有 ELF 的符号版本、
+   指令集和运行库搜索路径，避免宿主机路径或 `-march=native`。
+3. 在构建环境中运行 `auditwheel show`、
+   `auditwheel repair --plat manylinux_2_28_x86_64 --wheel-dir repaired <wheel>`，
+   处理非策略允许的共享库，并随附所需的第三方许可证。
+4. 在干净的目标系统上安装修复后的 wheel、兼容的 CPU PyTorch 和 torch-mlir；
+   在仓库外验证模型编译、软件执行、CLI 和 Web。USB 硬件验证单独记录。
+5. Release 附件提供 wheel、SHA256、构建信息、依赖组合和适用平台说明。
+
+`manylinux_2_28` 表示 glibc 2.28 基线，不涵盖 Alpine/musl、其他 CPU 架构或所有
+Python/依赖组合；最终基线也受 PyTorch 和 torch-mlir wheel 限制。
+`auditwheel repair` 能打包部分外部库并调整加载路径，不能降低已编译二进制要求的
+glibc/libstdc++ 版本，不能仅修改 wheel 文件名。动态 `ctypes`/`dlopen` 加载及
+安装后编译出的模型仍需实际测试。上述可移植构建尚未验收。
+参见 [manylinux](https://github.com/pypa/manylinux) 和
+[auditwheel 限制](https://github.com/pypa/auditwheel#limitations)。
+
+### GitHub Actions 构建（开发者）
+
+[Build Linux wheels](.github/workflows/wheels.yml) 手动触发，合并到默认分支后，
+在 **Actions → Build Linux wheels → Run workflow** 选择待构建的分支或 tag。
+所有原生编译均在固定镜像的 `manylinux_2_28_x86_64` 容器中执行：
+
+1. 从官方 `llvm/llvm-project` 检出 22.1.8 的固定提交，构建 Release、静态 PIC、
+   X86 SDK，包含 MLIR 执行引擎和 TableGen 工具；不添加源码 submodule。
+2. 按源码 SHA、容器及构建脚本缓存安装后的 SDK。命中时跳过 LLVM 编译；
+   另保留最多 2 GiB 的 ccache，在 SDK 需要重建时复用编译结果。
+3. SDK 压缩包通过 artifact 传给一个 Ubuntu **24.04** 构建 job，校验 SHA256
+   后构建前端、全新 sdist 和 manylinux wheel，执行 auditwheel 检查与修复。
+4. 构建产物及 `SHA256SUMS` 通过 `actions/upload-artifact` 保存 14 天；Ubuntu
+   **22.04、24.04、26.04** 只下载这一份 wheel，分别安装并验证 CPU 软件推理、
+   定向 pytest、CLI 和 Web 静态资源/API，验证报告单独上传。
+
+manylinux wheel 由同一构建 job 生成，不是三种 Ubuntu 专用包。Ubuntu 矩阵只用于
+检查不同宿主机环境；GitHub Actions artifact 可手动下载，不会自动发布 Release。
+首次 SDK 构建上限六小时、项目构建与验收上限两小时；均限制两个编译任务、
+一个链接任务。SDK job 清理 runner 中未使用的 Android/.NET/GHC，以释放空间。
+缓存可能被淘汰，不能视为永久工具链仓库；首次构建的耗时和磁盘仍需远程实测。
+`uses` 使用当前最新 major tag。
+
+安装验收使用 CPU PyTorch 2.14.1 和官方 torch-mlir 20261001 wheel，
+不上传本机 torch-mlir wheel、模型或数据集。最终 wheel 内含 LLVM/MLIR 原生代码，
+用户无需安装 SDK。源码允许 LLVM/MLIR >=22，发布构建固定 22.1.8；换版本后
+必须重新构建 SDK 并验证。Ubuntu runner 的版本不决定容器中二进制的 glibc 基线。
+
+设计参考 torch-mlir 的
+[_build_wheels.yml](https://github.com/llvm/torch-mlir/blob/a5efa975854c04288217663ffa8e924693412be9/.github/workflows/_build_wheels.yml)：
+固定 LLVM 源码、复用 ccache。本项目通过 artifact 传递安装后的 SDK，避免每次
+wheel 构建重复编译 LLVM。
+
+当前仅完成本地配置与脚本检查；首次远程运行成功前，不能声称已有可移植 Release
+wheel。manylinux 审计及 Ubuntu 软件测试不代表所有发行版或真实 USB 板卡已验证。
+
+### PR 代码检查
+
+[pre-commit 配置](.pre-commit-config.yaml) 用于 PR 自动检查，无需在本机安装
+Git hooks。远程环境通过 `cpp-linter-hooks`、`ruff-pre-commit` 和
+`pre-commit-hooks` 安装工具，排除供应商、生成文件及包管理器锁文件的通用格式化。
+Ruff 的 lint/format 均通过 `args` 指定 `python/pyproject.toml`，使目录外的
+Python 脚本也使用相同规则。pre-commit.ci 需为仓库启用对应 GitHub App。
+当前 cpp-linter 的版本解析仍依赖联网，
+尚未验证其在 pre-commit.ci 中可用，不能仅凭配置文件声称 PR 已检查通过。
+本机手动格式化仍使用已安装的 Ruff 和 clang-format，二者不作为项目运行时依赖。
 
 ### Editable 开发安装
 
-从 [torch-mlir releases](https://github.com/llvm/torch-mlir/releases) 下载与当前后端兼容的 wheel，放在 **`python/` 目录**，与 `tool.uv.sources` 的路径一致：
-
-```text
-torch_mlir-<compatible-release>-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-```
-
-然后执行：
+`python/pyproject.toml` 的 `tool.uv.sources` 固定官方 torch-mlir 20261001
+Release wheel URL，并选择 PyTorch CPU 索引；uv 自动下载和缓存，无需手动放置 wheel。
+准备好前述 LLVM/MLIR 开发环境后执行：
 
 ```sh
 CMAKE_BUILD_PARALLEL_LEVEL=4 uv sync --project python --python 3.12 \
-  --locked --extra compiler --no-dev
+  --locked --no-dev
 uv run --project python --no-sync python python/examples/torch_compile.py
 ```
 
-该命令创建 `python/.venv`，安装 CPU PyTorch、torch-mlir 和本项目的 editable 版本，并构建原生组件。`compiler` extra 选择 torch-mlir；`--no-dev` 只跳过默认开发依赖。预编译用户的 `.venv` 与这里的 `python/.venv` 是不同环境。
+该命令创建 `python/.venv`，安装 CPU PyTorch、torch-mlir 和本项目的 editable 版本，并构建原生组件。`--no-dev` 只跳过默认开发依赖。预编译用户的 `.venv` 与这里的 `python/.venv` 是不同环境。
 
-元数据允许 Python `>=3.12`、Torch `>=2.14,<3` 和任意 torch-mlir 版本；当前回归使用与后端匹配的 Release wheel。更新依赖后需要重新验证后端。
+当前发布、CI 构建和回归仅支持 Python 3.12，因为固定的 torch-mlir wheel 只按该版本验收。
+项目元数据暂时限制为 `>=3.12,<3.13`；未来支持其他 Python 版本时，需要先更新
+torch-mlir 组合并重新验证后再放宽。Torch 要求为 `>=2.14,<3`，torch-mlir 版本需与后端匹配。
+
+开发锁文件用 `uv lock --project python` 更新，保留上述来源。
 
 ### 构建目录与配置变体
 
@@ -155,7 +242,7 @@ Python 代码修改在 editable 安装中直接生效。修改 C++、TableGen、
 
 ```sh
 CMAKE_BUILD_PARALLEL_LEVEL=2 uv sync --project python --python 3.12 \
-  --locked --extra compiler --group dev --reinstall-package mlir-cim22
+  --locked --group dev --reinstall-package mlir-cim22
 uv run --directory python --no-sync pytest
 ```
 
