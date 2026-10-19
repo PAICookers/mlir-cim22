@@ -62,4 +62,4 @@ PY
   "$py" --version
   "$py" -m pip list --format=freeze
   echo "No physical-board validation performed."
-} > "$dist_dir/VALIDATION.txt"
+}

@@ -126,13 +126,13 @@ jobs:
           PROJECT_COMMIT: ${{ github.sha }}
           BUILD_RUNNER: ubuntu-24.04
         run: |
-          mkdir -p .cache/manylinux/work wheelhouse/manylinux
+          mkdir -p .cache/manylinux/work python/dist/manylinux
           docker build -f .github/manylinux/Containerfile -t cim22-manylinux .github/manylinux
           docker run --rm --user "$(id -u):$(id -g)" \
             -v "$PWD:/io:ro" \
             -v "$PWD/.cache/manylinux/llvm-sdk:/opt/llvm:ro" \
             -v "$PWD/.cache/manylinux/work:/work" \
-            -v "$PWD/wheelhouse/manylinux:/out" \
+            -v "$PWD/python/dist/manylinux:/out" \
             -e HOME=/work/home -e PROJECT_COMMIT -e BUILD_RUNNER \
             -e LLVM_VERSION -e LLVM_COMMIT -e LLVM_SDK_SHA256 \
             -e CMAKE_BUILD_PARALLEL_LEVEL=2 \
@@ -140,10 +140,16 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: mlir-cim22-manylinux
-          path: wheelhouse/manylinux/
+          path: python/dist/manylinux/*.whl
+          archive: false
           if-no-files-found: error
-          compression-level: 0
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: python/dist/manylinux/SHA256SUMS
+          archive: false
+          if-no-files-found: error
           retention-days: 14
 
   validate-wheel:
@@ -161,23 +167,22 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: mlir-cim22-manylinux
-          path: wheelhouse/manylinux
+          pattern: mlir_cim22-*.whl
+          merge-multiple: true
+          path: python/dist/manylinux
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: SHA256SUMS
+          path: python/dist/manylinux
 
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
       - name: Validate checksum
-        working-directory: wheelhouse/manylinux
+        working-directory: python/dist/manylinux
         run: sha256sum --check SHA256SUMS
 
       - name: Validate installed wheel outside checkout
-        run: bash .github/scripts/test-wheel.sh wheelhouse/manylinux
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: mlir-cim22-validation-${{ matrix.os }}
-          path: wheelhouse/manylinux/VALIDATION.txt
-          if-no-files-found: error
-          retention-days: 14
+        run: bash .github/scripts/test-wheel.sh python/dist/manylinux

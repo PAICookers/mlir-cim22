@@ -16,21 +16,26 @@ cmake -G Ninja -S /llvm-source/llvm -B "$work_dir/build" \
   -DLLVM_ENABLE_PROJECTS=mlir -DLLVM_TARGETS_TO_BUILD=X86 \
   -DBUILD_SHARED_LIBS=OFF -DLLVM_BUILD_LLVM_DYLIB=OFF \
   -DLLVM_LINK_LLVM_DYLIB=OFF -DMLIR_LINK_MLIR_DYLIB=OFF \
-  -DLLVM_ENABLE_PIC=ON -DLLVM_ENABLE_ASSERTIONS=ON \
+  -DLLVM_ENABLE_PIC=ON -DLLVM_ENABLE_ASSERTIONS=OFF \
   -DLLVM_ENABLE_EH=OFF -DLLVM_ENABLE_RTTI=OFF \
   -DLLVM_INCLUDE_TESTS=OFF -DMLIR_INCLUDE_TESTS=OFF \
-  -DLLVM_INCLUDE_EXAMPLES=OFF -DMLIR_INCLUDE_EXAMPLES=OFF \
+  -DLLVM_INCLUDE_EXAMPLES=OFF \
   -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_DOCS=OFF -DMLIR_INCLUDE_DOCS=OFF \
   -DMLIR_ENABLE_BINDINGS_PYTHON=OFF -DMLIR_ENABLE_EXECUTION_ENGINE=ON \
   -DMLIR_INSTALL_AGGREGATE_OBJECTS=OFF \
   -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_ZSTD=OFF \
   -DLLVM_ENABLE_LIBXML2=OFF -DLLVM_ENABLE_LIBEDIT=OFF \
-  -DLLVM_PARALLEL_LINK_JOBS=1
-cmake --build "$work_dir/build" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
-DESTDIR="$work_dir/install" cmake --install "$work_dir/build" --strip
+  -DLLVM_PARALLEL_LINK_JOBS=1 \
+  -DLLVM_DISTRIBUTION_COMPONENTS='llvm-libraries;mlir-libraries;llvm-headers;mlir-headers;cmake-exports;mlir-cmake-exports;llvm-config;llvm-tblgen;mlir-tblgen'
+# Let LLVM select and install SDK components without building unrelated tools.
+DESTDIR="$work_dir/install" cmake --build "$work_dir/build" \
+  --target install-distribution-stripped \
+  --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
 sdk_dir="$work_dir/install/opt/llvm"
 [[ "$("$sdk_dir/bin/llvm-config" --version)" == "$LLVM_VERSION" ]]
 [[ "$("$sdk_dir/bin/llvm-config" --shared-mode)" == static ]]
+[[ "$("$sdk_dir/bin/llvm-config" --build-mode)" == Release ]]
+[[ "$("$sdk_dir/bin/llvm-config" --assertion-mode)" == OFF ]]
 "$sdk_dir/bin/mlir-tblgen" --version
 mkdir -p "$sdk_dir/share/cim22-licenses"
 cp "/llvm-source/LICENSE.TXT" "$sdk_dir/share/cim22-licenses/LLVM.txt"
@@ -38,7 +43,7 @@ cp "/llvm-source/llvm/lib/Support/BLAKE3/LICENSE" \
   "$sdk_dir/share/cim22-licenses/BLAKE3.txt"
 sed -n '1,/^ \*\//p' "/llvm-source/llvm/lib/Support/xxhash.cpp" \
   > "$sdk_dir/share/cim22-licenses/XXHASH.txt"
-printf 'LLVM version: %s\nLLVM commit: %s\n' \
+printf 'LLVM version: %s\nLLVM commit: %s\nBuild: Release; assertions OFF; X86 static PIC SDK distribution\n' \
   "$LLVM_VERSION" "$LLVM_COMMIT" > "$sdk_dir/SDK-INFO.txt"
 ccache --show-stats
 # Tar preserves executable permissions when the SDK crosses artifact jobs.
