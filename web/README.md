@@ -15,8 +15,9 @@ PyTorch 推理和 CIM22 软件运行结果。页面由 FastAPI 提供，不需�
 
 ## 使用已安装的 wheel
 
-请先按 [Python 安装说明](../python/README.md#安装) 安装 Python 3.12 和
-`mlir-cim22[web]`。发布 wheel 已包含前端静态页面，用户不需要安装 Node.js。
+请先按 [Python 安装说明](../python/README.md#安装) 安装 Python 3.12、兼容的
+项目 wheel 及其 `[web]` extra。torch-mlir 是项目的基础依赖，wheel 已包含前端静态页面，
+用户不需要安装 Node.js。
 
 启动服务：
 

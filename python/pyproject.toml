@@ -5,23 +5,22 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "mlir-cim22"
 version = "1.0.0"
-requires-python = ">=3.12"
-dependencies = ["numpy>=1.26,<3", "torch>=2.14,<3"]
+requires-python = ">=3.12,<3.13"
+dependencies = ["numpy>=1.26,<3", "torch>=2.14,<3", "torch-mlir"]
 
 [project.optional-dependencies]
-compiler = ["torch-mlir"]
-web = [
-    "fastapi>=0.115,<1",
-    "spikingjelly>=0.0.0.0.12,<1",
-    "torch-mlir",
-    "uvicorn>=0.34,<1",
-]
+web = ["fastapi>=0.115,<1", "spikingjelly>=0.0.0.0.12,<1", "uvicorn>=0.34,<1"]
 
 [project.scripts]
 cim22-web = "cim22.web.__main__:main"
 
 [dependency-groups]
-dev = ["onnx>=1.21.0,<2", "protobuf>=6.31.1", "pytest>=8.3,<10", "httpx>=0.28,<1"]
+dev = [
+    "onnx>=1.21.0,<2",
+    "protobuf>=6.31.1",
+    "pytest>=8.3,<10",
+    "httpx>=0.28,<1",
+]
 
 [project.entry-points."torch_dynamo_backends"]
 cim22 = "cim22.backend:backend"
@@ -55,7 +54,6 @@ if.from-sdist = true
 cmake.source-dir = "native"
 
 [tool.uv]
-# The compiler wheel and native model ABI currently target Linux x86-64.
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
 [[tool.uv.index]]
@@ -65,8 +63,7 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
-# Place the selected development wheel in the python directory root.
-torch-mlir = { path = "./torch_mlir-20261001-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
+torch-mlir = { url = "https://github.com/llvm/torch-mlir/releases/download/v20261001/torch_mlir-20261001-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

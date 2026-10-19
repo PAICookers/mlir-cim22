@@ -4,11 +4,11 @@
 
 固定 DVS 模型的本地浏览器界面见 [DVS 工作台](../web/README.md)，支持导入、编译、对比测试、取消、续跑和 CSV 结果。安装时增加 `web` extra；构建后的前端随 wheel 分发，用户不需要 Node.js。
 
-发行包 `mlir-cim22` 已包含 Python 模块、`mlir-cim22-opt` 和两个原生库。安装 torch-mlir 后即可使用，无需单独安装本项目的 C++ 工具。
+发行包 `mlir-cim22` 已包含 Python 模块、`mlir-cim22-opt` 和两个原生库，并声明 torch-mlir 为基础依赖。
 
 ## 安装
 
-以下命令均在**仓库根目录**执行。你可以直接安装维护者提供的预编译 wheel，也可以先从源码构建本项目 wheel；两条路径都需要在同一个 Python 虚拟环境中安装兼容的 torch-mlir Release wheel。
+以下安装命令可在任意工作目录执行；示例脚本路径相对仓库根目录。项目安装会解析 torch-mlir 基础依赖。
 
 ### 使用预编译 wheel
 
@@ -20,7 +20,7 @@ sudo apt-get install build-essential libusb-1.0-0
 
 预编译用户不需要 LLVM/MLIR、CMake 或 protoc；其他系统动态库要求以所用 wheel 的构建环境说明为准。
 
-将维护者提供且适配本机系统 ABI 的 `mlir_cim22-*.whl`，以及从 [torch-mlir releases](https://github.com/llvm/torch-mlir/releases) 下载与当前后端兼容的 `torch_mlir-*.whl` 放入 `downloads/`。目录中每种 wheel 只保留一个版本，然后执行：
+将维护者提供的 `mlir_cim22-*.whl`，以及从 [torch-mlir releases](https://github.com/llvm/torch-mlir/releases) 下载与当前后端兼容的 `torch_mlir-*.whl` 放入 `downloads/`。目录中每种 wheel 只保留一个版本，然后执行：
 
 ```sh
 uv venv --python 3.12 .venv
@@ -39,7 +39,11 @@ CIM22 torch.compile software execution passed (0, 65, 129).
 
 它验证自定义 `nn.Module`、编译和三次软件执行。自己的应用也使用这个虚拟环境。
 
-当前验证环境为 Python 3.12.15、CPU PyTorch 2.14.1 和 torch-mlir 20261001。包元数据允许 Python `>=3.12`、PyTorch `>=2.14,<3` 和任意 torch-mlir 版本，不代表所有组合均已测试。本机编译的 `linux_x86_64` wheel 可能依赖较新的 glibc 及系统动态库；应使用维护者明确标注适用环境的构建。
+当前发布和验证环境为 Python 3.12.15、CPU PyTorch 2.14.1 和 torch-mlir
+20261001。包元数据暂时限制为 Python `>=3.12,<3.13`；当前不承诺其他 Python
+版本或任意 torch-mlir 组合。
+
+使用 Web 工作台时，将上述安装命令中的项目 wheel 路径改为 `'./downloads/mlir_cim22-<version>-<tags>.whl[web]'`（替换为实际文件名），即可安装 Web 依赖；然后按 [Web 启动说明](../web/README.md#使用已安装的-wheel) 运行 `cim22-web`。不需要构建前端。没有源码时，可直接运行下文的最小模型。
 
 ### 从源码构建并安装 wheel
 
@@ -53,7 +57,7 @@ CMAKE_BUILD_PARALLEL_LEVEL=4 uv build --python 3.12 python \
   --wheel --out-dir wheelhouse
 ```
 
-然后创建一个自己的 Python 3.12 虚拟环境，并把 torch-mlir Release wheel 和刚构建的本项目 wheel 安装到同一个环境：
+然后创建一个自己的 Python 3.12 虚拟环境并安装刚构建的本项目 wheel：
 
 ```sh
 uv venv --python 3.12 .venv
@@ -69,7 +73,7 @@ uv pip install --python .venv/bin/python \
 .venv/bin/python python/examples/torch_compile.py
 ```
 
-预编译安装和源码构建安装都要求 torch-mlir wheel、`mlir-cim22` wheel 与应用使用同一个虚拟环境。当前发行目标是 Linux x86-64；其他平台和 ABI 组合需要单独构建与验证。
+预编译安装和源码构建安装都要求 `mlir-cim22`、torch-mlir 和应用使用同一个虚拟环境。当前发行目标是 Linux x86-64。
 
 ## 最小模型
 

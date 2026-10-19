@@ -1,0 +1,41 @@
+default_install_hook_types: [pre-commit, prepare-commit-msg]
+exclude: '(^|/)(third_party|_generated|node_modules|build|dist)/|^python/cim22/web/static/|^web/(pnpm-lock\.yaml|bun\.lock|package-lock\.json)$'
+ci:
+  autofix_commit_msg: ":rotating_light: auto fix by pre-commit hooks"
+  autofix_prs: true
+  autoupdate_branch: dev
+  autoupdate_schedule: monthly
+  autoupdate_commit_msg: ":arrow_up: auto update by pre-commit hooks"
+repos:
+  - repo: https://github.com/cpp-linter/cpp-linter-hooks
+    rev: v1.6.1
+    hooks:
+      - id: clang-format
+        args: [--style=file, --version=21]
+        files: \.(c|cc|cpp|cxx|h|hh|hpp|hxx)$
+        exclude: ^third_party/
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.1
+    hooks:
+      - id: ruff-check
+        args: [--fix, --config=python/pyproject.toml]
+      - id: ruff-format
+        args: [--config=python/pyproject.toml]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-ast
+      - id: check-added-large-files
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-symlinks
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+      - id: pretty-format-json
+        args: [--autofix, --indent, '2']
+      - id: no-commit-to-branch
