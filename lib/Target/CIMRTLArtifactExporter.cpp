@@ -546,17 +546,19 @@ LogicalResult writeArtifacts(ModuleOp module, StringRef outputDir,
             << "Software-checked artifacts only. Frozen RTL replay and board "
                "execution are not established by export or compiler tests.\n";
         if (artifact.bf16)
-          stream << "\nCandidate BF16 software model (CTQ-028/037), not IEEE "
-                    "BF16 matmul or bit-exact board behavior. Historical demo "
-                    "zero/cancellation outputs differ from this model. "
-                    "Weight_EXP uses lane 0 in bits [7:0] of the first word. "
-                    "Expected outputs put BF16 bits in each 21-bit token's "
-                    "low 16 bits, lane 15 first, with 48 low padding bits "
-                    "in the provisional 384-bit Cache row. "
-                    "int21_1/2.txt hold the intermediate sums. "
-                    "Alignment truncates magnitude before sign; zero MAC "
-                    "returns zero. Reconstruction uses gradual underflow "
-                    "and finite saturation with rounding toward zero.\n";
+          stream
+              << "\nRTL-derived BF16 software model (HWSRC-059/NUM-021), not "
+                 "IEEE BF16 matmul or bit-exact board behavior. Historical "
+                 "demo zero/cancellation outputs differ from this model. "
+                 "Weight_EXP uses lane 0 in bits [7:0] of the first word. "
+                 "Expected outputs put BF16 bits in each 21-bit token's "
+                 "low 16 bits, lane 15 first, with 48 low padding bits "
+                 "in the provisional 384-bit Cache row. "
+                 "int21_1/2.txt hold the intermediate sums. "
+                 "Alignment truncates magnitude before sign; zero clears "
+                 "the mantissa while retaining the exponent path. "
+                 "Reconstruction clamps the raw exponent and truncates the "
+                 "low seven mantissa bits without IEEE rounding.\n";
       });
 }
 

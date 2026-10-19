@@ -333,25 +333,26 @@ int main(int argc, char **argv) {
       llvm::MutableArrayRef<CIMOutputView>(&bf16OutputView, 1)};
   assert(!runner.run(bf16, bf16Inputs, bf16Outputs));
   for (uint16_t value : bf16OutputStorage)
-    assert(value == 0x0000);
+    assert(value == 0x7f80);
 
-  // Unit weights/input both align to 64 at E=127: 64 products give 64.
+  // Unit weights/input both align to 64 at E=127. The raw exponent sum is
+  // clamped to 255 by the RTL-derived reconstruction model.
   assert(!runner.run(makeBF16Executable(true, 64), bf16Inputs, bf16Outputs));
   for (uint16_t value : bf16OutputStorage)
-    assert(value == 0x4280);
+    assert(value == 0x7f80);
   assert(!runner.run(makeBF16Executable(true, -64), bf16Inputs, bf16Outputs));
   for (uint16_t value : bf16OutputStorage)
-    assert(value == 0xc280);
+    assert(value == 0xff80);
 
   bf16InputStorage.fill(0x8000);
   assert(!runner.run(makeBF16Executable(true, -128), bf16Inputs, bf16Outputs));
   for (uint16_t value : bf16OutputStorage)
-    assert(value == 0);
+    assert(value == 0x4000);
   // Every finite aligned magnitude is <=127, including dense negative inputs.
   bf16InputStorage.fill(0xbfff);
   assert(!runner.run(makeBF16Executable(true, -127), bf16Inputs, bf16Outputs));
   for (uint16_t value : bf16OutputStorage)
-    assert(value == 0x437c); // trunc(64 * (127/64)^2) = 252 in BF16.
+    assert(value == 0x7ffc); // Direct clamp with mantissa 252.
   bf16InputStorage.fill(0x3f80);
 
   bf16InputStorage[0] = 0x7f80;
