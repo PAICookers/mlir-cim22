@@ -40,9 +40,10 @@ BF16PrealignedWeightTile prealignBF16WeightTile(
     const std::array<uint16_t, kBF16OutputElements * kBF16InputElements>
         &values);
 
-// Converts INT21 * 2^(max(Ew,1)+max(Ei,1)-266) to BF16, rounding toward zero.
-// Uses gradual underflow, finite saturation and positive zero for a zero MAC.
-// Shared-exponent truncation means this is not a conventional BF16 dot product.
+// Converts a signed INT21 result using the RTL-derived raw exponent sum
+// Ew+Ei+1+shift. The highest eight magnitude bits are truncated toward zero,
+// the exponent is clamped to [0,255], and the resulting BF16 bits are assembled
+// directly. Zero retains the exponent path and may therefore be nonzero.
 uint16_t int21ToBF16(int32_t value, uint8_t weightExponent,
                      uint8_t inputExponent);
 

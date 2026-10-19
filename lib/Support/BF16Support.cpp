@@ -8,10 +8,7 @@
 
 #include "CIM22/Support/BF16Support.h"
 
-#include "llvm/ADT/APFloat.h"
-
 #include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -60,21 +57,28 @@ BF16PrealignedWeightTile prealignBF16WeightTile(
 
 uint16_t int21ToBF16(int32_t value, uint8_t weightExponent,
                      uint8_t inputExponent) {
-  if (value == 0)
-    return 0;
+  // Match the RTL-derived model: retain the highest eight magnitude bits,
+  // truncate toward zero, then combine the raw exponent sum and sign.
+  const bool negative = value < 0;
+  const int64_t magnitude = negative ? -static_cast<int64_t>(value) : value;
+  int shift = 0;
+  uint64_t mantissaShifted = 0;
+  if (magnitude != 0) {
+    int highestBit = 0;
+    for (int64_t remaining = magnitude; remaining > 1; remaining >>= 1)
+      ++highestBit;
+    shift = highestBit - 7;
+    mantissaShifted = shift >= 0 ? static_cast<uint64_t>(magnitude) >> shift
+                                 : static_cast<uint64_t>(magnitude) << -shift;
+  }
 
-  // Each aligned integer represents q * 2^(max(E,1)-133). The product
-  // therefore has scale 2^(Ew+Ei-266). Double represents every INT21 value
-  // times this power of two exactly across the finite BF16 operand range.
-  const int scale =
-      std::max<int>(weightExponent, 1) + std::max<int>(inputExponent, 1) - 266;
-  llvm::APFloat result(std::ldexp(static_cast<double>(value), scale));
-  bool losesInfo = false;
-  // Toward-zero conversion gives gradual underflow and saturates overflow to
-  // the largest finite BF16 of the same sign, never a manufactured NaN/Inf.
-  result.convert(llvm::APFloat::BFloat(), llvm::APFloat::rmTowardZero,
-                 &losesInfo);
-  return static_cast<uint16_t>(result.bitcastToAPInt().getZExtValue());
+  const int exponent = static_cast<int>(weightExponent) +
+                       static_cast<int>(inputExponent) + 1 + shift;
+  const uint16_t exponent8 =
+      static_cast<uint16_t>(std::clamp(exponent, 0, 255));
+  const uint16_t sign = negative ? 0x8000 : 0;
+  return static_cast<uint16_t>(sign | (exponent8 << 7) |
+                               (mantissaShifted & 0x7f));
 }
 
 std::array<uint64_t, 2> packBF16WeightExponents(

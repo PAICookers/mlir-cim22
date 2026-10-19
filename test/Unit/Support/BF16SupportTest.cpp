@@ -80,23 +80,28 @@ static bool testSupplierPrealignmentFixtures() {
 }
 
 static bool testInt21Conversion() {
-  return check(int21ToBF16(0, 3, 4) == 0x0000, "BF16-P03 canonical zero") &&
-         check(int21ToBF16(6144, 127, 127) == 0x3fc0,
+  return check(int21ToBF16(0, 3, 4) == 0x0400,
+               "BF16-P03 zero keeps exponent path") &&
+         check(int21ToBF16(6144, 127, 127) == 0x7fc0,
                "BF16-P03 positive normalization") &&
-         check(int21ToBF16(-6144, 127, 127) == 0xbfc0,
+         check(int21ToBF16(-6144, 127, 127) == 0xffc0,
                "BF16-P03 negative normalization") &&
-         check(int21ToBF16(2048, 1, 127) == 0x0040,
-               "BF16-P03 gradual underflow") &&
-         check(int21ToBF16(1048575, 254, 254) == 0x7f7f &&
-                   int21ToBF16(-1048576, 254, 254) == 0xff7f,
-               "BF16-P03 finite saturation, both signs") &&
-         check(int21ToBF16(-1048576, 127, 127) == 0xc380,
+         check(int21ToBF16(2048, 1, 127) == 0x4280,
+               "BF16-P03 raw exponent reconstruction") &&
+         check(int21ToBF16(1048575, 254, 254) == 0x7fff &&
+                   int21ToBF16(-1048576, 254, 254) == 0xff80,
+               "BF16-P03 exponent clamp, both signs") &&
+         check(int21ToBF16(-1048576, 127, 127) == 0xff80,
                "BF16-P03 signed INT21 minimum") &&
-         check(int21ToBF16(8191, 127, 127) == 0x3fff &&
-                   int21ToBF16(-8191, 127, 127) == 0xbfff,
+         check(int21ToBF16(8191, 127, 127) == 0x7fff &&
+                   int21ToBF16(-8191, 127, 127) == 0xffff,
                "BF16-P03 truncate final fraction toward zero") &&
          check(int21ToBF16(1, 0, 0) == 0 && int21ToBF16(-1, 0, 0) == 0x8000,
-               "BF16-P03 underflow sign");
+               "BF16-P03 low clamp preserves sign") &&
+         check(int21ToBF16(127, 1, 132) == 0x42fe &&
+                   int21ToBF16(128, 1, 132) == 0x4300 &&
+                   int21ToBF16(-3, 1, 131) == 0xbfc0,
+               "BF16-P03 direct truncation boundaries");
 }
 
 static bool testFiniteAlignmentError() {
@@ -158,10 +163,10 @@ static bool testZeroAndSubnormalBits() {
                    aligned.mantissas[1] == 0 && aligned.mantissas[2] == 1 &&
                    aligned.mantissas[3] == -1 && aligned.mantissas[4] == 0,
                "BF16-P07 zero/subnormal prealignment") &&
-         check(int21ToBF16(262144, 127, 127) == 0x4280,
+         check(int21ToBF16(262144, 127, 127) == 0x7f80,
                "BF16-P07 64 unit products") &&
-         check(int21ToBF16(64, 0, 127) == 0x0002,
-               "BF16-P07 raw zero exponent uses subnormal scale");
+         check(int21ToBF16(64, 0, 127) == 0x3f80,
+               "BF16-P07 raw exponent uses direct scale");
 }
 
 static bool testExponentGapBoundary() {
