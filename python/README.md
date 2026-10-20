@@ -28,20 +28,9 @@ uv pip install --python .venv/bin/python \
   --index-url https://download.pytorch.org/whl/cpu 'torch>=2.14,<3'
 uv pip install --python .venv/bin/python \
   ./downloads/torch_mlir-*.whl ./downloads/mlir_cim22-*.whl
-.venv/bin/python python/examples/torch_compile.py
 ```
 
-成功时示例输出：
-
-```text
-CIM22 torch.compile software execution passed (0, 65, 129).
-```
-
-它验证自定义 `nn.Module`、编译和三次软件执行。自己的应用也使用这个虚拟环境。
-
-当前发布和验证环境为 Python 3.12.15、CPU PyTorch 2.14.1 和 torch-mlir
-20261001。包元数据暂时限制为 Python `>=3.12,<3.13`；当前不承诺其他 Python
-版本或任意 torch-mlir 组合。
+当前发布和验证环境为 Python 3.12.15、CPU PyTorch 2.14.1 和 torch-mlir 20261001。
 
 使用 Web 工作台时，将上述安装命令中的项目 wheel 路径改为 `'./downloads/mlir_cim22-<version>-<tags>.whl[web]'`（替换为实际文件名），即可安装 Web 依赖；然后按 [Web 启动说明](../web/README.md#使用已安装的-wheel) 运行 `cim22-web`。不需要构建前端。没有源码时，可直接运行下文的最小模型。
 
@@ -49,12 +38,12 @@ CIM22 torch.compile software execution passed (0, 65, 129).
 
 源码构建需要先按 [源码构建指南](../BUILDING.md#环境与依赖) 准备 LLVM/MLIR、CMake、Ninja 和本项目的 CMake 依赖。构建 wheel 本身不需要安装 PyTorch 或 torch-mlir：
 
-若要提供 Web 界面，需先按 [Web 构建说明](../web/README.md#从源码构建)
-生成前端静态页面，再执行以下命令。
+若要提供 Web 界面，需先按 [Web 构建说明](../web/README.md#从源码构建) 生成前端静态页面，再在仓库根目录执行以下命令。将 `MLIR_DIR` 替换为实际工具链中包含 `MLIRConfig.cmake` 的目录；本体的 `build/` 缓存不会传给 Python 打包的 `python/build/`。
 
 ```sh
+export MLIR_DIR="/path/to/llvm-build/lib/cmake/mlir"
 CMAKE_BUILD_PARALLEL_LEVEL=4 uv build --python 3.12 python \
-  --wheel --out-dir python/dist
+  --wheel --out-dir python/dist -Ccmake.define.MLIR_DIR="$MLIR_DIR"
 ```
 
 然后创建一个自己的 Python 3.12 虚拟环境并安装刚构建的本项目 wheel：
@@ -137,13 +126,13 @@ torch.Size([1, 16])
 
 通过 `torch.compile(..., options={...})` 传入：
 
-| 选项                            | 用途                                             |
-| ------------------------------- | ------------------------------------------------ |
-| `runtime="software"`          | 不连接设备，执行候选 BF16 软件模型               |
+| 选项                            | 用途                                           |
+| ------------------------------- | ---------------------------------------------- |
+| `runtime="software"`          | 不连接设备，执行候选 BF16 软件模型             |
 | `runtime="usb"`               | 默认值，使用 Linux USB，回包按 BF16 位模式解包 |
-| `usb_config=UsbConfig(...)`   | USB 设备参数，只能与 USB 运行时同时使用          |
-| `artifact_dir="build/models"` | 保存每次特化的内部模型 `.so`                   |
-| `debug_dir="build/ir"`        | 保存 Linalg、packet MLIR 和目标文件              |
+| `usb_config=UsbConfig(...)`   | USB 设备参数，只能与 USB 运行时同时使用        |
+| `artifact_dir="build/models"` | 保存每次特化的内部模型 `.so`                 |
+| `debug_dir="build/ir"`        | 保存 Linalg、packet MLIR 和目标文件            |
 
 首次调用包含编译、链接和加载；稳态性能应在预热后单独测量。`TORCH_LOGS=dynamo` 查看编译阶段耗时，`TORCH_LOGS=recompiles` 排查重复编译。特化缓存在进程内，保存 `.so` 不会提供跨进程自动缓存或稳定部署接口。
 
