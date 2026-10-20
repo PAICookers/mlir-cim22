@@ -61,7 +61,7 @@ def compiled_graph(
         options={"runtime": "software", "artifact_dir": folder},
     )
     with torch.inference_mode():
-        compiled(torch.ones(2, 3, 65))
+        compiled(torch.full((2, 3, 65), 2.0**-133))
     (artifact,) = folder.glob("*.so")
     return compiled, artifact
 
@@ -70,7 +70,8 @@ def test_inference_ownership_and_error_recovery(
     compiled_graph: CompiledGraph,
 ) -> None:
     compiled, _ = compiled_graph
-    value = torch.ones(2, 3, 65)
+    # Raw BF16 0x0001 doubled on Host gives tile outputs 128+2, then bias 1.
+    value = torch.full((2, 3, 65), 2.0**-133)
     value[:, 1] *= 2
     value[:, 2] *= 4
     original = value.clone()

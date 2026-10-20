@@ -29,7 +29,7 @@ Python 发行包名为 `mlir-cim22`，导入包和后端名为 `cim22`。一个 
    成功时输出：
 
    ```text
-   CIM22 torch.compile software execution passed (0, 65, 129).
+   CIM22 torch.compile supplier-model checks passed.
    ```
 3. 在自己的模型上使用同一后端：
 
@@ -40,7 +40,10 @@ Python 发行包名为 `mlir-cim22`，导入包和后端名为 `cim22`。一个 
    model = nn.Sequential(nn.Linear(64, 16), nn.ReLU()).cpu().eval()
    with torch.inference_mode():
        compiled = torch.compile(
-           model, backend="cim22", fullgraph=True, dynamic=False,
+           model,
+           backend="cim22",
+           fullgraph=True,
+           dynamic=False,
            options={"runtime": "software"},
        )
        result = compiled(torch.ones(1, 64))

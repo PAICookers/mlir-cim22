@@ -23,8 +23,9 @@ def CIM_VMMOp : CIM_Op<"vmm", [Pure]> {
     operands with signless `i21` results, or BF16 operands with BF16 results.
     BF16 Linalg formation assumes this tile implements a conventional BF16
     dot product. The current software runner separately implements the
-    selected RTL-derived model: prealign input and per-lane weight magnitudes,
-    apply sign, accumulate signed INT21, then reconstruct BF16 by retaining the
+    selected software model: prealign input and per-lane weights using the
+    supplier's complement/logical-shift/sign-add order, accumulate signed INT21,
+    then reconstruct BF16 using the RTL-derived model by retaining the
     highest eight magnitude bits, clamping the raw exponent sum, and assembling
     the bit pattern directly. That runner
     is not an arithmetic-equivalence oracle for standard BF16 Linalg.

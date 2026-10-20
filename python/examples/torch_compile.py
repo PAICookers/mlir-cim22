@@ -1,4 +1,4 @@
-"""Compile a small custom model and check software inference results."""
+"""Compile a small model and check the adopted CIM22 software reference."""
 
 import torch
 from torch import nn
@@ -18,11 +18,10 @@ class SimpleModel(nn.Module):
 
 
 def main() -> None:
-    """Compile the model and check fixed-weight results across three calls."""
+    """Check fixed-weight results, repeated calls and signed prealignment."""
     model = SimpleModel().cpu().eval()
-    # Unit weights make the expected BF16 software results exact.
     with torch.no_grad():
-        model.linear.weight.fill_(1)
+        model.linear.weight.fill_(0.01)
         model.linear.bias.fill_(1)
     compiled = torch.compile(
         model,
@@ -31,18 +30,34 @@ def main() -> None:
         dynamic=False,
         options={"runtime": "software"},
     )
+    # Fixed supplier-model BF16 goldens; positive outputs absorb bias 1 at
+    # FP32 precision. Each input row is [first_value, other_value, ...].
+    # The mixed case aligns to [-117, 82, ...], giving INT21=414018 -> 0x7f4a;
+    # the old magnitude-first shift would instead produce 0x7f4e.
+    cases = (
+        ("negative_relu", -0.01, -0.01, 0x0000),
+        ("positive", 0.01, 0.01, 0x7E52),
+        ("double_input", 0.02, 0.02, 0x7ED2),
+        ("quadruple_input", 0.04, 0.04, 0x7F52),
+        ("mixed_sign_exponents", -0.01, 0.04, 0x7F4A),
+    )
     with torch.inference_mode():
-        for input_value, expected_value in (
-            (-1.0, 0.0),
-            (1.0, 65.0),
-            (2.0, 129.0),
-        ):
-            inputs = torch.full((1, 64), input_value)
-            expected = torch.full((1, 16), expected_value)
-            torch.testing.assert_close(
-                compiled(inputs), expected, rtol=0, atol=0
+        for case_name, first_value, other_value, expected_bits in cases:
+            inputs = torch.full((1, 64), other_value)
+            inputs[0, 0] = first_value
+            expected = (
+                torch.full((1, 16), expected_bits, dtype=torch.int16)
+                .view(torch.bfloat16)
+                .float()
             )
-    print("CIM22 torch.compile software execution passed (0, 65, 129).")
+            torch.testing.assert_close(
+                compiled(inputs),
+                expected,
+                rtol=0,
+                atol=0,
+                msg=lambda message, name=case_name: f"{name}: {message}",
+            )
+    print("CIM22 torch.compile supplier-model checks passed.")
 
 
 if __name__ == "__main__":

@@ -154,7 +154,9 @@ def test_multiple_kernels_retain_distinct_weight_resources(
         dynamic=False,
         options={"runtime": "software", "artifact_dir": tmp_path},
     )
-    value = torch.ones(1, 64)
+    # Supplier reconstruction of 64 raw BF16 0x0001 inputs gives 64/128
+    # for the two unit/double-weight kernels, rather than IEEE matmul values.
+    value = torch.full((1, 64), 2.0**-133)
     expected = (torch.full((1, 32), 64.0), torch.full((1, 16), 128.0))
     with torch.inference_mode():
         for actual, reference in zip(compiled(value), expected, strict=True):

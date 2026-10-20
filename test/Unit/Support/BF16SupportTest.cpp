@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -37,8 +36,8 @@ static bool testPrealignmentEdges() {
          check(result.mantissas[0] == 64, "BF16-P01 positive mantissa") &&
          check(result.mantissas[1] == -96, "BF16-P01 negative mantissa") &&
          check(result.mantissas[2] == 32, "BF16-P01 shifted mantissa") &&
-         check(result.mantissas[3] == -16,
-               "BF16-P01 magnitude shift before sign") &&
+         check(result.mantissas[3] == -112,
+               "BF16-P01 signed mantissa before logical shift") &&
          check(result.mantissas[4] == 0,
                "BF16-P01 exponent-difference truncation");
 }
@@ -104,29 +103,25 @@ static bool testInt21Conversion() {
                "BF16-P03 direct truncation boundaries");
 }
 
-static bool testFiniteAlignmentError() {
-  // Independent numeric bound across every finite BF16 magnitude and several
-  // competing block maxima. Shared-exponent loss must never change the sign or
-  // exceed one quantization step; cancellation is exact after alignment.
-  for (uint32_t bits = 0; bits < 0x7f80; ++bits) {
-    const int exponent = (bits >> 7) & 0xff;
-    const double original = std::ldexp((bits & 0x7f) + (exponent ? 128 : 0),
-                                       std::max(exponent, 1) - 134);
-    for (uint16_t anchor : {0x0000, 0x3f80, 0x7f7f}) {
-      std::array<uint16_t, kBF16InputElements> values{};
-      values[0] = static_cast<uint16_t>(bits);
-      values[1] = static_cast<uint16_t>(bits | 0x8000);
-      values[2] = anchor;
-      const auto result = prealignBF16Vector(values);
-      const double step =
-          std::ldexp(1.0, std::max<int>(result.exponent, 1) - 133);
-      const double represented = result.mantissas[0] * step;
-      if (!check(result.mantissas[0] >= 0 &&
-                     result.mantissas[1] == -result.mantissas[0] &&
-                     represented <= original && original - represented < step,
-                 "BF16-P04 exhaustive finite alignment bound and symmetry"))
-        return false;
-    }
+static bool testMixedSubnormalRows() {
+  // Fixed supplier outputs at the smallest normal exponent and cutoff edges.
+  struct Case {
+    uint8_t exponent;
+    std::array<int8_t, 3> expected;
+  };
+  for (const auto &test : {Case{1, {63, -64, -128}}, Case{7, {0, -127, -128}},
+                           Case{8, {0, 0, 0}}}) {
+    std::array<uint16_t, kBF16InputElements> values{};
+    values[0] = test.exponent << 7;
+    values[1] = 0x007f;
+    values[2] = 0x807f;
+    values[3] = 0x8000;
+    const auto aligned = prealignBF16Vector(values);
+    if (!check(aligned.exponent == test.exponent &&
+                   std::equal(test.expected.begin(), test.expected.end(),
+                              aligned.mantissas.begin() + 1),
+               "BF16-P04 mixed normal/subnormal shift boundaries"))
+      return false;
   }
   return true;
 }
@@ -138,6 +133,8 @@ static bool testWeightPrealignment() {
         static_cast<uint16_t>(0x3f80 + 0x80 * lane);
     weights[lane * kBF16InputElements + 1] =
         static_cast<uint16_t>(0xbf80 + 0x80 * lane);
+    weights[lane * kBF16InputElements + 2] =
+        static_cast<uint16_t>(0xbe80 + 0x80 * lane);
   }
   const BF16PrealignedWeightTile result = prealignBF16WeightTile(weights);
   for (size_t lane = 0; lane < kBF16OutputElements; ++lane) {
@@ -146,7 +143,9 @@ static bool testWeightPrealignment() {
         !check(result.mantissas[lane * kBF16InputElements] == 64,
                "BF16-P05 positive weight mantissa") ||
         !check(result.mantissas[lane * kBF16InputElements + 1] == -64,
-               "BF16-P05 negative weight mantissa"))
+               "BF16-P05 negative weight mantissa") ||
+        !check(result.mantissas[lane * kBF16InputElements + 2] == -112,
+               "BF16-P05 shifted negative weight mantissa"))
       return false;
   }
   return true;
@@ -157,11 +156,11 @@ static bool testZeroAndSubnormalBits() {
   values[1] = 0x8000;
   values[2] = 0x0002;
   values[3] = 0x8002;
-  values[4] = 0x0001; // Lost to the one-bit headroom rule.
+  values[4] = 0x0001; // All-subnormal rows use a zero-bit shift.
   const BF16PrealignedVector aligned = prealignBF16Vector(values);
   return check(aligned.exponent == 0 && aligned.mantissas[0] == 0 &&
-                   aligned.mantissas[1] == 0 && aligned.mantissas[2] == 1 &&
-                   aligned.mantissas[3] == -1 && aligned.mantissas[4] == 0,
+                   aligned.mantissas[1] == -128 && aligned.mantissas[2] == 2 &&
+                   aligned.mantissas[3] == 126 && aligned.mantissas[4] == 1,
                "BF16-P07 zero/subnormal prealignment") &&
          check(int21ToBF16(262144, 127, 127) == 0x7f80,
                "BF16-P07 64 unit products") &&
@@ -173,18 +172,18 @@ static bool testExponentGapBoundary() {
   std::array<uint16_t, kBF16InputElements> values{};
   values[0] = 0x3f80;
   values[1] = 0x3c80; // Gap 6: keep the last positive bit.
-  values[2] = 0xbc80; // Negative magnitude also retains one bit.
+  values[2] = 0xbc80; // Complement/shift/add gives 0x81 (-127).
   values[3] = 0x3c00; // Gap 7: drop both signs completely.
   values[4] = 0xbc00;
   values[5] = 0x3b80; // Gap 8: also zero.
   values[6] = 0xbb80;
-  values[7] = 0xbf02; // -0.5078125: truncate magnitude, not signed floor.
+  values[7] = 0xbf02; // Complement/shift/add gives 0x9f (-97).
   const auto aligned = prealignBF16Vector(values);
-  return check(aligned.mantissas[1] == 1 && aligned.mantissas[2] == -1 &&
+  return check(aligned.mantissas[1] == 1 && aligned.mantissas[2] == -127 &&
                    aligned.mantissas[3] == 0 && aligned.mantissas[4] == 0 &&
                    aligned.mantissas[5] == 0 && aligned.mantissas[6] == 0 &&
-                   aligned.mantissas[7] == -32,
-               "BF16-P08 signed exponent gaps and toward-zero shift");
+                   aligned.mantissas[7] == -97,
+               "BF16-P08 signed exponent gaps and supplier shift order");
 }
 
 static bool testLayouts() {
@@ -235,7 +234,7 @@ static bool testLayouts() {
 
 int main() {
   return testPrealignmentEdges() && testSupplierPrealignmentFixtures() &&
-                 testInt21Conversion() && testFiniteAlignmentError() &&
+                 testInt21Conversion() && testMixedSubnormalRows() &&
                  testWeightPrealignment() && testZeroAndSubnormalBits() &&
                  testExponentGapBoundary() && testLayouts()
              ? 0

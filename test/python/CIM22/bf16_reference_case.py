@@ -1,8 +1,8 @@
 """Prepare and check the fixed dual-Macro BF16 reference demo.
 
-Candidate-model lane-zero expectations are fixed scalar products with powers
-of two, independently of the C++ exporter. Subnormal lane-zero results are
-scaled numerically for higher lanes. Historical demo outputs are kept separately.
+Supplier-model lane-zero expectations are fixed INT21 totals and BF16 bit
+patterns, independently of the C++ exporter. Higher lanes increment the raw
+weight exponent and alternate the INT21 sign, including the zero exponent path.
 The raw weights are defined by Integration/ExecutionPlan/bf16-runner.mlir.
 """
 
@@ -21,7 +21,7 @@ INPUT_PAIRS = (
     (
         0x3F80,
         0x3F80,
-    ),  # Cancellation yields zero in the selected software model.
+    ),  # INT21 cancellation retains the reconstruction exponent path.
     (0xBF80, 0x3F80),  # -1, 1
     (0x4000, 0xC040),  # 2, -3
     (0x3F80, 0),
@@ -30,24 +30,24 @@ INPUT_PAIRS = (
 )
 LANE_ZERO = (
     (
-        (10240, 0x0120),
-        (6144, 0x00C0),
-        (0, 0x0000),
-        (-8192, 0x8100),
-        (10240, 0x01A0),
-        (4096, 0x0080),
-        (0, 0x0000),
-        (4096, 0x0080),
+        (10240, 0x43A0),
+        (6144, 0x4340),
+        (0, 0x4080),
+        (-8192, 0xC380),
+        (10240, 0x4420),
+        (4096, 0x4300),
+        (0, 0x0100),
+        (4096, 0x4300),
     ),
     (
-        (15360, 0x0970),
-        (9216, 0x0910),
-        (0, 0x0000),
-        (-12288, 0x8940),
-        (15360, 0x09F0),
-        (6144, 0x08C0),
-        (0, 0x0000),
-        (6144, 0x08C0),
+        (15360, 0x4BF0),
+        (9216, 0x4B90),
+        (0, 0x4880),
+        (-12288, 0xCBC0),
+        (15360, 0x4C70),
+        (6144, 0x4B40),
+        (0, 0x0900),
+        (6144, 0x4B40),
     ),
 )
 
@@ -88,14 +88,10 @@ def verify(directory: Path) -> None:
                 assert intermediate[row, lane] == total * (
                     -1 if lane % 2 else 1
                 )
-                sign = (
-                    ((bits & 0x8000) ^ (0x8000 if lane % 2 else 0))
-                    if total
-                    else 0
-                )
-                magnitude = np.array((bits & 0x7FFF) << 16, dtype=np.uint32)
-                scaled = magnitude.view(np.float32) * np.float32(2**lane)
-                expected = sign | (int(scaled.view(np.uint32)) >> 16)
+                # No lane reaches the exponent clamp in this fixed fixture.
+                expected = bits + (lane << 7)
+                if total and lane % 2:
+                    expected ^= 0x8000
                 assert output[row, lane] == expected, (macro, row, lane)
     print(
         "PASS BF16 reference weights, inputs, exponents, 256 INT21 and 256 BF16 outputs"

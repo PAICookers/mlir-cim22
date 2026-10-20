@@ -1,14 +1,14 @@
 // RUN: mlir-cim22-opt %s --pass-pipeline='builtin.module(func.func(materialize-cim-schedule,map-cim-schedule),materialize-cim-execution-plan,materialize-cim-static-weight-section,lower-cimframe-commands-to-packets,verify-cimframe)' -o %t.packet
 // RUN: mlir-cim22-cim-executable-runner-test %t.packet bf16 | FileCheck %s
 
-// Candidate shared-exponent arithmetic, with fixed independently derived
-// scalar products. Macro 0 lane 0: 1.5 * 2^-126 = 0x00c0;
-// Macro 1 lane 0: 2.25 * 2^-110 = 0x0910. Each lane doubles the
-// magnitude and alternates the sign. Historical board demo goldens are separate.
-// CHECK: BF16 run=0 macro=0 00c0 8140 01c0 8240 02c0 8340 03c0 8440 04c0 8540 05c0 8640 06c0 8740 07c0 8840
-// CHECK-NEXT: BF16 run=0 macro=1 0910 8990 0a10 8a90 0b10 8b90 0c10 8c90 0d10 8d90 0e10 8e90 0f10 8f90 1010 9090
-// CHECK-NEXT: BF16 run=1 macro=0 00c0 8140 01c0 8240 02c0 8340 03c0 8440 04c0 8540 05c0 8640 06c0 8740 07c0 8840
-// CHECK-NEXT: BF16 run=1 macro=1 0910 8990 0a10 8a90 0b10 8b90 0c10 8c90 0d10 8d90 0e10 8e90 0f10 8f90 1010 9090
+// Supplier prealignment and RTL-derived reconstruction, with fixed independent
+// INT21 totals: Macro 0 lane 0 is 64*64 + (-96)*(-64) = 10240 -> 0x43a0;
+// Macro 1 lane 0 is 32*96 + (-64)*(-96) = 9216 -> 0x4b90.
+// Each lane increments the stored weight exponent and alternates the sign.
+// CHECK: BF16 run=0 macro=0 43a0 c420 44a0 c520 45a0 c620 46a0 c720 47a0 c820 48a0 c920 49a0 ca20 4aa0 cb20
+// CHECK-NEXT: BF16 run=0 macro=1 4b90 cc10 4c90 cd10 4d90 ce10 4e90 cf10 4f90 d010 5090 d110 5190 d210 5290 d310
+// CHECK-NEXT: BF16 run=1 macro=0 43a0 c420 44a0 c520 45a0 c620 46a0 c720 47a0 c820 48a0 c920 49a0 ca20 4aa0 cb20
+// CHECK-NEXT: BF16 run=1 macro=1 4b90 cc10 4c90 cd10 4d90 ce10 4e90 cf10 4f90 d010 5090 d110 5190 d210 5290 d310
 func.func @bf16_run(%input0: tensor<64xbf16>, %input1: tensor<64xbf16>) -> (tensor<16xbf16>, tensor<16xbf16>) {
   %small0 = arith.constant dense<[
     [0x0080, 0x8080], [0x8100, 0x0100],

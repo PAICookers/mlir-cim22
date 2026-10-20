@@ -25,16 +25,30 @@ prealignBF16Vector(const std::array<uint16_t, kBF16InputElements> &values) {
     const uint16_t value = values[index];
     const bool sign = (value >> 15) != 0;
     const uint8_t exponent = static_cast<uint8_t>((value >> 7) & 0xff);
-    uint8_t mantissa = static_cast<uint8_t>(value & 0x7f);
-    if (exponent != 0)
-      mantissa |= 0x80;
-    // Reserve one headroom bit. Truncate magnitude before applying the sign,
-    // so positive and negative values use the same scale and rounding rule.
-    // Keep raw exponent bytes in Weight_EXP; subnormals use effective E=1.
-    const int shift =
-        std::max<int>(result.exponent, 1) - std::max<int>(exponent, 1) + 1;
-    const int aligned = shift >= 8 ? 0 : mantissa >> shift;
-    result.mantissas[index] = static_cast<int8_t>(sign ? -aligned : aligned);
+    uint8_t mantissaWithHidden = static_cast<uint8_t>(value & 0x7f);
+    int exponentDifference;
+    if (exponent == 0) {
+      // The supplier model uses exp_max - 1 for every subnormal, including
+      // the all-subnormal row where this deliberately becomes -1.
+      exponentDifference = static_cast<int>(result.exponent) - 1;
+    } else {
+      exponentDifference = static_cast<int>(result.exponent) - exponent;
+      mantissaWithHidden |= 0x80;
+    }
+
+    // Match ExpPrealign's order: convert the 8-bit mantissa to two's
+    // complement, logically shift it, then add the sign-extension bit.
+    const uint8_t mantissaComplement =
+        sign ? static_cast<uint8_t>((~mantissaWithHidden + 1) & 0xff)
+             : mantissaWithHidden;
+    uint8_t aligned = 0;
+    if (exponentDifference - 7 < 0) {
+      const int shiftAmount = exponentDifference + 1;
+      const uint8_t shifted =
+          static_cast<uint8_t>((mantissaComplement >> shiftAmount) & 0xff);
+      aligned = static_cast<uint8_t>((shifted + (sign ? 0x80 : 0)) & 0xff);
+    }
+    result.mantissas[index] = static_cast<int8_t>(aligned);
   }
   return result;
 }
