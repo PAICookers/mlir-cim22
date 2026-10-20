@@ -238,8 +238,8 @@ class Session:
 
         Inputs are contiguous uint16 BF16 bit patterns shaped (bindings, 64),
         in dynamic-binding order. Returns (readbacks, 7) uint64 flits: header,
-        then six body flits. This diagnostic does not produce tensor outputs;
-        BF16 board sequencing and row packing remain unqualified (CTQ-037).
+        then six body flits. This diagnostic preserves the response unchanged
+        for protocol inspection; use normal invocation for tensor outputs.
         """
         with self._lock:
             self._require_open()
