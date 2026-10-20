@@ -140,7 +140,7 @@ torch.Size([1, 16])
 | 选项                            | 用途                                             |
 | ------------------------------- | ------------------------------------------------ |
 | `runtime="software"`          | 不连接设备，执行候选 BF16 软件模型               |
-| `runtime="usb"`               | 默认值，使用 Linux USB；BF16 Tensor 输出尚不可用 |
+| `runtime="usb"`               | 默认值，使用 Linux USB，回包按 BF16 位模式解包 |
 | `usb_config=UsbConfig(...)`   | USB 设备参数，只能与 USB 运行时同时使用          |
 | `artifact_dir="build/models"` | 保存每次特化的内部模型 `.so`                   |
 | `debug_dir="build/ir"`        | 保存 Linalg、packet MLIR 和目标文件              |

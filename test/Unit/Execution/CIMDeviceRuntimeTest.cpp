@@ -5,8 +5,10 @@
 
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <utility>
@@ -18,8 +20,11 @@ using namespace cim22::runtime;
 namespace {
 #define CHECK(condition)                                                       \
   do {                                                                         \
-    if (!(condition))                                                          \
+    if (!(condition)) {                                                        \
+      std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__,             \
+                   #condition);                                                \
       std::abort();                                                            \
+    }                                                                          \
   } while (false)
 constexpr std::array<int32_t, 16> kExpected{
     0,   1,      -1,      -1048576, 1048575, 74565, -74565, 42,
@@ -27,6 +32,17 @@ constexpr std::array<int32_t, 16> kExpected{
 constexpr std::array<uint64_t, 6> kResponse{
     0x00091fea9580ab55ULL, 0xffff900003f00000ULL, 0x80001fffd6000157ULL,
     0xb72ec2468afffff8ULL, 0x00007ffffc000020ULL, 0x0000000000000000ULL};
+
+// Synthetic protocol fixture, not a DUT capture.
+// Fixed bit-string fixture: lane15..0 as 21-bit slots, then 48 zero bits.
+// Upper slot bits deliberately vary; BF16 payloads include signed zeros,
+// subnormals, infinities and NaNs. They are payload bits, not numeric INT21.
+constexpr std::array<uint16_t, 16> kBF16Expected{
+    0x0000, 0x8000, 0x0001, 0x8001, 0x3f80, 0xbf80, 0x7f7f, 0xff7f,
+    0x7f80, 0xff80, 0x7fc1, 0xffff, 0x1234, 0xabcd, 0x55aa, 0xaa55};
+constexpr std::array<uint64_t, 6> kBF16Response{
+    0xfd52afd56abf579bULL, 0xf1234ffffffdff07ULL, 0xfff01f7f80fffbffULL,
+    0xdfdfff7f01f3f80fULL, 0xc000fc0007f0001fULL, 0x0000000000000000ULL};
 
 class FakeCIMDevice final : public CIMDevice {
 public:
@@ -60,12 +76,15 @@ public:
       readback.headerFlit = (uint64_t{5} << 60) |
                             (static_cast<uint64_t>(coreSlot) << 18) |
                             (((outputCacheRead >> 14) & 0xf) << 14) | 6;
-      readback.bodyFlits = kResponse;
+      readback.bodyFlits =
+          command.dataType == CIMDataType::BF16 ? kBF16Response : kResponse;
       if (corruptResponsePadding &&
           command.outputIndex + 1 == program.readbacks.size())
         readback.bodyFlits[5] = 1;
       response.readbacks.push_back(readback);
     }
+    if (reverseReadbacks)
+      std::reverse(response.readbacks.begin(), response.readbacks.end());
     switch (responseFault) {
     case ResponseFault::None:
       break;
@@ -94,6 +113,7 @@ public:
   CIMDeviceProgram program;
   size_t executeCount = 0;
   bool corruptResponsePadding = false;
+  bool reverseReadbacks = false;
   ResponseFault responseFault = ResponseFault::None;
 };
 
@@ -118,7 +138,8 @@ CIMTransaction makeTransaction(CIMDataType dataType = CIMDataType::Int8) {
                         {std::move(weight)}, {}, {input}, {readback}, {});
 }
 
-CIMTransaction makeTwoGroupTransaction() {
+CIMTransaction
+makeTwoGroupTransaction(CIMDataType secondType = CIMDataType::Int8) {
   const std::array<int32_t, 6> route{};
   const std::array<int32_t, 3> testCore{};
   std::vector<CIMGroup> groups;
@@ -137,10 +158,11 @@ CIMTransaction makeTwoGroupTransaction() {
     weight.coreSlot = 3 + groupId;
     weight.macroSlot = 0;
     weight.words.resize(256, 0);
+    const CIMDataType mode = groupId == 0 ? CIMDataType::Int8 : secondType;
+    weight.dataType = mode;
     weights.push_back(std::move(weight));
-    inputs.push_back({groupId, groupId, 0, groupId, CIMDataType::Int8, 7});
-    readbacks.push_back(
-        {groupId, groupId, 0, 7, route, testCore, CIMDataType::Int8});
+    inputs.push_back({groupId, groupId, 0, groupId, mode, 7});
+    readbacks.push_back({groupId, groupId, 0, 7, route, testCore, mode});
   }
   return CIMTransaction("cim22-4x5-v1", 1, 1, std::move(groups),
                         std::move(weights), {}, std::move(inputs),
@@ -342,7 +364,7 @@ void testBF16RawCaptureKeepsPrefixAndBody() {
   CHECK(response->readbacks.size() == 1);
   CHECK(response->readbacks[0].outputIndex == 0);
   CHECK(response->readbacks[0].headerFlit == 0x50000000000dc006ULL);
-  auto expectedBody = kResponse;
+  auto expectedBody = kBF16Response;
   expectedBody[5] = 1;
   CHECK(response->readbacks[0].bodyFlits == expectedBody);
   CHECK(device.executeCount == 1);
@@ -374,6 +396,16 @@ void testRawCaptureValidatesInputsBeforeDeviceExecution() {
   CHECK(!shortInput);
   CHECK(llvm::toString(shortInput.takeError()).find("64 BF16") !=
         std::string::npos);
+
+  std::array<uint16_t, 64> fullInput{};
+  const std::array<CIMInputView, 1> fullViews{CIMInputView{{}, fullInput}};
+  for (uint16_t value : {0x7f80, 0xff80, 0x7fc1, 0xff81}) {
+    fullInput.back() = value;
+    auto invalidInput = runner.capture(executable, CIMRunInputs{fullViews});
+    CHECK(!invalidInput);
+    CHECK(llvm::toString(invalidInput.takeError()).find("NaN or infinity") !=
+          std::string::npos);
+  }
   CHECK(device.executeCount == 0);
   device.close();
 }
@@ -467,7 +499,7 @@ void testInvalidPlacementAndReadbackRouteRejectBeforeIO() {
   }
 }
 
-void testBF16IsRejectedBeforeDeviceExecution() {
+void testBF16BoardReadbackPreservesBits() {
   FakeCIMDevice device;
   expectSuccess(device.open());
   CIMBoardRunner runner(device, {});
@@ -479,12 +511,62 @@ void testBF16IsRejectedBeforeDeviceExecution() {
   std::array<CIMOutputView, 1> outputViews{CIMOutputView{{}, outputStorage}};
   CIMRunOutputs outputs{outputViews};
 
+  for (uint16_t inputBits : {uint16_t{0}, uint16_t{0x3f80}}) {
+    inputStorage.fill(inputBits);
+    expectSuccess(runner.run(executable, inputs, outputs));
+    CHECK(outputStorage == kBF16Expected);
+  }
+  CHECK(device.executeCount == 2);
+  CHECK(device.program.readbacks[0].dataType == CIMDataType::BF16);
+
+  // Reject short destinations before touching the device.
+  outputViews[0].bf16Values =
+      llvm::MutableArrayRef(outputStorage).take_front(15);
   llvm::Error error = runner.run(executable, inputs, outputs);
   CHECK(error);
-  CHECK(llvm::toString(std::move(error)).find("BF16 readback is disabled") !=
-        std::string::npos);
-  CHECK(device.executeCount == 0);
+  CHECK(llvm::toString(std::move(error)).find("16 BF16") != std::string::npos);
+  CHECK(device.executeCount == 2);
   device.close();
+}
+
+void testMixedModeReadbacks() {
+  for (bool corruptPadding : {false, true}) {
+    FakeCIMDevice device;
+    device.outputCoreSlots = {3, 4};
+    // Valid replies arrive out of order; malformed replies fail only after
+    // one valid reply has decoded, checking publication remains atomic.
+    device.reverseReadbacks = !corruptPadding;
+    device.corruptResponsePadding = corruptPadding;
+    expectSuccess(device.open());
+    CIMBoardRunner runner(device, {});
+    CIMTransaction executable = makeTwoGroupTransaction(CIMDataType::BF16);
+    std::array<int8_t, 64> intInput{};
+    std::array<uint16_t, 64> bf16Input{};
+    const std::array<CIMInputView, 2> inputViews{CIMInputView{intInput, {}},
+                                                 CIMInputView{{}, bf16Input}};
+    std::array<int32_t, 16> intOutput;
+    std::array<uint16_t, 16> bf16Output;
+    intOutput.fill(77);
+    bf16Output.fill(0xdead);
+    std::array<CIMOutputView, 2> outputViews{CIMOutputView{intOutput, {}},
+                                             CIMOutputView{{}, bf16Output}};
+    CIMRunOutputs outputs{outputViews};
+    llvm::Error error = runner.run(executable, {inputViews}, outputs);
+    if (corruptPadding) {
+      CHECK(error);
+      CHECK(llvm::toString(std::move(error)).find("non-zero padding") !=
+            std::string::npos);
+      CHECK(std::all_of(intOutput.begin(), intOutput.end(),
+                        [](int32_t value) { return value == 77; }));
+      CHECK(std::all_of(bf16Output.begin(), bf16Output.end(),
+                        [](uint16_t value) { return value == 0xdead; }));
+    } else {
+      expectSuccess(std::move(error));
+      CHECK(intOutput == kExpected);
+      CHECK(bf16Output == kBF16Expected);
+    }
+    device.close();
+  }
 }
 
 void testMalformedResponseDoesNotPublishPartialOutputs() {
@@ -506,6 +588,8 @@ void testMalformedResponseDoesNotPublishPartialOutputs() {
 
   llvm::Error error = runner.run(executable, inputs, outputs);
   CHECK(error);
+  CHECK(llvm::toString(std::move(error)).find("non-zero padding") !=
+        std::string::npos);
   const std::array<int32_t, 16> untouched = [] {
     std::array<int32_t, 16> values{};
     values.fill(77);
@@ -527,7 +611,8 @@ int main() {
   testRawCaptureValidatesResponseBindings();
   testUnknownDataModeIsRejectedBeforeDeviceExecution();
   testInvalidPlacementAndReadbackRouteRejectBeforeIO();
-  testBF16IsRejectedBeforeDeviceExecution();
+  testBF16BoardReadbackPreservesBits();
+  testMixedModeReadbacks();
   testMalformedResponseDoesNotPublishPartialOutputs();
   return 0;
 }
