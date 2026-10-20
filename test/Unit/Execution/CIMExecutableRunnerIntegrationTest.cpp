@@ -67,7 +67,8 @@ bool runBF16(const CIMTransaction &executable) {
     return false;
 
   // Independent fixed inputs: supplier prealignment gives [64, -96] and
-  // [32, -64]. The MLIR fixture supplies distinct weights for both Macros.
+  // [32, -64]. The first pair is asymmetric because complement precedes shift.
+  // The MLIR fixture supplies distinct weights for both Macros.
   std::array<std::array<uint16_t, kCIMInputElements>, 2> inputStorage{};
   inputStorage[0][0] = 0x3f80;
   inputStorage[0][1] = 0xbf00;

@@ -1,8 +1,9 @@
 // RUN: mlir-cim22-opt %s --cim-bf16-pipeline='stage=packet max-kernel-columns=1' -o %t.packet
 // RUN: %python %S/../../python/CIM22/verify_native_runtime.py %t.packet %cim22_runtime
 
-// Candidate model: Host doubling, 65 unit products and bias give 131. Two columns
-// exercise streaming, K=65 exercises reduction, N=17 exercises lane tails.
+// Supplier model: the helper uses small normal inputs so raw-exponent BF16
+// reconstruction remains finite. Two columns exercise streaming, K=65 exercises
+// Host reduction plus bias, and N=17 exercises lane tails.
 // The private helper also checks readonly ownership across function calls.
 func.func private @preprocess(%x: tensor<2x65xf32>) -> tensor<2x65xf32> {
   %doubled = arith.addf %x, %x : tensor<2x65xf32>

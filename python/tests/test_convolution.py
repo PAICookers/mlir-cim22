@@ -37,13 +37,16 @@ def test_grouped_convolution_bias_offloads(
             torch.arange(1, output_channels + 1, dtype=torch.float32)
             * bias_scale
         )
-    value = torch.ones(2, input_channels, 5, 5)
-    value[:, 1::2] *= 2.0
+    logical_input = torch.ones(2, input_channels, 5, 5)
+    logical_input[:, 1::2] *= 2.0
+    # With unit weights, raw BF16 0x0001/0x0002 reconstruct integer counts
+    # 1/2 per tap. The eager oracle consumes those logical counts directly.
+    value = logical_input * 2.0**-133
     other = value * 2.0
     original = value.clone()
     with torch.inference_mode():
-        expected = model(value)
-        expected_other = model(other)
+        expected = model(logical_input)
+        expected_other = model(logical_input * 2.0)
         compiled = torch.compile(
             model,
             backend="cim22",

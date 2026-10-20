@@ -28,10 +28,10 @@ struct BF16PrealignedWeightTile {
   std::array<uint8_t, kBF16OutputElements> exponents{};
 };
 
-// Candidate software model, not a bit-exact hardware claim. Callers must reject
-// NaN/Inf. Stores the maximum raw biased exponent, while arithmetic uses E>=1.
-// Truncates magnitude with one headroom bit, then applies sign: x ~=
-// q*2^(E-133).
+// Matches the supplier ExpPrealign software reference in BF16 mode. Callers
+// must reject NaN/Inf. Stores the maximum raw exponent of this 64-element row.
+// Forms the hidden-bit (or denormal) mantissa, converts negative values to
+// 8-bit two's complement, logically shifts, then adds the sign-extension bit.
 BF16PrealignedVector
 prealignBF16Vector(const std::array<uint16_t, kBF16InputElements> &values);
 

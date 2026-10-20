@@ -1,8 +1,8 @@
-"""Integration with the selected wheels, LLVM Host, and candidate CIM runner.
+"""Integration with the selected wheels, LLVM Host, and supplier CIM model.
 
 Run with an installed torch-mlir Release wheel and Python 3.12. No replacement
-kernel or eager fallback is used; unit weights make expected numbers exact under
-the candidate model.
+kernel or eager fallback is used. Fixed subnormal input encodings keep the
+supplier's raw-exponent reconstruction finite with exact scalar expectations.
 """
 
 from collections.abc import Iterator
@@ -40,7 +40,7 @@ class ResetSequence(torch.nn.Module):
         self.linear = torch.nn.Linear(65, 17)
         self.v: float | torch.Tensor = 0.0
         with torch.no_grad():
-            self.linear.weight.fill_(1.0)
+            self.linear.weight.fill_(0.5)
             self.linear.bias.fill_(1.0)
 
     def reset(self) -> None:
@@ -61,7 +61,8 @@ class ResetSequence(torch.nn.Module):
 
 def test_shared_batch_temporal_reset_and_cache(tmp_path: Path) -> None:
     model = ResetSequence().eval()
-    value = torch.ones(2, 3, 65)
+    # Raw BF16 0x0002 with weight 0.5 yields 64+1 across the K=64/1 tiles.
+    value = torch.full((2, 3, 65), 2.0**-132)
     value[:, 1] *= 2
     value[:, 2] *= 0.5
     # Keep both inputs ordinary tensors, as when prepared by a DataLoader.
@@ -273,7 +274,8 @@ def test_mutable_state_and_cim_weights(
             return self.state * 2
 
     model = Accumulator().eval()
-    value = torch.ones(1, 64)
+    # Raw BF16 0x0001 and unit weights reconstruct a 64-item total of 64.
+    value = torch.full((1, 64), 2.0**-133)
     original = value.clone()
     compiled = torch.compile(
         model,
@@ -373,7 +375,7 @@ def test_parameter_output_alias(
 
 def test_failed_compilation_can_retry() -> None:
     model = torch.nn.Linear(64, 16).eval()
-    value = torch.ones(1, 64)
+    value = torch.full((1, 64), 2.0**-133)
     compiled = torch.compile(
         model,
         backend="cim22",

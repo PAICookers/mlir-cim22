@@ -345,14 +345,18 @@ int main(int argc, char **argv) {
     assert(value == 0xff80);
 
   bf16InputStorage.fill(0x8000);
-  assert(!runner.run(makeBF16Executable(true, -128), bf16Inputs, bf16Outputs));
+  // ExpPrealign maps an all-negative-zero row to -128. With -128 weights,
+  // 64 products exceed signed INT21 and hit the existing overflow gate.
+  expectError(
+      runner.run(makeBF16Executable(true, -128), bf16Inputs, bf16Outputs));
+  assert(!runner.run(makeBF16Executable(true, -127), bf16Inputs, bf16Outputs));
   for (uint16_t value : bf16OutputStorage)
-    assert(value == 0x4000);
-  // Every finite aligned magnitude is <=127, including dense negative inputs.
+    assert(value == 0x467e);
+  // Complementing 0xff before the shift maps this dense input to -128.
   bf16InputStorage.fill(0xbfff);
   assert(!runner.run(makeBF16Executable(true, -127), bf16Inputs, bf16Outputs));
   for (uint16_t value : bf16OutputStorage)
-    assert(value == 0x7ffc); // Direct clamp with mantissa 252.
+    assert(value == 0x7ffe); // Direct clamp with mantissa 254.
   bf16InputStorage.fill(0x3f80);
 
   bf16InputStorage[0] = 0x7f80;
