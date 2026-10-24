@@ -50,3 +50,7 @@ llvm_config.add_tool_substitutions(
     ],
     tool_dirs,
 )
+if "system-windows" in config.available_features:
+    llvm_config.add_tool_substitutions(
+        ["mlir-cim22-cyapi-driver-test"], tool_dirs
+    )
