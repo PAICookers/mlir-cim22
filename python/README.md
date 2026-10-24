@@ -75,6 +75,26 @@ uv pip install --python .venv/bin/python \
 
 预编译安装和源码构建安装都要求 `mlir-cim22`、torch-mlir 和应用使用同一个虚拟环境。当前发行目标是 Linux x86-64。
 
+### Windows x64
+
+Windows 使用 `mlir_cim22-1.0.0-py3-none-win_amd64.whl` 和
+[torch_mlir-20260923.595-cp312-abi3-win_amd64.whl](https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260923.595-cp312-abi3-win_amd64.whl)。
+不能安装 Linux 的 torch-mlir wheel。已验证 Python 3.12、CPU PyTorch 2.14.1；前端使用现成 wheel，无需下载 torch-mlir 源码。
+
+首次编译模型需要 Visual Studio 2022 Build Tools 的 MSVC x64 和 Windows SDK。
+从 **x64 Native Tools Command Prompt** 启动 PowerShell，确保 `cl` 和 `link` 可用，再执行：
+
+```powershell
+uv venv --python 3.12 .venv
+uv pip install --python .venv/Scripts/python.exe --index-url https://download.pytorch.org/whl/cpu torch==2.14.1
+uv pip install --python .venv/Scripts/python.exe ./downloads/torch_mlir-20260923.595-cp312-abi3-win_amd64.whl ./downloads/mlir_cim22-1.0.0-py3-none-win_amd64.whl
+.venv/Scripts/python.exe python/examples/torch_compile.py
+```
+
+应用中的 `torch.compile` 调用相同。Windows 生成、加载 `.dll`，Linux 使用 `.so`；两者不能跨平台加载。已保存的模型可由 `Session(Path("model.dll"))` 加载，不再需要 C 链接器或 torch-mlir，仍需匹配的 CIM22 runtime 和 MSVC x64 运行库。`Session` 接收内部扁平 NumPy FP32 输入，形状可通过 `input_shapes` 查看，不能代替 PyTorch 包装层处理原始模型的状态和嵌套返回值。
+
+Windows 临时模型 DLL 保留到 Session 关闭或编译缓存释放；加载期间不能删除该 DLL。USB 使用 Cypress CyUSB3 驱动，软件推理不要求连接板卡。当前验证覆盖软件推理及 USB 接口契约，不代表已完成真实板卡或完整 DVS 测试集验收。Web UI 仍依赖 Linux 的 `fcntl`，尚未移植到 Windows。
+
 ## 最小模型
 
 将下面的代码保存为 `example.py`：
@@ -140,18 +160,18 @@ torch.Size([1, 16])
 | 选项                            | 用途                                             |
 | ------------------------------- | ------------------------------------------------ |
 | `runtime="software"`          | 不连接设备，执行候选 BF16 软件模型               |
-| `runtime="usb"`               | 默认值，使用 Linux USB；BF16 Tensor 输出尚不可用 |
+| `runtime="usb"`               | 默认值，Linux 用 libusb、Windows 用 CyAPI；BF16 Tensor 输出尚不可用 |
 | `usb_config=UsbConfig(...)`   | USB 设备参数，只能与 USB 运行时同时使用          |
-| `artifact_dir="build/models"` | 保存每次特化的内部模型 `.so`                   |
+| `artifact_dir="build/models"` | 保存每次特化的内部模型，Linux `.so` / Windows `.dll` |
 | `debug_dir="build/ir"`        | 保存 Linalg、packet MLIR 和目标文件              |
 
-首次调用包含编译、链接和加载；稳态性能应在预热后单独测量。`TORCH_LOGS=dynamo` 查看编译阶段耗时，`TORCH_LOGS=recompiles` 排查重复编译。特化缓存在进程内，保存 `.so` 不会提供跨进程自动缓存或稳定部署接口。
+首次调用包含编译、链接和加载；稳态性能应在预热后单独测量。`TORCH_LOGS=dynamo` 查看编译阶段耗时，`TORCH_LOGS=recompiles` 排查重复编译。特化缓存在进程内，保存模型动态库不会提供跨进程自动缓存或稳定部署接口。
 
 | 问题                       | 检查项                                                         |
 | -------------------------- | -------------------------------------------------------------- |
 | `Invalid backend: cim22` | 当前解释器是否安装了本项目 wheel，而非仅安装 Torch             |
 | 找不到 torch-mlir          | 是否将匹配的 wheel 安装到同一虚拟环境                          |
-| 缺少 `cc` 或链接失败     | 是否具备 C 编译/链接开发环境，以及 wheel 所需的系统库          |
+| 缺少 `cc` / `cl` 或链接失败 | Linux 安装 C 开发环境；Windows 在 MSVC x64 开发者终端运行，并安装 Windows SDK |
 | USB 报错或要求配置设备     | 无硬件时显式选择 `runtime="software"`                        |
 | 编译失败或数值偏差         | 先运行自检脚本，再保存 `debug_dir`；检查输入约束和 BF16 误差 |
 

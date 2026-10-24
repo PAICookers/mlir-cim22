@@ -1,6 +1,6 @@
 # 源码构建
 
-本指南面向 Linux x86-64 开发者。两条构建路径共用同一个 CMake 工程：
+默认命令面向 Linux x86-64；Windows 原生组件的构建见文末。两条构建路径共用同一个 CMake 工程：
 
 | 目标             | 方式                   | 结果                                             |
 | ---------------- | ---------------------- | ------------------------------------------------ |
@@ -230,3 +230,65 @@ uv build --python 3.12 --wheel
 ```
 
 不要将 wheel、构建目录、日志或下载的依赖提交到 Git。
+
+## Windows x64 原生编译器与 USB runtime
+
+使用 **Visual Studio 2022 Build Tools（MSVC x64、Windows SDK）**、CMake 和 Ninja，在 “x64 Native Tools Command Prompt” 中启动 PowerShell。LLVM/MLIR 和本项目必须使用匹配的 Windows 原生工具链；Linux 的 LLVM 库不能用于此构建。
+
+准备同版本 LLVM 22.1.8 源码，在仓库根目录执行：
+
+```powershell
+cmake -G Ninja -S ../llvm-project/llvm -B ../llvm-build-windows `
+  -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS=mlir `
+  -DCMAKE_C_FLAGS=/utf-8 -DCMAKE_CXX_FLAGS=/utf-8 `
+  -DLLVM_TARGETS_TO_BUILD=X86 -DBUILD_SHARED_LIBS=OFF `
+  -DLLVM_BUILD_LLVM_DYLIB=OFF -DLLVM_LINK_LLVM_DYLIB=OFF `
+  -DMLIR_ENABLE_BINDINGS_PYTHON=OFF -DMLIR_ENABLE_EXECUTION_ENGINE=ON `
+  -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF `
+  -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_ENABLE_DIA_SDK=OFF `
+  -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_LIBXML2=OFF
+cmake --build ../llvm-build-windows --parallel 2 --target mlir-opt `
+  MLIRExecutionEngine MLIRBuiltinToLLVMIRTranslation `
+  MLIRLLVMToLLVMIRTranslation MLIRTargetLLVMIRExport
+```
+
+Windows USB 使用供应方 `FrameHandler_USB_32b` 对应的 **Cypress CyAPI / CyUSB3** 驱动，不使用 libusb/WinUSB。准备匹配 x64 和 MSVC 运行库的 Cypress EZ-USB FX3 SDK；`CYAPI_ROOT` 指向 SDK 根目录（`library/cpp/inc`、`library/cpp/lib/x64/CyAPI.lib`），也可分别指定 `CYAPI_INCLUDE_DIR` 和 `CYAPI_LIBRARY`。
+
+```powershell
+cmake -G Ninja -S . -B build/windows -DCMAKE_BUILD_TYPE=Release `
+  -DMLIR_DIR=../llvm-build-windows/lib/cmake/mlir `
+  -DCIM22_ENABLE_USB=ON -DCYAPI_ROOT="C:/path/to/EZ-USB FX3 SDK/1.3"
+cmake --build build/windows --parallel 2
+```
+
+供应方压缩包内的 `CyAPI.lib` 是 **x86**，不能链接到 x64 编译器；配置阶段会检查链接兼容性并报错，需要 SDK 中的 x64 版本，不能通过改文件名或 wheel 标签解决。SDK 及供应方源码保持外部依赖，不复制进仓库。
+
+原生工具位于 `build/windows/bin`，runtime/compiler DLL 位于 `build/windows/lib`。CyAPI 静态链接，运行机器仍需安装匹配板卡的 Cypress CyUSB3 驱动和 MSVC x64 运行库。Windows 根据 VID/PID、可选 USB 地址选择唯一设备，核对接口及端点；不支持 `busNumber`。保留单个异步 IN 请求，轮询超时不取消请求；OUT 每次最多发送 512 字节，沿用现有 12 字节记录协议。关闭时如驱动未归还请求所有权，会保留相关资源至进程退出，避免释放仍在使用的缓冲区。
+
+已验证 FX3 SDK **1.3.5** 的官方 x64 CyAPI 库与 MSVC 2022 可完成链接。wheel 会携带 SDK 的 `license/license.rtf`（可通过 `CYAPI_LICENSE_FILE` 指定位置），不打包 SDK 源码或安装板卡驱动。
+
+Windows 驱动的无硬件测试使用项目自有 SDK 替身，可在启用原生测试、关闭 USB 构建时运行 `mlir-cim22-cyapi-driver-test`，不需要 CyAPI 库。它验证接口控制流程，不能替代真实 SDK 链接和板卡验收。Linux 继续使用 libusb。
+
+可用现有打包入口生成包含 Windows 原生组件的 wheel：
+
+```powershell
+$env:CMAKE_GENERATOR = "Ninja"
+uv build --python 3.12 python --wheel --out-dir wheelhouse `
+  -C build-dir=build/windows-wheel `
+  -C cmake.define.MLIR_DIR=C:/path/to/llvm-build-windows/lib/cmake/mlir `
+  -C "cmake.define.CYAPI_ROOT=C:/path/to/EZ-USB FX3 SDK/1.3"
+```
+
+Windows wheel 包含 `mlir-cim22-opt.exe`、`cim22_compiler.dll`、`cim22_runtime.dll` 和模型链接所需的 `.lib`。Python 后端使用 MSVC 将 COFF `.obj` 链接为模型 `.dll`，通过与 Linux 相同的模型 ABI 加载。`torch.compile` 软件推理和 DLL 重新加载的用法见 [Windows 安装说明](python/README.md#windows-x64)。
+
+开发环境的 `pyproject.toml` / `uv.lock` 按平台选择 torch-mlir：Linux 保留主分支的 `20261001` release wheel，Windows 从官方 release 安装 `20260923.595-cp312-abi3-win_amd64.whl`。不引入 torch-mlir 源码。在配置好 MSVC x64、`MLIR_DIR` 和 SDK 后，可执行：
+
+```powershell
+uv sync --project python --python 3.12 --locked --group dev `
+  -C build-dir=build/windows `
+  -C cmake.define.MLIR_DIR=C:/path/to/llvm-build-windows/lib/cmake/mlir `
+  -C "cmake.define.CYAPI_ROOT=C:/path/to/EZ-USB FX3 SDK/1.3"
+uv run --directory python --no-sync pytest tests/test_artifacts.py tests/test_backend.py tests/test_convolution.py tests/test_model_format.py tests/test_native_compiler.py tests/test_usb_runtime.py
+```
+
+这组测试覆盖原生模型编译、BF16 软件执行、Host 运算、状态更新、静态 T/B 维度、模型 ABI、USB 错误边界和 DLL 生命周期；POSIX 文件大小限制测试仅在 Linux 运行。全量 `pytest` 中的 `test_web.py` 会因 Linux 专用 `fcntl` 无法在 Windows 导入；Web UI 移植不在本次范围内。完整 DVS 数据集和真实 USB 板卡测试需要另行验收。
