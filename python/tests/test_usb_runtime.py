@@ -1,5 +1,6 @@
 """USB artifact selection and boundary checks without a physical device."""
 
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -10,6 +11,7 @@ import torch
 from torch._dynamo.exc import BackendCompilerFailed
 
 from cim22 import Session, UsbConfig
+from cim22.runtime import MODEL_SUFFIX
 
 from ._generated import cim22_model_pb2 as proto
 
@@ -46,7 +48,10 @@ def usb_config() -> UsbConfig:
 def test_usb_config_rejects_truncation(
     usb_config: UsbConfig, field: str, value: object, error: type[Exception]
 ) -> None:
-    with pytest.raises(error, match=field if field != "bus_number" else "both"):
+    with pytest.raises(
+        error,
+        match=field if os.name == "nt" or field != "bus_number" else "both",
+    ):
         replace(usb_config, **{field: value})
 
 
@@ -122,7 +127,7 @@ def test_compiled_usb_backend(
         pytest.raises(RuntimeError, match="USB runtime is not configured"),
     ):
         compiled(value)
-    (artifact,) = tmp_path.glob("*.so")
+    (artifact,) = tmp_path.glob(f"*{MODEL_SUFFIX}")
     model = embedded_model(artifact)
     assert model.kernels
     assert model.schema_version == 1
@@ -173,7 +178,7 @@ def test_backend_usb_configuration_failure_closes_session(
     assert configure.call_count == 2
     sessions = [call.args[0] for call in configure.call_args_list]
     assert all(call.args[1] is usb_config for call in configure.call_args_list)
-    assert len(list((tmp_path / "models").glob("*.so"))) == 2
+    assert len(list((tmp_path / "models").glob(f"*{MODEL_SUFFIX}"))) == 2
     assert len(list((tmp_path / "ir").iterdir())) == 2
     with pytest.raises(RuntimeError, match="closed"):
         sessions[0](value.numpy())
@@ -202,4 +207,19 @@ def test_backend_rejects_invalid_options(
             torch.fx.symbolic_trace(torch.nn.Identity()),
             [],
             options=options,
+        )
+
+
+def test_usb_address_selection(usb_config: UsbConfig) -> None:
+    """CyAPI exposes addresses but no libusb bus number."""
+    if os.name == "nt":
+        assert replace(usb_config, device_address=3).device_address == 3
+        with pytest.raises(ValueError, match="bus_number"):
+            replace(usb_config, bus_number=1, device_address=3)
+    else:
+        with pytest.raises(ValueError, match="both"):
+            replace(usb_config, device_address=3)
+        assert (
+            replace(usb_config, bus_number=1, device_address=3).device_address
+            == 3
         )

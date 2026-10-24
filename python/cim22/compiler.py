@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from contextlib import ExitStack
 from importlib.resources import files
 from pathlib import Path
 from typing import Literal
@@ -14,7 +15,13 @@ from torch._dynamo.utils import dynamo_timed
 from torch_mlir import fx
 from torch_mlir.compiler_utils import OutputType
 
-from .runtime import Session, compiler_library, runtime_library
+from .runtime import (
+    MODEL_SUFFIX,
+    Session,
+    _load_library,
+    compiler_library,
+    runtime_library,
+)
 
 type RuntimeBackend = Literal["software", "usb"]
 
@@ -25,7 +32,7 @@ def _emit_object(
     library: Path,
     runtime: RuntimeBackend = "usb",
 ) -> None:
-    native = ctypes.CDLL(compiler_library(library))
+    native = _load_library(compiler_library(library))
     emit = native.cim22_compile_object
     emit.argtypes = [
         ctypes.c_char_p,
@@ -48,10 +55,12 @@ def _emit_object(
 
 def _run(command: list[str], stage: str) -> None:
     result = subprocess.run(
-        command, capture_output=True, text=True, check=False
+        command, capture_output=True, text=True, errors="replace", check=False
     )
     if result.returncode:
-        raise RuntimeError(f"CIM22 {stage} failed:\n{result.stderr}")
+        raise RuntimeError(
+            f"CIM22 {stage} failed:\n{result.stdout or ''}{result.stderr or ''}"
+        )
 
 
 def _compile(
@@ -63,34 +72,45 @@ def _compile(
 ) -> Session:
     """Compile a functional ATen graph; return its internal flat runtime.
 
-    The loaded Session owns the code after temporary files are removed.
+    The loaded Session owns the code and any files needed until it closes.
     Optional artifact/debug paths retain diagnostics for this specialization.
     """
     library = runtime_library()
     executable = os.environ.get("CIM22_OPT") or str(
-        files("cim22") / "bin" / "mlir-cim22-opt"
+        files("cim22")
+        / "bin"
+        / ("mlir-cim22-opt.exe" if os.name == "nt" else "mlir-cim22-opt")
     )
-    linker = os.environ.get("CIM22_CC") or shutil.which("cc")
+    linker = os.environ.get("CIM22_CC") or shutil.which(
+        "cl" if os.name == "nt" else "cc"
+    )
     if not Path(executable).is_file() or not linker:
         raise ValueError(
-            "CIM22 compilation needs mlir-cim22-opt and a C linker (cc)"
+            "CIM22 compilation needs mlir-cim22-opt and a C linker "
+            "(Windows: cl in an x64 MSVC developer shell; Linux: cc)"
         )
     if artifact_path is not None:
         artifact_path = artifact_path.absolute()
-        if artifact_path.suffix != ".so":
-            raise ValueError("artifact_path must end in .so")
+        if artifact_path.suffix != MODEL_SUFFIX:
+            raise ValueError(f"artifact_path must end in {MODEL_SUFFIX}")
         if artifact_path.exists() or artifact_path.is_symlink():
             raise FileExistsError(f"Artifact already exists: {artifact_path}")
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=".cim22-",
-        dir=artifact_path.parent if artifact_path is not None else None,
-    ) as temporary:
-        folder = Path(temporary)
+    with ExitStack() as cleanup:
+        folder = Path(
+            cleanup.enter_context(
+                tempfile.TemporaryDirectory(
+                    prefix=".cim22-",
+                    dir=artifact_path.parent
+                    if artifact_path is not None
+                    else None,
+                )
+            )
+        )
         linalg = folder / "model.linalg.mlir"
         packet = folder / "model.packet.mlir"
-        object_file = folder / "model.o"
-        shared = folder / "model.so"
+        object_file = folder / ("model.obj" if os.name == "nt" else "model.o")
+        shared = folder / f"model{MODEL_SUFFIX}"
         with dynamo_timed("cim22.torch_mlir"):
             module = fx.export_and_import(
                 graph,
@@ -120,6 +140,20 @@ def _compile(
             _run(
                 [
                     linker,
+                    "/nologo",
+                    "/LD",
+                    "/MD",
+                    str(object_file),
+                    str(library.with_suffix(".lib")),
+                    "/link",
+                    f"/OUT:{shared}",
+                    "/EXPORT:cim22_model_v1",
+                    f"/IMPLIB:{folder / 'model.lib'}",
+                    "msvcrt.lib",
+                ]
+                if os.name == "nt"
+                else [
+                    linker,
                     "-shared",
                     "-Wl,-z,defs",
                     "-Wl,-Bsymbolic-functions",
@@ -143,6 +177,12 @@ def _compile(
                 # Atomic publication on the same filesystem, without replacing
                 # an existing artifact if a concurrent compilation won the race.
                 os.link(shared, artifact_path)
+            if os.name == "nt":
+                # Retain only the locked DLL until native Session destruction.
+                for path in folder.iterdir():
+                    if path != shared:
+                        path.unlink()
+                session._resources.callback(cleanup.pop_all().close)
         except BaseException:
             session.close()
             raise

@@ -6,6 +6,7 @@
 #include "CIM22/Runtime/UsbCIMDevice.h"
 #include "Session.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/DynamicLibrary.h"
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
 #include <cstring>
@@ -40,6 +41,27 @@ extern "C" void *cim22_session_load_shared(const char *path, char *error,
   session->code = std::shared_ptr<void>(library, [](void *p) { dlclose(p); });
   auto getModel = reinterpret_cast<const CIM22ModelV1 *(*)()>(
       dlsym(library, "cim22_model_v1"));
+#elif defined(_WIN32)
+  using llvm::sys::DynamicLibrary;
+  std::string message;
+  auto library =
+      path ? DynamicLibrary::getLibrary(path, &message) : DynamicLibrary();
+  if (!library.isValid()) {
+    cim22::runtime::copyError(path ? message : "missing model library path",
+                              error, capacity);
+    return nullptr;
+  }
+  // Non-permanent loading lets Session release the DLL before deleting it.
+  session->code = std::shared_ptr<DynamicLibrary>(
+      new DynamicLibrary(library), [](DynamicLibrary *p) {
+        DynamicLibrary::closeLibrary(*p);
+        delete p;
+      });
+  auto getModel = reinterpret_cast<const CIM22ModelV1 *(*)()>(
+      library.getAddressOfSymbol("cim22_model_v1"));
+#else
+#error Unsupported native model platform
+#endif
   const CIM22ModelV1 *model = getModel ? getModel() : nullptr;
   if (!model || model->abi_version != 1 || !model->data || !model->invoke) {
     cim22::runtime::copyError("incompatible CIM22 model ABI", error, capacity);
@@ -56,11 +78,6 @@ extern "C" void *cim22_session_load_shared(const char *path, char *error,
     session->runner = std::make_unique<::cim22::execution::CIMSoftwareRunner>();
   session->invoke = model->invoke;
   return session.release();
-#else
-  cim22::runtime::copyError("CIM22 shared models require Linux", error,
-                            capacity);
-  return nullptr;
-#endif
 }
 
 extern "C" void
@@ -249,7 +266,7 @@ extern "C" int cim22_session_configure_usb(void *handle,
       *session.device, cim22::runtime::CIMBoardRunPolicy{});
   return 0;
 #else
-  cim22::runtime::copyError("CIM22 runtime was built without Linux libusb",
+  cim22::runtime::copyError("CIM22 runtime was built without USB support",
                             error, capacity);
   return 1;
 #endif

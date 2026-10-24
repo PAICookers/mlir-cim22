@@ -21,7 +21,7 @@ from torch.utils._python_dispatch import _disable_current_modes
 from torch_mlir.extras.fx_decomp_util import get_decomposition_table
 
 from .compiler import RuntimeBackend, _compile
-from .runtime import UsbConfig
+from .runtime import MODEL_SUFFIX, UsbConfig
 
 type TensorCallable = Callable[..., Sequence[torch.Tensor]]
 
@@ -117,7 +117,9 @@ def backend(
             session = _compile(
                 gm,
                 *(defake(fake_inputs[i]) for i in input_indices),
-                artifact_path=(Path(artifact_dir) / f"{graph_name}.so")
+                artifact_path=(
+                    Path(artifact_dir) / f"{graph_name}{MODEL_SUFFIX}"
+                )
                 if artifact_dir is not None
                 else None,
                 debug_dir=Path(debug_dir) / graph_name
