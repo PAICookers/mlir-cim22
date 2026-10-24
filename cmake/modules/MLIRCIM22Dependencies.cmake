@@ -10,6 +10,8 @@ include_guard(GLOBAL)
 include(FetchContent)
 
 set(protobuf_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+# Match LLVM and the DLL ABI: allocations may cross the runtime boundary.
+set(protobuf_MSVC_STATIC_RUNTIME OFF CACHE BOOL "" FORCE)
 set(protobuf_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 # protoc requires libupb even though deployed models only use lite.
 set(protobuf_BUILD_LIBUPB ON CACHE BOOL "" FORCE)

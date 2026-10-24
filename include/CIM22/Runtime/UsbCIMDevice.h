@@ -25,6 +25,7 @@ struct UsbCIMDeviceConfig {
   uint16_t vendorId = 0;
   uint16_t productId = 0;
   // Omit both only when VID/PID identify a unique connected device.
+  // Windows CyAPI supports deviceAddress; busNumber is Linux-only.
   std::optional<uint8_t> busNumber;
   std::optional<uint8_t> deviceAddress;
   uint8_t interfaceNumber = 0;
@@ -46,7 +47,7 @@ struct UsbCIMDeviceConfig {
   size_t receiveChunkBytes = 32 * 1024;
 };
 
-// Linux factory available when the optional libusb transport is built.
+// Optional native transport: libusb on Linux, Cypress CyAPI on Windows.
 std::unique_ptr<CIMDevice> createUsbCIMDevice(const UsbCIMDeviceConfig &config);
 
 } // namespace cim22::runtime

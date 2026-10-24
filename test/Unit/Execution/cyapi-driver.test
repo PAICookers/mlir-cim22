@@ -1,0 +1,2 @@
+// REQUIRES: system-windows
+// RUN: mlir-cim22-cyapi-driver-test

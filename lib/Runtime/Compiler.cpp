@@ -269,10 +269,13 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
     return failure();
   }
   machineBuilder->setRelocationModel(llvm::Reloc::PIC_)
-      .setCodeModel(llvm::CodeModel::Small)
       .setCodeGenOptLevel(llvm::CodeGenOptLevel::None);
+  // Keep the target's JIT code model: Windows JIT helpers and their state can
+  // be farther apart than the small model permits. AOT DLLs use small code.
   if (!objectPath.empty())
-    machineBuilder->setCPU("generic").setFeatures("");
+    machineBuilder->setCodeModel(llvm::CodeModel::Small)
+        .setCPU("generic")
+        .setFeatures("");
   auto machine = machineBuilder->createTargetMachine();
   if (!machine) {
     session.error = llvm::toString(machine.takeError());

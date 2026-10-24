@@ -4,6 +4,7 @@ import ctypes
 import os
 import threading
 import weakref
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
@@ -14,10 +15,30 @@ from numpy.typing import NDArray
 
 type FloatArray = NDArray[np.float32]
 
+MODEL_SUFFIX = ".dll" if os.name == "nt" else ".so"
+
+
+def _load_library(path: Path) -> ctypes.CDLL:
+    """Resolve adjacent DLL dependencies on Windows without changing PATH."""
+    with (
+        os.add_dll_directory(str(path.parent))
+        if os.name == "nt"
+        else nullcontext()
+    ):
+        return ctypes.CDLL(str(path))
+
+
+def _release_session(
+    library: ctypes.CDLL, handle: int, resources: ExitStack
+) -> None:
+    # Windows cannot remove a model DLL until its native Session unloads it.
+    library.cim22_session_destroy(handle)
+    resources.close()
+
 
 @dataclass(frozen=True, slots=True)
 class UsbConfig:
-    """Linux USB bridge selection and transfer settings."""
+    """Platform USB bridge selection and transfer settings."""
 
     vendor_id: int
     product_id: int
@@ -56,7 +77,10 @@ class UsbConfig:
                 raise TypeError(f"{name} must be an integer")
             if not lower <= value <= upper:
                 raise ValueError(f"{name} must be in [{lower}, {upper}]")
-        if (self.bus_number == 0xFF) != (self.device_address == 0xFF):
+        if os.name == "nt":
+            if self.bus_number != 0xFF:
+                raise ValueError("bus_number is not supported by Windows CyAPI")
+        elif (self.bus_number == 0xFF) != (self.device_address == 0xFF):
             raise ValueError("Specify both bus_number and device_address")
 
 
@@ -67,23 +91,35 @@ def runtime_library(library: Path | None = None) -> Path:
         library = (
             Path(configured)
             if configured
-            else Path(str(files("cim22") / "lib" / "libcim22_runtime.so"))
+            else Path(
+                str(
+                    files("cim22")
+                    / "lib"
+                    / (
+                        "cim22_runtime.dll"
+                        if os.name == "nt"
+                        else "libcim22_runtime.so"
+                    )
+                )
+            )
         )
     if not library.is_file():
         raise FileNotFoundError(
             "CIM22 runtime library not found; set CIM22_RUNTIME_LIBRARY "
-            "to the built libcim22_runtime.so"
+            "to the built native runtime library"
         )
     return library.resolve(strict=True)
 
 
 def compiler_library(library: Path) -> Path:
-    """The compilation adapter is required at build time, never for .so loading."""
+    """The compilation adapter is required at build time, never for model loading."""
     configured = os.environ.get("CIM22_COMPILER_LIBRARY")
     path = (
         Path(configured)
         if configured
-        else library.with_name("libcim22_compiler.so")
+        else library.with_name(
+            "cim22_compiler.dll" if os.name == "nt" else "libcim22_compiler.so"
+        )
     )
     if not path.is_file():
         raise FileNotFoundError(
@@ -93,7 +129,7 @@ def compiler_library(library: Path) -> Path:
 
 
 class Session:
-    """Load a compiled Linux model, or a raw packet for compiler diagnostics.
+    """Load a compiled native model, or a raw packet for compiler diagnostics.
 
     Inputs must be contiguous CPU FP32 arrays with the compiled static shapes.
     Every call allocates independent output arrays owned by Python. Loading and
@@ -104,7 +140,7 @@ class Session:
         self, artifact: Path, library: Path | None = None, entry: str = "main"
     ) -> None:
         library = runtime_library(library)
-        self._library = ctypes.CDLL(str(library))
+        self._library = _load_library(library)
         self._lock = threading.RLock()
         self._handle: int | None = None
         lib = self._library
@@ -136,7 +172,7 @@ class Session:
             function.restype = result
         error = ctypes.create_string_buffer(16384)
         arguments = [os.fsencode(artifact.resolve(strict=True))]
-        if artifact.suffix == ".so":
+        if artifact.suffix == MODEL_SUFFIX:
             loader = lib.cim22_session_load_shared
             loader.argtypes = [
                 ctypes.c_char_p,
@@ -144,7 +180,7 @@ class Session:
                 ctypes.c_size_t,
             ]
         else:
-            self._compiler = ctypes.CDLL(str(compiler_library(library)))
+            self._compiler = _load_library(compiler_library(library))
             loader = self._compiler.cim22_session_load_packet
             loader.argtypes = [
                 ctypes.c_char_p,
@@ -157,8 +193,9 @@ class Session:
         self._handle = loader(*arguments, error, len(error))
         if not self._handle:
             raise RuntimeError(error.value.decode(errors="replace"))
+        self._resources = ExitStack()
         self._finalizer = weakref.finalize(
-            self, lib.cim22_session_destroy, self._handle
+            self, _release_session, lib, self._handle, self._resources
         )
         num_inputs = lib.cim22_session_num_inputs(self._handle)
         num_outputs = lib.cim22_session_num_outputs(self._handle)
@@ -174,7 +211,7 @@ class Session:
         self.num_transactions = lib.cim22_session_num_transactions(self._handle)
 
     def configure_usb(self, config: UsbConfig) -> None:
-        """Open the configured Linux USB device for a USB artifact."""
+        """Open the configured USB device for a USB artifact."""
         if not isinstance(config, UsbConfig):
             raise TypeError("config must be a UsbConfig")
         with self._lock:

@@ -9,8 +9,25 @@
 #include "CIM22/Compiler/Compiler.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
+#ifdef _WIN32
+#include "llvm/Support/Allocator.h"
+#include "llvm/Support/Windows/WindowsSupport.h"
+#endif
 
 int main(int argc, char **argv) {
+#ifdef _WIN32
+  // MlirOptMain parses CLI paths before its InitLLVM converts Windows argv.
+  llvm::BumpPtrAllocator allocator;
+  llvm::SmallVector<const char *, 32> arguments;
+  if (auto error =
+          llvm::sys::windows::GetCommandLineArguments(arguments, allocator)) {
+    llvm::errs() << error.message() << "\n";
+    return 1;
+  }
+  arguments.push_back(nullptr);
+  argc = arguments.size() - 1;
+  argv = const_cast<char **>(arguments.data());
+#endif
   mlir::DialectRegistry registry;
   registerCIM22Compiler(registry);
   return mlir::asMainReturnCode(

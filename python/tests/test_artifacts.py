@@ -14,6 +14,7 @@ import torch
 
 from cim22 import Session
 from cim22.compiler import _compile
+from cim22.runtime import MODEL_SUFFIX
 
 from ._generated import cim22_model_pb2 as proto
 
@@ -62,7 +63,7 @@ def compiled_graph(
     )
     with torch.inference_mode():
         compiled(torch.full((2, 3, 65), 2.0**-133))
-    (artifact,) = folder.glob("*.so")
+    (artifact,) = folder.glob(f"*{MODEL_SUFFIX}")
     return compiled, artifact
 
 
@@ -108,7 +109,7 @@ def test_atomic_publication(
             graph, torch.ones(2), runtime="software", artifact_path=artifact
         )
     assert hashlib.sha256(artifact.read_bytes()).digest() == original
-    incomplete = tmp_path / "incomplete.so"
+    incomplete = tmp_path / f"incomplete{MODEL_SUFFIX}"
     with (
         patch(
             "subprocess.run",
@@ -176,3 +177,43 @@ def test_embedded_protobuf_contract(
         [],
     ]
     assert model.kernels
+
+
+def test_model_lifetime_and_unicode_path(tmp_path: Path) -> None:
+    """Two models and duplicate loads retain their own code and release files."""
+    folder = tmp_path / "\u6a21\u578b with spaces"
+    first_path = folder / f"first{MODEL_SUFFIX}"
+    second_path = folder / f"second{MODEL_SUFFIX}"
+
+    class Scale(torch.nn.Module):
+        def __init__(self, factor: int):
+            super().__init__()
+            self.factor = factor
+
+        def forward(self, x):
+            return x * self.factor
+
+    value = torch.ones(2, 3)
+    with (
+        _compile(
+            torch.fx.symbolic_trace(Scale(2)),
+            value,
+            artifact_path=first_path,
+            runtime="software",
+        ) as first,
+        _compile(
+            torch.fx.symbolic_trace(Scale(3)),
+            value,
+            artifact_path=second_path,
+            runtime="software",
+        ) as second,
+        Session(first_path) as duplicate,
+    ):
+        np.testing.assert_array_equal(first(value.numpy())[0], 2)
+        first.close()
+        np.testing.assert_array_equal(duplicate(value.numpy())[0], 2)
+        np.testing.assert_array_equal(second(value.numpy())[0], 3)
+    assert not list(folder.glob(".cim22-*"))
+    # Deletion fails on Windows if any loader still owns the DLL.
+    first_path.unlink()
+    second_path.unlink()

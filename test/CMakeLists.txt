@@ -1,7 +1,7 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 set(CIM22_HAS_USB 0)
-if(TARGET PkgConfig::LIBUSB)
+if(CIM22_ENABLE_USB)
   set(CIM22_HAS_USB 1)
 endif()
 
@@ -101,14 +101,38 @@ llvm_update_compile_flags(mlir-cim22-cim-device-runtime-test)
 target_link_libraries(mlir-cim22-cim-device-runtime-test PRIVATE
   cim22_runtime MLIRCIM22Target)
 target_compile_options(mlir-cim22-cim-device-runtime-test PRIVATE -fno-rtti)
-if(TARGET PkgConfig::LIBUSB)
+if(CIM22_ENABLE_USB)
   add_executable(mlir-cim22-usb-runtime-test EXCLUDE_FROM_ALL
     Unit/Execution/UsbCIMDeviceTest.cpp)
   llvm_update_compile_flags(mlir-cim22-usb-runtime-test)
   target_include_directories(mlir-cim22-usb-runtime-test PRIVATE
     "${PROJECT_SOURCE_DIR}/lib/Runtime")
   target_link_libraries(mlir-cim22-usb-runtime-test PRIVATE cim22_runtime)
-  target_compile_options(mlir-cim22-usb-runtime-test PRIVATE -fno-rtti)
+  if(WIN32)
+    # The fake driver exchanges llvm::Error with USB internals. Static LLVM
+    # type IDs are distinct across Windows DLLs, so keep this C++ test seam
+    # in one binary; calls to the runtime's C ABI still use the real DLL.
+    target_sources(mlir-cim22-usb-runtime-test PRIVATE
+      "${PROJECT_SOURCE_DIR}/lib/Runtime/UsbCIMDevice.cpp"
+      "${PROJECT_SOURCE_DIR}/lib/Runtime/UsbRecordCodec.cpp")
+    target_link_libraries(mlir-cim22-usb-runtime-test PRIVATE LLVMSupport)
+  endif()
+  if(MSVC)
+    target_compile_options(mlir-cim22-usb-runtime-test PRIVATE /GR-)
+  else()
+    target_compile_options(mlir-cim22-usb-runtime-test PRIVATE -fno-rtti)
+  endif()
+endif()
+if(WIN32)
+  # SDK double exercises the production adapter without hardware or CyAPI.lib.
+  add_executable(mlir-cim22-cyapi-driver-test EXCLUDE_FROM_ALL
+    Unit/Execution/CyApiUsbDriverTest.cpp
+    "${PROJECT_SOURCE_DIR}/lib/Runtime/CyApiUsbDriver.cpp")
+  llvm_update_compile_flags(mlir-cim22-cyapi-driver-test)
+  target_include_directories(mlir-cim22-cyapi-driver-test BEFORE PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/Unit/Execution/fake-cyapi")
+  target_compile_definitions(mlir-cim22-cyapi-driver-test PRIVATE NOMINMAX)
+  target_link_libraries(mlir-cim22-cyapi-driver-test PRIVATE LLVMSupport)
 endif()
 set(MLIRCIM22_TEST_DEPENDS
   cim22_compiler
@@ -131,6 +155,9 @@ set(MLIRCIM22_TEST_DEPENDS
 )
 if(TARGET mlir-cim22-usb-runtime-test)
   list(APPEND MLIRCIM22_TEST_DEPENDS mlir-cim22-usb-runtime-test)
+endif()
+if(TARGET mlir-cim22-cyapi-driver-test)
+  list(APPEND MLIRCIM22_TEST_DEPENDS mlir-cim22-cyapi-driver-test)
 endif()
 
 add_lit_testsuite(check-mlir-cim22 "Running mlir-cim22 regression tests"

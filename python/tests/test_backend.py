@@ -17,6 +17,7 @@ from torch._dynamo.exc import BackendCompilerFailed
 import cim22.backend as adapter
 from cim22 import Session
 from cim22.compiler import _compile
+from cim22.runtime import MODEL_SUFFIX
 
 pytestmark = [
     pytest.mark.integration,
@@ -98,11 +99,13 @@ def test_shared_batch_temporal_reset_and_cache(tmp_path: Path) -> None:
         torch.testing.assert_close(first, third, rtol=0, atol=0)
         assert compiler.call_count == 1
         assert exporter.call_count == 1
-        products = list(tmp_path.iterdir())
+        products = list(tmp_path.glob(f"*{MODEL_SUFFIX}"))
         assert len(products) == 1
-        assert products[0].suffix == ".so"
+        assert products[0].suffix == MODEL_SUFFIX
         with products[0].open("rb") as stream:
-            assert stream.read(4) == b"\x7fELF"
+            assert stream.read(2 if MODEL_SUFFIX == ".dll" else 4) == (
+                b"MZ" if MODEL_SUFFIX == ".dll" else b"\x7fELF"
+            )
         assert first.data_ptr() != second.data_ptr()
         assert isinstance(model.v, torch.Tensor)
 
@@ -184,7 +187,7 @@ def test_runtime_weights_stay_on_host(tmp_path: Path) -> None:
                 compiled(value, weight), linear(value, weight)
             )
         assert compiler.call_count == 1
-    (artifact,) = tmp_path.glob("*.so")
+    (artifact,) = tmp_path.glob(f"*{MODEL_SUFFIX}")
     with Session(artifact) as session:
         assert session.num_transactions == 0
 
@@ -299,7 +302,7 @@ def test_mutable_state_and_cim_weights(
         torch.testing.assert_close(compiled(value), first)
         assert compiler.call_count == 1
     torch.testing.assert_close(value, original)
-    (artifact,) = tmp_path.glob("*.so")
+    (artifact,) = tmp_path.glob(f"*{MODEL_SUFFIX}")
     with Session(artifact) as session:
         assert session.num_transactions > 0
 

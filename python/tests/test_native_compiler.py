@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from cim22.compiler import _emit_object
-from cim22.runtime import Session
+from cim22.runtime import MODEL_SUFFIX, Session
 
 from ._generated import cim22_model_pb2 as proto
 
@@ -60,6 +60,9 @@ def test_object_destination_failure(
         assert output.is_dir()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="requires POSIX RLIMIT_FSIZE"
+)
 def test_object_write_failure_preserves_previous_output(
     packet: Path, tmp_path: Path, native_runtime: Path
 ) -> None:
@@ -161,7 +164,7 @@ def test_multiple_kernels_retain_distinct_weight_resources(
     with torch.inference_mode():
         for actual, reference in zip(compiled(value), expected, strict=True):
             torch.testing.assert_close(actual, reference, rtol=0, atol=0)
-    (artifact,) = tmp_path.glob("*.so")
+    (artifact,) = tmp_path.glob(f"*{MODEL_SUFFIX}")
     model = embedded_model(artifact)
     assert len(model.kernels) == 2
     assert sorted(len(k.transaction.weights) for k in model.kernels) == [1, 2]

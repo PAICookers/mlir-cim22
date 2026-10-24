@@ -6,9 +6,13 @@ endif()
 
 project(MLIRCIM22 LANGUAGES C CXX)
 
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
+if(MSVC)
+  add_compile_options(/utf-8)
+endif()
+
+if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|Windows)$" OR
    NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
-  message(FATAL_ERROR "mlir-cim22 currently supports Linux x86_64 only")
+  message(FATAL_ERROR "mlir-cim22 supports Linux and Windows x86_64")
 endif()
 
 set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to conform to")
