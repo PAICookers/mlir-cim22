@@ -175,7 +175,7 @@ torch.Size([1, 16])
 | USB 报错或要求配置设备     | 无硬件时显式选择 `runtime="software"`                        |
 | 编译失败或数值偏差         | 先运行自检脚本，再保存 `debug_dir`；检查输入约束和 BF16 误差 |
 
-USB 原始诊断可通过 `cim22.Session`、`UsbConfig` 和 `capture_usb` 使用，具体数组与生命周期契约见 [runtime.py](cim22/runtime.py)。USB 传输故障后需关闭 Session 并按设备流程复位；重新打开 Host 句柄不会复位硬件。
+USB 原始诊断可通过 `cim22.Session`、`UsbConfig` 和 `capture_usb` 使用，具体数组与生命周期契约见 [runtime.py](cim22/runtime.py)。停止接收会保留成功收到的尾数据并检查真实接收错误；正常主动取消不计失败。故障后重新配置会先报告旧事务失败并关闭设备，随后允许显式重试 `configure_usb`。重新打开 Host 句柄不会复位硬件，也不会续跑失败的事务。
 
 ## 开发与测试
 

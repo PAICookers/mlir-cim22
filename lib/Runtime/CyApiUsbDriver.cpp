@@ -139,38 +139,43 @@ public:
       return 0;
     if (result != WAIT_OBJECT_0)
       return usbError("CyAPI IN event wait failed");
-    LONG length = static_cast<LONG>(request_->bytes.size());
-    const bool success = finishRead(length);
-    if (!success)
-      return transferError("IN FinishDataXfer", *in_);
-    if (length < 0 || size_t(length) > request_->bytes.size())
-      return usbError("CyAPI IN returned an invalid transfer length");
-    std::copy_n(request_->bytes.data(), length, bytes.data());
-    return size_t(length);
+    return completeRead(bytes);
   }
 
   void cancel() override { cancelled_ = true; }
+
+  llvm::Expected<size_t> drain(llvm::MutableArrayRef<uint8_t> bytes) override {
+    if (!request_ || !request_->context)
+      return size_t{0};
+    if (bytes.size() < request_->bytes.size())
+      return usbError("CyAPI IN destination is smaller than receiveChunkBytes");
+    DWORD result = WaitForSingleObject(request_->overlapped.hEvent, 0);
+    if (result != WAIT_OBJECT_0) {
+      in_->Abort();
+      result = WaitForSingleObject(request_->overlapped.hEvent, 2000);
+    }
+    if (result != WAIT_OBJECT_0) {
+      // The driver still owns this storage. Retain it and its endpoint rather
+      // than freeing an active OVERLAPPED. Ordinary stops never enter here.
+      (void)request_.release();
+      (void)device_.release();
+      in_ = out_ = nullptr;
+      quarantined_ = true;
+      return usbError("CyAPI IN Abort did not return buffer ownership");
+    }
+    return completeRead(bytes);
+  }
 
   // Called only after the common runtime has joined its receive thread.
   void close() override {
     cancelled_ = true;
     if (request_ && request_->context) {
-      DWORD result = WaitForSingleObject(request_->overlapped.hEvent, 0);
-      if (result != WAIT_OBJECT_0) {
-        in_->Abort();
-        result = WaitForSingleObject(request_->overlapped.hEvent, 2000);
-      }
-      if (result == WAIT_OBJECT_0) {
-        LONG length = static_cast<LONG>(request_->bytes.size());
-        finishRead(length);
-      } else {
-        // A broken driver still owns the OVERLAPPED and buffer. As in the
-        // supplier handler, retain them until process exit rather than cause
-        // use-after-free. Also retain the device/endpoint and forbid reopen.
-        (void)request_.release();
-        (void)device_.release();
-        quarantined_ = true;
-      }
+      // Fallback for failed open/destruction. Normal shutdown calls drain
+      // first and delivers its bytes/errors to the common receive queue.
+      std::vector<uint8_t> tail(request_->bytes.size());
+      auto result = drain(tail);
+      if (!result)
+        llvm::consumeError(result.takeError());
     }
     request_.reset();
     if (device_)
@@ -199,12 +204,24 @@ private:
       return transferError("IN BeginDataXfer", *in_);
     return llvm::Error::success();
   }
-  bool finishRead(LONG &length) {
+  llvm::Expected<size_t> completeRead(llvm::MutableArrayRef<uint8_t> bytes) {
+    LONG length = static_cast<LONG>(request_->bytes.size());
     const bool success =
         in_->FinishDataXfer(request_->bytes.data(), length,
                             &request_->overlapped, request_->context);
     request_->context = nullptr;
-    return success;
+    if (!success) {
+      // Match the supplier: only an expected cancellation during stop is
+      // benign; other status codes still invalidate the receive transaction.
+      if (cancelled_ &&
+          (in_->NtStatus == 0xc0000120u || in_->UsbdStatus == 0xc0010000u))
+        return size_t{0};
+      return transferError("IN FinishDataXfer", *in_);
+    }
+    if (length < 0 || size_t(length) > request_->bytes.size())
+      return usbError("CyAPI IN returned an invalid transfer length");
+    std::copy_n(request_->bytes.data(), length, bytes.data());
+    return size_t(length);
   }
 
   UsbCIMDeviceConfig config_;

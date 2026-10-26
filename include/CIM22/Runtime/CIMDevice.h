@@ -59,7 +59,8 @@ public:
   virtual llvm::Error open() = 0;
   virtual llvm::Error execute(const CIMDeviceProgram &program,
                               CIMDeviceResponse &response) = 0;
-  // A transport/protocol fault requires hardware reset and a new Session.
+  // Inspect after close to include tail data/errors. Explicit open starts a
+  // fresh receive session; it does not reset hardware or resume a failed run.
   virtual bool isFaulted() = 0;
   virtual void close() = 0;
 };

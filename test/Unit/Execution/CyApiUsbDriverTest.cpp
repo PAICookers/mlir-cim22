@@ -129,8 +129,35 @@ int main() {
   llvm::cantFail(driver->open(config()));
   fake::complete(7);
   driver->cancel();
+  assert(llvm::cantFail(driver->drain(bytes)) == 7 && bytes[6] == 0x5a);
+  assert(llvm::cantFail(driver->drain(bytes)) == 0);
   driver->close();
   assert(fake::finishes == 1 && fake::aborts == 0);
+
+  // Both a completed request and an Abort racing a valid completion retain
+  // their payload. The same receiver can start again after an ordinary stop.
+  fake::reset();
+  llvm::cantFail(driver->open(config()));
+  fake::abortTail = 9;
+  driver->cancel();
+  assert(llvm::cantFail(driver->drain(bytes)) == 9 && bytes[8] == 0x5a);
+  driver->close();
+  fake::reset();
+  llvm::cantFail(driver->open(config()));
+  driver->cancel();
+  assert(llvm::cantFail(driver->drain(bytes)) == 0);
+  driver->close();
+
+  for (bool abort : {false, true}) {
+    fake::reset();
+    llvm::cantFail(driver->open(config()));
+    fake::finishFails = true;
+    if (!abort)
+      fake::complete(7);
+    driver->cancel();
+    expectError(driver->drain(bytes).takeError(), "IN FinishDataXfer");
+    driver->close();
+  }
 
   // If Abort never signals completion, freeing the SDK buffer would be unsafe.
   // The adapter retains it until process exit and refuses to reopen.
@@ -139,6 +166,8 @@ int main() {
   pending = fake::pending;
   const int closes = fake::closes;
   fake::abortStalls = true;
+  driver->cancel();
+  expectError(driver->drain(bytes).takeError(), "ownership");
   driver->close();
   assert(fake::pending == pending && fake::finishes == 0);
   assert(fake::closes == closes);

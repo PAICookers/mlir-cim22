@@ -223,9 +223,11 @@ extern "C" int cim22_session_configure_usb(void *handle,
   if (session.device)
     session.device->close();
   if (session.device && session.device->isFaulted()) {
+    session.runner.reset();
+    session.device.reset();
     cim22::runtime::copyError(
-        "USB session is faulted; close the Session, reset FPGA/chip, "
-        "then create a new Session",
+        "USB receive/transaction failed before reconfiguration; "
+        "device closed, configure_usb may be retried explicitly",
         error, capacity);
     return 1;
   }
@@ -250,9 +252,8 @@ extern "C" int cim22_session_configure_usb(void *handle,
   deviceConfig.transferTimeoutMs = config->transfer_timeout_ms;
   deviceConfig.receivePollTimeoutMs = config->receive_poll_timeout_ms;
   deviceConfig.responseTimeoutMs = config->response_timeout_ms;
-  // Release the interface before replacing a healthy device. A failed open
-  // leaves dispatch disabled; transport faults cannot be cleared by
-  // replacement.
+  // Release the interface before replacement. A failed open leaves dispatch
+  // disabled; a previous transaction's failure was reported above.
   session.runner.reset();
   session.device.reset();
   auto device = cim22::runtime::createUsbCIMDevice(deviceConfig);

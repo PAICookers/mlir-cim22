@@ -41,12 +41,6 @@ public:
   llvm::Error open() override {
     std::lock_guard<std::mutex> executionLock(executionMutex_);
     closeUnlocked();
-    if (faulted_ || !receiveError_.empty() || !records_.empty() ||
-        receiveCodec_.pendingBytes() != 0) {
-      faulted_ = true;
-      return usbError("CIM USB session remains faulted; close the Session, "
-                      "reset FPGA/chip, then create a new Session");
-    }
     if (llvm::Error error = validateConfig())
       return error;
     if (!driver_)
@@ -58,6 +52,8 @@ public:
       std::lock_guard<std::mutex> lock(receiveMutex_);
       records_.clear();
       receiveError_.clear();
+      faulted_ = false;
+      faultMessage_.clear();
       stopRequested_ = false;
       opened_ = true;
       receiveLoopStarted_ = false;
@@ -264,38 +260,38 @@ private:
       auto count = driver_->read(buffer);
       if (!count) {
         std::lock_guard<std::mutex> lock(receiveMutex_);
-        if (!stopRequested_)
-          receiveError_ = llvm::toString(count.takeError());
-        else
-          llvm::consumeError(count.takeError());
+        // Drivers distinguish expected cancellation from genuine failures.
+        receiveError_ = llvm::toString(count.takeError());
         receiveCondition_.notify_all();
         break;
       }
       if (*count == 0)
         continue;
-      if (*count > buffer.size()) {
-        std::lock_guard<std::mutex> lock(receiveMutex_);
-        receiveError_ = "CIM USB read returned an invalid transfer length";
-        receiveCondition_.notify_all();
+      if (!appendReceived(buffer, *count))
         break;
-      }
-
-      llvm::SmallVector<UsbRecord, 16> decoded;
-      std::lock_guard<std::mutex> lock(receiveMutex_);
-      if (llvm::Error error = receiveCodec_.append(
-              llvm::ArrayRef<uint8_t>(buffer).take_front(*count), decoded)) {
-        receiveError_ = llvm::toString(std::move(error));
-        receiveCondition_.notify_all();
-        break;
-      }
-      if (decoded.size() > kMaxResponseRecords - records_.size()) {
-        receiveError_ = "CIM USB response queue overflow";
-        receiveCondition_.notify_all();
-        break;
-      }
-      records_.insert(records_.end(), decoded.begin(), decoded.end());
-      receiveCondition_.notify_all();
     }
+  }
+
+  bool appendReceived(llvm::ArrayRef<uint8_t> buffer, size_t count) {
+    std::lock_guard<std::mutex> lock(receiveMutex_);
+    receiveCondition_.notify_all();
+    auto fail = [&](std::string message) {
+      if (receiveError_.empty())
+        receiveError_ = std::move(message);
+      return false;
+    };
+    if (count > buffer.size()) {
+      return fail("CIM USB read returned an invalid transfer length");
+    }
+    llvm::SmallVector<UsbRecord, 16> decoded;
+    if (auto error = receiveCodec_.append(buffer.take_front(count), decoded)) {
+      return fail(llvm::toString(std::move(error)));
+    }
+    if (decoded.size() > kMaxResponseRecords - records_.size()) {
+      return fail("CIM USB response queue overflow");
+    }
+    records_.insert(records_.end(), decoded.begin(), decoded.end());
+    return true;
   }
 
   void closeUnlocked() {
@@ -308,6 +304,23 @@ private:
       driver_->cancel();
     if (receiveThread_.joinable())
       receiveThread_.join();
+    if (driver_ && opened_) {
+      // Retire the outstanding request before releasing its endpoint. Keep
+      // tail records and errors observable by the final isFaulted() check.
+      std::vector<uint8_t> buffer(config_.receiveChunkBytes);
+      while (true) {
+        auto count = driver_->drain(buffer);
+        if (!count) {
+          std::lock_guard<std::mutex> lock(receiveMutex_);
+          auto message = llvm::toString(count.takeError());
+          if (receiveError_.empty())
+            receiveError_ = std::move(message);
+          break;
+        }
+        if (*count == 0 || !appendReceived(buffer, *count))
+          break;
+      }
+    }
     if (driver_)
       driver_->close();
     opened_ = false;

@@ -18,6 +18,7 @@ inline OVERLAPPED *pending = nullptr;
 inline PUCHAR buffer = nullptr;
 inline LONG capacity = 0, completedLength = 0, writeLength = 3;
 inline LONG requestedWrite = 0;
+inline LONG abortTail = 0;
 inline int begins = 0, finishes = 0, aborts = 0, closes = 0;
 inline bool beginFails = false, finishFails = false, writeFails = false;
 inline bool altFails = false, abortStalls = false, missingEndpoint = false;
@@ -31,6 +32,7 @@ inline void reset() {
   beginFails = finishFails = writeFails = altFails = abortStalls = false;
   missingEndpoint = cancelled = false;
   writeLength = 3;
+  abortTail = 0;
 }
 inline void complete(LONG length) {
   assert(pending);
@@ -71,8 +73,8 @@ public:
     ++finishes;
     pending = nullptr;
     length = completedLength;
-    NtStatus = cancelled ? 0xc0000120u : 0;
-    UsbdStatus = cancelled ? 0xc0010000u : 0;
+    NtStatus = finishFails ? 0xc0000001u : cancelled ? 0xc0000120u : 0;
+    UsbdStatus = finishFails ? 0xc0000002u : cancelled ? 0xc0010000u : 0;
     return !cancelled && !finishFails;
   }
   bool Abort() {
@@ -81,8 +83,12 @@ public:
     assert(pending);
     if (abortStalls)
       return false;
-    cancelled = true;
-    SetEvent(pending->hEvent);
+    if (abortTail)
+      complete(abortTail);
+    else {
+      cancelled = true;
+      SetEvent(pending->hEvent);
+    }
     return true;
   }
 };
