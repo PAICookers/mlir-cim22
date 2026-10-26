@@ -1,4 +1,4 @@
-add_mlir_library(MLIRCIM22Execution
+add_mlir_library(MLIRCIM22Execution OBJECT
   CIMSoftwareRunner.cpp
 
   ADDITIONAL_HEADER_DIRS

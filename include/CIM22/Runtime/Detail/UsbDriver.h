@@ -22,7 +22,7 @@
 namespace cim22::runtime::detail {
 
 // Platform drivers expose only byte-stream lifecycle and transfers. FPGA
-// records, CIM flits, completion policy, and sticky faults remain in the
+// records, CIM flits, completion policy, and transaction faults remain in the
 // portable UsbCIMDevice implementation.
 class UsbDriver {
 public:
@@ -32,6 +32,13 @@ public:
   virtual llvm::Expected<size_t> write(llvm::ArrayRef<uint8_t> bytes) = 0;
   virtual llvm::Expected<size_t> read(llvm::MutableArrayRef<uint8_t> bytes) = 0;
   virtual void cancel() = 0;
+  // After cancel and joining the reader, return completed tail bytes until
+  // zero, or a real receive error. An expected cancellation is not an error.
+  // Synchronous drivers have no outstanding request once the reader joins.
+  virtual llvm::Expected<size_t> drain(llvm::MutableArrayRef<uint8_t>) {
+    return size_t{0};
+  }
+  // Call drain before close to observe shutdown completions and errors.
   virtual void close() = 0;
 };
 

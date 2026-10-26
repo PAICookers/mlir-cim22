@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 import pytest
 import torch
 
+from cim22.runtime import MODEL_SUFFIX
+
 if TYPE_CHECKING:
     from .conftest import EmbeddedModel
 
@@ -59,5 +61,5 @@ def test_grouped_convolution_bias_offloads(
             compiled(other), expected_other, rtol=0, atol=0
         )
         torch.testing.assert_close(value, original, rtol=0, atol=0)
-    (artifact,) = tmp_path.glob("*.so")
+    (artifact,) = tmp_path.glob(f"*{MODEL_SUFFIX}")
     assert embedded_model(artifact).kernels, "Expected real CIM offload"

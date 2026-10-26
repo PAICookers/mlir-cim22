@@ -54,7 +54,10 @@ if.from-sdist = true
 cmake.source-dir = "native"
 
 [tool.uv]
-environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -63,7 +66,10 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
-torch-mlir = { url = "https://github.com/llvm/torch-mlir/releases/download/v20261001/torch_mlir-20261001-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
+torch-mlir = [
+    { url = "https://github.com/llvm/torch-mlir/releases/download/v20261001/torch_mlir-20261001-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", marker = "sys_platform == 'linux'" },
+    { url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260923.595-cp312-abi3-win_amd64.whl", marker = "sys_platform == 'win32'" },
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

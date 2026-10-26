@@ -39,8 +39,8 @@ public:
 
   llvm::Error open(const UsbCIMDeviceConfig &config) override {
     config_ = config;
-    if (openCount_++ == 0)
-      outgoingCodec_ = UsbRecordCodec(config.wordByteOrder);
+    ++openCount_;
+    outgoingCodec_ = UsbRecordCodec(config.wordByteOrder);
     incoming_.clear();
     writes_.clear();
     open_ = true;
@@ -332,13 +332,12 @@ void testWriteFailureIsSticky() {
   assert(driverView->pendingWriteBytes() == 5);
   device->close();
   assert(device->isFaulted());
-  assert(takeError(device->open()).find("remains faulted") !=
-         std::string::npos);
-  assert(driverView->openCount() == 1);
-  assert(driverView->pendingWriteBytes() == 5);
+  expectSuccess(device->open());
+  assert(driverView->openCount() == 2);
+  assert(driverView->pendingWriteBytes() == 0);
 }
 
-void testReopenPreservesSessionFault() {
+void testExplicitReopenAfterFault() {
   auto driver = std::make_unique<FakeUsbDriver>(true);
   FakeUsbDriver *driverView = driver.get();
   auto device = detail::createUsbCIMDevice(makeConfig(), std::move(driver));
@@ -350,23 +349,26 @@ void testReopenPreservesSessionFault() {
 
   driverView->setCorruptHeader(false);
   assert(device->isFaulted());
-  assert(takeError(device->open()).find("remains faulted") !=
-         std::string::npos);
-  assert(driverView->openCount() == 1);
+  expectSuccess(device->open());
+  assert(driverView->openCount() == 2);
+  expectSuccess(device->execute(makeProgram(), response));
   device->close();
 
+  // Reconfiguration reports the previous failure once, releases that device,
+  // and leaves this Session available for an explicit later retry.
+  driverView->setCorruptHeader(true);
+  expectSuccess(device->open());
+  llvm::consumeError(device->execute(makeProgram(), response));
   Session session;
   session.model.backend = RuntimeBackend::USB;
-  auto *faultedDevice = device.get();
   session.device = std::move(device);
   CIM22UsbConfig config{};
   std::array<char, 256> error{};
   assert(cim22_session_configure_usb(&session, &config, error.data(),
                                      error.size()) != 0);
-  assert(std::string(error.data()).find("USB session is faulted") !=
+  assert(std::string(error.data()).find("USB receive/transaction failed") !=
          std::string::npos);
-  assert(session.device.get() == faultedDevice);
-  assert(driverView->openCount() == 1);
+  assert(!session.device && !session.runner);
 }
 
 void testRejectsUnsolicitedAndOverflowResponses() {
@@ -440,7 +442,7 @@ void testPreservesRawBF16Readback() {
   device->close();
 }
 
-void testConsumesCancelledReadError() {
+void testPreservesErrorDuringStop() {
   class CancelErrorUsbDriver final : public FakeUsbDriver {
   public:
     llvm::Error open(const UsbCIMDeviceConfig &config) override {
@@ -451,9 +453,12 @@ void testConsumesCancelledReadError() {
 
     llvm::Expected<size_t> read(llvm::MutableArrayRef<uint8_t>) override {
       std::unique_lock<std::mutex> lock(mutex_);
+      reading_ = true;
+      condition_.notify_all();
       condition_.wait(lock, [&] { return cancelled_; });
-      return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                     "injected USB cancellation");
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "injected USB receive failure during stop");
     }
 
     void cancel() override {
@@ -462,16 +467,60 @@ void testConsumesCancelledReadError() {
       condition_.notify_all();
     }
 
+    void waitUntilReading() {
+      std::unique_lock<std::mutex> lock(mutex_);
+      assert(condition_.wait_for(lock, std::chrono::seconds(1),
+                                 [&] { return reading_; }));
+    }
+
   private:
     std::mutex mutex_;
     std::condition_variable condition_;
     bool cancelled_ = false;
+    bool reading_ = false;
   };
 
-  auto device = detail::createUsbCIMDevice(
-      makeConfig(), std::make_unique<CancelErrorUsbDriver>());
+  auto driver = std::make_unique<CancelErrorUsbDriver>();
+  auto *view = driver.get();
+  auto device = detail::createUsbCIMDevice(makeConfig(), std::move(driver));
   expectSuccess(device->open());
+  view->waitUntilReading();
   device->close();
+  assert(device->isFaulted());
+}
+
+void testDrainsBeforeClose() {
+  class TailUsbDriver final : public FakeUsbDriver {
+  public:
+    explicit TailUsbDriver(bool fail) : fail_(fail) {}
+    llvm::Expected<size_t>
+    drain(llvm::MutableArrayRef<uint8_t> bytes) override {
+      if (drained_)
+        return size_t{0};
+      drained_ = true;
+      if (fail_)
+        return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       "injected tail failure");
+      auto record = UsbRecordCodec::encode(UsbRecord{0, 0, 123});
+      std::copy(record.begin(), record.end(), bytes.begin());
+      return record.size();
+    }
+    bool drained_ = false;
+
+  private:
+    bool fail_;
+  };
+  for (bool fail : {false, true}) {
+    auto driver = std::make_unique<TailUsbDriver>(fail);
+    auto *view = driver.get();
+    auto device = detail::createUsbCIMDevice(makeConfig(), std::move(driver));
+    expectSuccess(device->open());
+    device->close();
+    assert(view->drained_);
+    // A successful but unsolicited tail must remain visible to the final
+    // transaction check, just as a late receive failure must.
+    assert(device->isFaulted());
+  }
 }
 } // namespace
 
@@ -484,12 +533,13 @@ int main() {
   testStickyFault();
   testTimeoutAndCancellation();
   testWriteFailureIsSticky();
-  testReopenPreservesSessionFault();
+  testExplicitReopenAfterFault();
   testRejectsUnsolicitedAndOverflowResponses();
   testRejectsInvalidTransferConfig();
   testRejectsInvalidEndpointAddresses();
   testRejectsInvalidWordByteOrder();
   testPreservesRawBF16Readback();
-  testConsumesCancelledReadError();
+  testPreservesErrorDuringStop();
+  testDrainsBeforeClose();
   return 0;
 }

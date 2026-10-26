@@ -1,5 +1,6 @@
-"""Shared preflight for tests that actually compile and load Linux models."""
+"""Shared preflight for tests that actually compile and load native models."""
 
+import _ctypes
 import ctypes
 import importlib.util
 import os
@@ -34,7 +35,12 @@ def inference_context(
 @pytest.fixture(scope="session")
 def native_runtime() -> Path:
     """Require only execution dependencies for metadata/loader tests."""
-    if shutil.which(os.environ.get("CIM22_CC", "cc")) is None:
+    if (
+        shutil.which(
+            os.environ.get("CIM22_CC", "cl" if os.name == "nt" else "cc")
+        )
+        is None
+    ):
         pytest.fail("Install a C linker or set CIM22_CC")
     return runtime_library()
 
@@ -47,7 +53,9 @@ def native_toolchain(native_runtime: Path) -> None:
             "Install the torch-mlir Release wheel before running compiler tests"
         )
     optimizer = os.environ.get("CIM22_OPT") or str(
-        files("cim22") / "bin" / "mlir-cim22-opt"
+        files("cim22")
+        / "bin"
+        / ("mlir-cim22-opt.exe" if os.name == "nt" else "mlir-cim22-opt")
     )
     if shutil.which(optimizer) is None:
         pytest.fail("Set CIM22_OPT to the built mlir-cim22-opt executable")
@@ -147,9 +155,13 @@ def embedded_model() -> EmbeddedModel:
         getter.restype = ctypes.POINTER(Descriptor)
         descriptor = getter().contents
         assert descriptor.abi_version == 1
-        return proto.ModelArtifact.FromString(
-            ctypes.string_at(descriptor.data, descriptor.data_size)
-        )
+        try:
+            return proto.ModelArtifact.FromString(
+                ctypes.string_at(descriptor.data, descriptor.data_size)
+            )
+        finally:
+            if os.name == "nt":
+                _ctypes.FreeLibrary(library._handle)
 
     return read
 
@@ -176,19 +188,23 @@ const struct Model *cim22_model_v1(void) { return &model; }
             .replace("ABI_VERSION", str(abi_version)),
             encoding="utf-8",
         )
-        shared = tmp_path / "fixture.so"
-        subprocess.run(
+        shared = tmp_path / ("fixture.dll" if os.name == "nt" else "fixture.so")
+        compiler = os.environ.get("CIM22_CC", "cl" if os.name == "nt" else "cc")
+        command = (
             [
-                os.environ.get("CIM22_CC", "cc"),
-                "-shared",
-                "-fPIC",
+                compiler,
+                "/nologo",
+                "/MD",
+                "/LD",
                 str(source),
-                "-o",
-                str(shared),
-            ],
-            check=True,
-            capture_output=True,
+                "/link",
+                f"/OUT:{shared}",
+                "/EXPORT:cim22_model_v1",
+            ]
+            if os.name == "nt"
+            else [compiler, "-shared", "-fPIC", str(source), "-o", str(shared)]
         )
+        subprocess.run(command, cwd=tmp_path, check=True, capture_output=True)
         return shared
 
     return build
