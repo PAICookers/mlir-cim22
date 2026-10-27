@@ -200,9 +200,9 @@ extern "C" int cim22_session_invoke(void *handle, void **buffers,
   return s.error.empty() ? 0 : 1;
 }
 
-extern "C" int cim22_session_configure_usb(void *handle,
-                                           const CIM22UsbConfig *config,
-                                           char *error, size_t capacity) {
+static int configureUsb(void *handle, const CIM22UsbConfig *config,
+                        const CIM22PLLConfig *pll, char *error,
+                        size_t capacity) {
   if (!handle || !config) {
     cim22::runtime::copyError("invalid USB runtime configuration", error,
                               capacity);
@@ -219,6 +219,19 @@ extern "C" int cim22_session_configure_usb(void *handle,
     cim22::runtime::copyError("invalid USB word byte order", error, capacity);
     return 1;
   }
+#ifdef CIM22_HAS_USB
+  std::optional<cim22::runtime::PLLSerialConfig> pllConfig;
+  if (pll) {
+    pllConfig = cim22::runtime::PLLSerialConfig{
+        pll->port ? pll->port : "", pll->configuration_word, pll->work_word,
+        pll->readback_word};
+    if (auto failure = cim22::runtime::validatePLLSerialConfig(*pllConfig)) {
+      cim22::runtime::copyError(llvm::toString(std::move(failure)), error,
+                                capacity);
+      return 1;
+    }
+  }
+#endif
   // Stop the receive loop before checking so late errors cannot be discarded.
   if (session.device)
     session.device->close();
@@ -252,17 +265,16 @@ extern "C" int cim22_session_configure_usb(void *handle,
   deviceConfig.transferTimeoutMs = config->transfer_timeout_ms;
   deviceConfig.receivePollTimeoutMs = config->receive_poll_timeout_ms;
   deviceConfig.responseTimeoutMs = config->response_timeout_ms;
+  deviceConfig.pll = std::move(pllConfig);
   // Release the interface before replacement. A failed open leaves dispatch
   // disabled; a previous transaction's failure was reported above.
   session.runner.reset();
-  session.device.reset();
-  auto device = cim22::runtime::createUsbCIMDevice(deviceConfig);
-  if (auto failure = device->open()) {
+  session.device = cim22::runtime::createUsbCIMDevice(deviceConfig);
+  if (auto failure = session.device->open()) {
     cim22::runtime::copyError(llvm::toString(std::move(failure)), error,
                               capacity);
     return 1;
   }
-  session.device = std::move(device);
   session.runner = std::make_unique<cim22::runtime::CIMBoardRunner>(
       *session.device, cim22::runtime::CIMBoardRunPolicy{});
   return 0;
@@ -271,6 +283,19 @@ extern "C" int cim22_session_configure_usb(void *handle,
                             error, capacity);
   return 1;
 #endif
+}
+
+extern "C" int cim22_session_configure_usb(void *handle,
+                                           const CIM22UsbConfig *config,
+                                           char *error, size_t capacity) {
+  return configureUsb(handle, config, nullptr, error, capacity);
+}
+
+extern "C" int
+cim22_session_configure_usb_with_pll(void *handle, const CIM22UsbConfig *config,
+                                     const CIM22PLLConfig *pll, char *error,
+                                     size_t capacity) {
+  return configureUsb(handle, config, pll, error, capacity);
 }
 
 extern "C" int64_t cim22_session_num_readbacks(void *handle, int64_t id) {

@@ -261,6 +261,11 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
         if (llvm::Error error = appendCIMWeightExponentPacket(
                 weight.route, exponentWords, select.flits))
           return std::move(error);
+      } else {
+        const std::array<uint64_t, 2> exponentWords{};
+        if (llvm::Error error = appendCIMWeightExponentPacket(
+                weight.route, exponentWords, select.flits))
+          return std::move(error);
       }
       program.operations.push_back(std::move(select));
       emitTrace(trace, sequence, CIMTraceEventKind::SelectMacro, group.groupId,
@@ -307,6 +312,7 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
   // before triggering work. Keep all Once flits in one batch so the board
   // pacing delay begins only after every active Core has been started.
   CIMDeviceOperation startWork;
+  startWork.phase = CIMDevicePhase::Work;
   startWork.postDelayMs = policy.workDelayMs;
   for (const CIMGroup &group : executable.getGroups()) {
     startWork.flits.push_back(encodeCIMWorkOnceFlit(group.works.front().route));
@@ -317,6 +323,7 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
   // The supplier BF16 testbench returns to idle after Once.
   if (hasBF16(executable)) {
     CIMDeviceOperation idle;
+    idle.phase = CIMDevicePhase::Work;
     for (const CIMGroup &group : executable.getGroups())
       idle.flits.push_back(encodeCIMWorkIdleFlit(group.works.front().route));
     program.operations.push_back(std::move(idle));
@@ -331,8 +338,9 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
     CIMDeviceReadbackCommand command;
     command.outputIndex = outputIndex;
     command.dataType = readback.dataType;
-    command.request.flits.push_back(encodeCIMControlFlit(
+    command.selection.flits.push_back(encodeCIMControlFlit(
         readback.route, readback.macroSlot, readback.dataType));
+    command.selection.postDelayMs = policy.readbackSelectDelayMs;
     command.request.flits.push_back(encodeCIMOutputCacheReadFlit(
         readback.route, readback.outputCacheAddress));
     program.readbacks.push_back(std::move(command));

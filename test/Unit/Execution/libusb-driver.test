@@ -1,0 +1,2 @@
+// REQUIRES: system-linux, cim22_runtime_usb
+// RUN: mlir-cim22-libusb-driver-test

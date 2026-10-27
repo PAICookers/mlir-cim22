@@ -17,7 +17,8 @@ namespace cim22::runtime {
 struct CIMBoardRunPolicy {
   uint32_t cacheWriteDelayMs = 1;
   uint32_t weightWriteDelayMs = 2;
-  uint32_t workDelayMs = 2;
+  uint32_t workDelayMs = 20;
+  uint32_t readbackSelectDelayMs = 100;
 };
 
 class CIMBoardRunner final : public execution::CIMRunner {

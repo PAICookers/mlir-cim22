@@ -45,6 +45,8 @@ llvm_config.add_tool_substitutions(
         "mlir-cim22-cim-executable-runner-test",
         "mlir-cim22-cim-device-runtime-test",
         "mlir-cim22-usb-runtime-test",
+        "mlir-cim22-pll-serial-test",
+        "mlir-cim22-libusb-driver-test",
         "mlir-cim22-onnx-import",
         "mlir-cim22-opt",
     ],

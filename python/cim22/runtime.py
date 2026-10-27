@@ -5,13 +5,15 @@ import os
 import threading
 import weakref
 from contextlib import ExitStack, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.resources import files
 from pathlib import Path
 from types import TracebackType
 
 import numpy as np
 from numpy.typing import NDArray
+
+from .pll import PLLClockSetting, select_pll_clock
 
 type FloatArray = NDArray[np.float32]
 
@@ -37,8 +39,47 @@ def _release_session(
 
 
 @dataclass(frozen=True, slots=True)
+class PLLConfig:
+    """Optional serial commands for Config, Work and Readback clock phases.
+
+    On Linux, a missing serial device uses the manually configured clock;
+    an available device must return an exact echo. Windows serial control is
+    unsupported: omit PLLConfig and pll_port and configure the clock manually.
+    """
+
+    port: str
+    config_hex: str
+    work_hex: str
+    readback_hex: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.port, str):
+            raise TypeError("port must be a string")
+        if not self.port or "\0" in self.port:
+            raise ValueError("port must be non-empty and contain no NUL")
+        for name in ("config_hex", "work_hex", "readback_hex"):
+            value = getattr(self, name)
+            if not isinstance(value, str):
+                raise TypeError(f"{name} must be a six-digit HEX string")
+            if len(value) != 6 or any(
+                char not in "0123456789abcdefABCDEF" for char in value
+            ):
+                raise ValueError(f"{name} must be a six-digit HEX string")
+            word = int(value, 16)
+            nf = ((word >> 18) & 0x3F) + 1
+            nr = ((word >> 14) & 0x0F) + 1
+            if 24 * nf < 250 * nr:
+                raise ValueError(f"{name} PLL VCO must be at least 250 MHz")
+
+
+@dataclass(frozen=True, slots=True)
 class UsbConfig:
-    """Platform USB bridge selection and transfer settings."""
+    """Platform USB bridge settings and optional supplier PLL selection.
+
+    clock_frequency_mhz selects the same clock in all three phases. Without
+    pll_port the caller configures that clock manually; clock_setting records
+    the selected table frequency, not a measured or verified hardware clock.
+    """
 
     vendor_id: int
     product_id: int
@@ -48,12 +89,16 @@ class UsbConfig:
     device_address: int = 0xFF
     interface_number: int = 0
     alternate_setting: int = 0
-    physical_link: int = 2
+    physical_link: int = 0
     logical_channel: int = 3
     word_byte_order: int = 0
     transfer_timeout_ms: int = 5000
     receive_poll_timeout_ms: int = 200
-    response_timeout_ms: int = 60000
+    response_timeout_ms: int = 7000
+    pll: PLLConfig | None = None
+    clock_frequency_mhz: float | None = None
+    pll_port: str | None = None
+    clock_setting: PLLClockSetting | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         for name, lower, upper in (
@@ -82,6 +127,25 @@ class UsbConfig:
                 raise ValueError("bus_number is not supported by Windows CyAPI")
         elif (self.bus_number == 0xFF) != (self.device_address == 0xFF):
             raise ValueError("Specify both bus_number and device_address")
+        if self.pll is not None and not isinstance(self.pll, PLLConfig):
+            raise TypeError("pll must be a PLLConfig or None")
+        if self.pll_port is not None:
+            if not isinstance(self.pll_port, str):
+                raise TypeError("pll_port must be a string or None")
+            if not self.pll_port or "\0" in self.pll_port:
+                raise ValueError(
+                    "pll_port must be non-empty and contain no NUL"
+                )
+            if self.clock_frequency_mhz is None:
+                raise ValueError("pll_port requires clock_frequency_mhz")
+        if self.clock_frequency_mhz is not None:
+            if self.pll is not None:
+                raise ValueError("Specify either pll or clock_frequency_mhz")
+            object.__setattr__(
+                self,
+                "clock_setting",
+                select_pll_clock(self.clock_frequency_mhz),
+            )
 
 
 def runtime_library(library: Path | None = None) -> Path:
@@ -211,24 +275,36 @@ class Session:
         self.num_transactions = lib.cim22_session_num_transactions(self._handle)
 
     def configure_usb(self, config: UsbConfig) -> None:
-        """Open the configured USB device for a USB artifact."""
+        """Open USB with optional PLL control or a manually configured clock."""
         if not isinstance(config, UsbConfig):
             raise TypeError("config must be a UsbConfig")
         with self._lock:
             self._require_open()
-            native = self._library.cim22_session_configure_usb
-            native.argtypes = [
+            argument_types = [
                 ctypes.c_void_p,
                 ctypes.POINTER(_UsbConfig),
+            ]
+            native_config = _UsbConfig.from_config(config)
+            arguments = [self._handle, ctypes.byref(native_config)]
+            pll = config.pll
+            if config.clock_setting is not None and config.pll_port is not None:
+                word = config.clock_setting.serial_hex
+                pll = PLLConfig(config.pll_port, word, word, word)
+            if pll is None:
+                native = self._library.cim22_session_configure_usb
+            else:
+                native = self._library.cim22_session_configure_usb_with_pll
+                native_pll = _PLLConfig.from_config(pll)
+                argument_types.append(ctypes.POINTER(_PLLConfig))
+                arguments.append(ctypes.byref(native_pll))
+            native.argtypes = [
+                *argument_types,
                 ctypes.c_char_p,
                 ctypes.c_size_t,
             ]
             native.restype = ctypes.c_int
-            native_config = _UsbConfig.from_config(config)
             error = ctypes.create_string_buffer(16384)
-            if native(
-                self._handle, ctypes.byref(native_config), error, len(error)
-            ):
+            if native(*arguments, error, len(error)):
                 raise RuntimeError(error.value.decode(errors="replace"))
 
     def capture_usb(
@@ -392,4 +468,22 @@ class _UsbConfig(ctypes.Structure):
             config.transfer_timeout_ms,
             config.receive_poll_timeout_ms,
             config.response_timeout_ms,
+        )
+
+
+class _PLLConfig(ctypes.Structure):
+    _fields_ = [
+        ("port", ctypes.c_char_p),
+        ("configuration_word", ctypes.c_uint32),
+        ("work_word", ctypes.c_uint32),
+        ("readback_word", ctypes.c_uint32),
+    ]
+
+    @classmethod
+    def from_config(cls, config: PLLConfig) -> "_PLLConfig":
+        return cls(
+            os.fsencode(config.port),
+            int(config.config_hex, 16),
+            int(config.work_hex, 16),
+            int(config.readback_hex, 16),
         )

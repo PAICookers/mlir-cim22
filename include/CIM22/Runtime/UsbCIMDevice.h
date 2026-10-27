@@ -10,6 +10,7 @@
 #define CIM22_RUNTIME_USBCIMDEVICE_H
 
 #include "CIM22/Runtime/CIMDevice.h"
+#include "CIM22/Runtime/PLLSerial.h"
 #include "CIM22/Runtime/UsbRecordCodec.h"
 
 #include <cstddef>
@@ -32,9 +33,9 @@ struct UsbCIMDeviceConfig {
   uint8_t alternateSetting = 0;
   uint8_t bulkInEndpoint = 0;
   uint8_t bulkOutEndpoint = 0;
-  // These select the Host-to-chip injection path. Response records report
-  // their own source link and channel and may differ from these values.
-  uint8_t physicalLink = 2;
+  // Selects the Host-to-chip injection path; supplier responses carry only
+  // a source channel, with the physical-link bits reserved as zero.
+  uint8_t physicalLink = 0;
   uint8_t logicalChannel = 3;
   // The supplier Host program supports both orders; select the deployed FX3
   // firmware's per-32-bit-word representation in the board profile.
@@ -42,9 +43,11 @@ struct UsbCIMDeviceConfig {
   uint32_t startupDelayMs = 20;
   uint32_t transferTimeoutMs = 5000;
   uint32_t receivePollTimeoutMs = 200;
-  uint32_t responseTimeoutMs = 60000;
-  size_t maxTransferBytes = kUsbRecordBytes * 256;
+  uint32_t responseTimeoutMs = 7000;
+  size_t maxTransferBytes = 512;
   size_t receiveChunkBytes = 32 * 1024;
+  // Manual clock when omitted; Linux also permits a missing optional port.
+  std::optional<PLLSerialConfig> pll;
 };
 
 // Optional native transport: libusb on Linux, Cypress CyAPI on Windows.

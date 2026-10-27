@@ -2,8 +2,8 @@
 
 #include "CIM22/Runtime/UsbCIMDevice.h"
 
-#include "CIM22/Runtime/Detail/UsbDriver.h"
 #include "CIM22/Runtime/UsbRecordCodec.h"
+#include "UsbDriver.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
@@ -59,6 +59,7 @@ public:
       receiveLoopStarted_ = false;
       receiveCodec_ = UsbRecordCodec(config_.wordByteOrder);
     }
+    receiveBuffer_.resize(config_.receiveChunkBytes);
     receiveThread_ = std::thread(&UsbCIMDevice::receiveLoop, this);
 
     {
@@ -96,6 +97,7 @@ public:
                       CIMDeviceResponse &response) override {
     std::lock_guard<std::mutex> executionLock(executionMutex_);
     response.readbacks.clear();
+    response.pllVerified.fill(false);
     if (!opened_)
       return usbError("CIM USB device is not open");
     if (faulted_)
@@ -109,12 +111,45 @@ public:
         return fault(receiveError_);
     }
 
-    for (const CIMDeviceOperation &operation : program.operations)
+    auto configurePhase = [&](CIMDevicePhase phase) -> llvm::Error {
+      {
+        std::lock_guard<std::mutex> lock(receiveMutex_);
+        if (!receiveError_.empty())
+          return usbError(receiveError_);
+      }
+      if (!config_.pll)
+        return llvm::Error::success();
+      auto verified = configurePLL(*config_.pll, phase);
+      if (!verified)
+        return verified.takeError();
+      response.pllVerified[static_cast<size_t>(phase)] = *verified;
+      return llvm::Error::success();
+    };
+    if (llvm::Error error = configurePhase(CIMDevicePhase::Configuration))
+      return fault(llvm::toString(std::move(error)));
+    bool workPhase = false;
+    for (const CIMDeviceOperation &operation : program.operations) {
+      if (operation.phase == CIMDevicePhase::Work && !workPhase) {
+        if (llvm::Error error = configurePhase(CIMDevicePhase::Work))
+          return fault(llvm::toString(std::move(error)));
+        workPhase = true;
+      } else if (operation.phase != CIMDevicePhase::Work &&
+                 (workPhase ||
+                  operation.phase != CIMDevicePhase::Configuration)) {
+        return fault("CIM device program has an invalid phase order");
+      }
       if (llvm::Error error = executeOperation(operation))
         return fault(llvm::toString(std::move(error)));
+    }
 
     response.readbacks.reserve(program.readbacks.size());
+    if (!program.readbacks.empty())
+      if (llvm::Error error = configurePhase(CIMDevicePhase::Readback))
+        return fault(llvm::toString(std::move(error)));
     for (const CIMDeviceReadbackCommand &command : program.readbacks) {
+      if (!command.selection.flits.empty())
+        if (llvm::Error error = executeOperation(command.selection))
+          return fault(llvm::toString(std::move(error)));
       if (llvm::Error error = executeOperation(command.request))
         return fault(llvm::toString(std::move(error)));
       auto records = takeRecords(kMaxResponseRecords);
@@ -154,6 +189,11 @@ private:
   llvm::Error validateConfig() const {
     if (config_.vendorId == 0 || config_.productId == 0)
       return usbError("CIM USB VID and PID must be non-zero");
+#ifndef _WIN32
+    if (config_.busNumber.has_value() != config_.deviceAddress.has_value())
+      return usbError(
+          "CIM USB bus and device address must be specified together");
+#endif
     if (config_.bulkInEndpoint == 0 || config_.bulkOutEndpoint == 0 ||
         (config_.bulkInEndpoint & 0x80) == 0 ||
         (config_.bulkOutEndpoint & 0x80) != 0 ||
@@ -172,6 +212,8 @@ private:
         config_.receiveChunkBytes == 0 || config_.transferTimeoutMs == 0 ||
         config_.receivePollTimeoutMs == 0 || config_.responseTimeoutMs == 0)
       return usbError("CIM USB transfer sizes and timeouts must be non-zero");
+    if (config_.pll)
+      return validatePLLSerialConfig(*config_.pll);
     return llvm::Error::success();
   }
 
@@ -201,6 +243,11 @@ private:
 
     size_t offset = 0;
     while (offset < bytes.size()) {
+      {
+        std::lock_guard<std::mutex> lock(receiveMutex_);
+        if (!receiveError_.empty())
+          return usbError(receiveError_);
+      }
       const size_t request =
           std::min(config_.maxTransferBytes, bytes.size() - offset);
       auto transferred =
@@ -245,7 +292,7 @@ private:
   }
 
   void receiveLoop() {
-    std::vector<uint8_t> buffer(config_.receiveChunkBytes);
+    auto &buffer = receiveBuffer_;
     {
       std::lock_guard<std::mutex> lock(receiveMutex_);
       receiveLoopStarted_ = true;
@@ -287,6 +334,10 @@ private:
     if (auto error = receiveCodec_.append(buffer.take_front(count), decoded)) {
       return fail(llvm::toString(std::move(error)));
     }
+    if (std::any_of(
+            decoded.begin(), decoded.end(),
+            [](const UsbRecord &record) { return record.physicalLink != 0; }))
+      return fail("CIM USB response has non-zero reserved link bits");
     if (decoded.size() > kMaxResponseRecords - records_.size()) {
       return fail("CIM USB response queue overflow");
     }
@@ -332,6 +383,7 @@ private:
   std::mutex receiveMutex_;
   std::condition_variable receiveCondition_;
   std::thread receiveThread_;
+  std::vector<uint8_t> receiveBuffer_;
   UsbRecordCodec receiveCodec_;
   std::deque<UsbRecord> records_;
   std::string receiveError_;

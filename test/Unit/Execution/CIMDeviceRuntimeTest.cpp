@@ -120,7 +120,7 @@ public:
 
 CIMTransaction makeTransaction(CIMDataType dataType = CIMDataType::Int8) {
   const std::array<int32_t, 6> route{};
-  const std::array<int32_t, 3> testCore{};
+  const std::array<int32_t, 3> testCore{15, 0, 0};
   CIMGroup group;
   group.groupId = 0;
   group.works.push_back({0, 3, 0, route});
@@ -271,8 +271,8 @@ void testBoardRunner() {
   CHECK(outputStorage == kExpected);
   CHECK(device.program.operations.size() == 5);
   CHECK(device.program.operations[0].flits.size() == 1);
-  CHECK(device.program.operations[0].flits.front() == 0xa0000000000c0000ULL);
-  CHECK(device.program.operations[1].flits.size() == 1);
+  CHECK(device.program.operations[0].flits.front() == 0xa0000000000cf000ULL);
+  CHECK(device.program.operations[1].flits.size() == 4);
   CHECK((device.program.operations[1].flits.front() >> 60) == 0x8);
   CHECK(device.program.operations[2].flits.size() == 17);
   CHECK(device.program.operations[2].flits[1] == 0x000100fe007f0080ULL);
@@ -282,9 +282,12 @@ void testBoardRunner() {
   CHECK(device.program.operations[3].postDelayMs == 2);
   CHECK(device.program.operations[4].flits.size() == 1);
   CHECK(device.program.operations[4].flits.front() == 0x9000000000000001ULL);
-  CHECK(device.program.operations[4].postDelayMs == 2);
+  CHECK(device.program.operations[4].postDelayMs == 20);
+  CHECK(device.program.operations[4].phase == CIMDevicePhase::Work);
   CHECK(device.program.readbacks.size() == 1);
-  CHECK(device.program.readbacks.front().request.flits.size() == 2);
+  CHECK(device.program.readbacks.front().selection.flits.size() == 1);
+  CHECK(device.program.readbacks.front().selection.postDelayMs == 100);
+  CHECK(device.program.readbacks.front().request.flits.size() == 1);
   CHECK(device.program.readbacks.front().request.flits.back() ==
         0x500000000081c000ULL);
   device.close();
@@ -313,7 +316,8 @@ void testGroupExecutionOrder() {
   CHECK((device.program.operations[0].flits[1] >> 60) == 0xa);
   CHECK((device.program.operations[4].flits.front() >> 60) == 0x8);
   CHECK(device.program.operations[7].flits.size() == 2);
-  CHECK(device.program.operations[7].postDelayMs == 2);
+  CHECK(device.program.operations[7].postDelayMs == 20);
+  CHECK(device.program.operations[7].phase == CIMDevicePhase::Work);
   CHECK(device.program.operations[7].flits[0] == 0x9000000000000001ULL);
   CHECK(device.program.operations[7].flits[1] == 0x9000000000000001ULL);
   device.close();
@@ -339,11 +343,17 @@ void testTwoMacrosShareReturnRouteAndOnce() {
   expectSuccess(runner.run(executable, inputs, outputs));
   CHECK(device.program.operations.size() == 8);
   CHECK(device.program.operations[0].flits.size() == 1);
-  CHECK(device.program.operations[1].flits.size() == 1);
-  CHECK(device.program.operations[4].flits.size() == 1);
+  CHECK(device.program.operations[1].flits.size() == 4);
+  CHECK(device.program.operations[4].flits.size() == 4);
+  CHECK(device.program.operations[1].flits[1] == 0x3000000000000002ULL);
+  CHECK(device.program.operations[1].flits[2] == 0);
+  CHECK(device.program.operations[1].flits[3] == 0);
   CHECK(device.program.operations[7].flits.size() == 1);
   CHECK(device.program.operations[7].flits.front() == 0x9000000000000001ULL);
   CHECK(device.program.readbacks.size() == 2);
+  CHECK(device.program.readbacks[0].selection.postDelayMs == 100);
+  CHECK(device.program.readbacks[0].selection.flits.size() == 1);
+  CHECK(device.program.readbacks[0].request.flits.size() == 1);
   CHECK(device.program.readbacks[0].request.flits.back() ==
         encodeCIMOutputCacheReadFlit(route, 6));
   CHECK(device.program.readbacks[1].request.flits.back() ==
