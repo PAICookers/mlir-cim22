@@ -13,6 +13,10 @@
 
 需要 Git、C++17 编译器、**CMake >=3.28**、Ninja，以及默认 USB 构建需要的 `pkg-config` 和 libusb 开发文件。Python 后端和测试还需 Python 3.12 与 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
 
+Linux USB 后端直接使用系统 libusb，无需安装 Cypress `cyusb_linux` SDK。CMake 通过 `pkg-config` 获取 libusb 的头文件与链接配置。设备访问权限和板卡配套的 FX3 固件需另行准备；安装主机库不会下载设备固件。
+
+PLL 自动串口控制仅支持 Linux，使用 POSIX 接口，不需要 PyUSB 或 pyserial。Linux 上未提供串口或指定设备不存在时，使用用户手动设置的时钟，不计为程序已配置或校验 PLL。Windows 保留 CyAPI USB 支持，省略串口选项并手动设钟；请求自动串口控制会报错。设备权限及可选串口的使用方法见 [USB 与 PLL 配置](python/README.md#usb-与-pll-配置)。
+
 例如 Ubuntu 24.04：
 
 ```sh
@@ -225,6 +229,7 @@ uv build --python 3.12 --wheel
 ```
 
 源码包内 C++ 源码位于 `native/`，由构建配置自动定位。
+`tools/` 仅打包其 CMake 文件和两个编译工具源码：`mlir-cim22-opt` 由正常的 `torch.compile` lowering 调用；`mlir-cim22-onnx-import` 随 `MLIRCIM22_ENABLE_ONNX` 启用，用于 ONNX 诊断和测试。源码包保留两者以支持可选构建；wheel 的安装内容由 CMake 安装目标决定。本地供应方测试副本和临时工具不进入源码包。
 
 `uv --offline` 只限制 Python 下载，不能阻止 CMake FetchContent 访问网络。离线构建应预先准备固定版本及其传递依赖源码，并通过以下构建参数指定本地路径；仅启用 ONNX 时需要最后一项：
 

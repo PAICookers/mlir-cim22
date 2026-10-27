@@ -13,4 +13,8 @@
 
 原生测试由 lit 统一组织；Python 包测试由 pytest 组织。新增测试放入对应层次，优先扩展已有测试。
 
+USB 协议和 PLL 参数/手动时钟测试共用源码。Linux 执行 libusb 与 PTY 串口用例；Windows 执行 CyAPI 用例及自动串口不支持检查。平台专属用例使用 lit feature 或源码条件排除，不依赖缺失程序报错。
+
+PLL 测试将生产实现与测试链接进同一可执行文件，避免 Windows 下 LLVM 错误对象跨 DLL。`MLIRCIM22_INCLUDE_TESTS=ON` 需要同时启用 ONNX；默认发布构建关闭这两个选项。
+
 环境准备与运行命令见 [BUILDING](../BUILDING.md#测试与开发)。

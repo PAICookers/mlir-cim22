@@ -11,7 +11,12 @@
 !/lib/
 !/lib/**
 !/tools/
-!/tools/**
+/tools/*
+!/tools/CMakeLists.txt
+!/tools/mlir-cim22-opt/
+!/tools/mlir-cim22-opt/**
+!/tools/mlir-cim22-onnx-import/
+!/tools/mlir-cim22-onnx-import/**
 !/test/
 !/test/**
 !/python/

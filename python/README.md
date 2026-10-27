@@ -12,11 +12,15 @@
 
 ### 使用预编译 wheel
 
-准备 Linux x86-64、Python 3.12 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。首次模型编译还需要系统 `cc`、链接器和 C 开发文件。包含 USB 支持的 wheel 还需要 libusb 动态库，即使选择软件运行时也一样。例如 Ubuntu：
+准备 Linux x86-64、Python 3.12 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。首次模型编译还需要系统 `cc`、链接器和 C 开发文件。普通 `linux_x86_64` wheel 直接链接系统 libusb，即使选择软件运行时也需要该动态库。例如 Ubuntu：
 
 ```sh
 sudo apt-get install build-essential libusb-1.0-0
 ```
+
+Linux 无需安装 Cypress `cyusb_linux` SDK；Linux 运行时直接使用 libusb。连接板卡时，还需为当前用户配置 USB 设备访问权限，并确保 FX3 已运行板卡配套固件。主机库安装不会下载或更新设备固件。
+
+发行流程经 `auditwheel repair` 生成的 `manylinux` wheel 会携带可打包的 libusb 等动态依赖，通常不需要再安装系统 libusb；设备权限仍需单独配置。源码构建需要 libusb 开发文件，见 [环境与依赖](../BUILDING.md#环境与依赖)。可选 PLL 串口使用 POSIX 接口，无需 PyUSB 或 pyserial。
 
 预编译用户不需要 LLVM/MLIR、CMake 或 protoc；其他系统动态库要求以所用 wheel 的构建环境说明为准。
 
@@ -165,6 +169,62 @@ torch.Size([1, 16])
 | 编译失败或数值偏差         | 先运行自检脚本，再保存 `debug_dir`；检查输入约束和 BF16 误差 |
 
 USB 原始诊断可通过 `cim22.Session`、`UsbConfig` 和 `capture_usb` 使用，具体数组与生命周期契约见 [runtime.py](cim22/runtime.py)。停止接收会保留成功收到的尾数据并检查真实接收错误；正常主动取消不计失败。故障后重新配置会先报告旧事务失败并关闭设备，随后允许显式重试 `configure_usb`。重新打开 Host 句柄不会复位硬件，也不会续跑失败的事务。
+
+当前 CIM 芯片经供应方确认存在权重读电路缺陷。诊断测试可保留 type6 权重读取及协议、地址完整性检查，但跳过权重数值比较，明确标为 `SKIPPED`。生产推理与 `capture_usb` 只读取所需的 type5 计算结果，不需要额外读取权重。
+
+## USB 与 PLL 配置
+
+以下自动串口控制和设备权限示例用于 Linux。Windows 使用 CyAPI USB，支持同一频率表查询，但当前不支持 PLL 串口控制：省略 `pll` 和 `pll_port` 并手动设置时钟。Windows 上显式请求串口（包括不存在的端口）会返回不支持错误。
+
+板卡须已上电并运行配套的 FPGA/FX3 固件。项目不自动安装厂商 SDK、修改系统权限或下载固件。
+
+先为实际板卡的 VID/PID 配置 USB 访问权限。下例适用于已验证的 `04b4:00f1`；其他板卡应使用其实际标识。在 Ubuntu 上创建专用设备组和规则：
+
+```sh
+sudo groupadd -f cim22
+sudo usermod -aG cim22 "$USER"
+sudo tee /etc/udev/rules.d/70-cim22.rules >/dev/null <<'RULE'
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="04b4", ATTR{idProduct}=="00f1", GROUP="cim22", MODE="0660"
+RULE
+sudo udevadm control --reload-rules
+```
+
+重新登录以取得组成员身份，然后重新连接 FX3 USB。设备重新枚举后，旧 `/dev/bus/usb/<bus>/<address>` 路径可能改变；不将旧地址或一次性 ACL 当作持久配置。
+
+串口是可选的。需要程序配置 PLL 时，使用 `/dev/serial/by-id/` 中的稳定路径，避免依赖可能变化的 `ttyUSB0` 编号。Ubuntu 的串口通常属于 `dialout` 组，可执行 `sudo usermod -aG dialout "$USER"` 后重新登录；其他发行版以串口实际所属组为准，例如 Arch 常用 `uucp`。使用前应关闭其他占用该串口的程序。
+
+```python
+import torch
+
+from cim22 import UsbConfig
+
+usb = UsbConfig(
+    vendor_id=0x04B4,
+    product_id=0x00F1,
+    bulk_in_endpoint=0x81,
+    bulk_out_endpoint=0x01,
+    clock_frequency_mhz=24,
+    pll_port="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
+)
+compiled = torch.compile(
+    model, backend="cim22", fullgraph=True, dynamic=False,
+    options={"usb_config": usb},
+)
+```
+
+`clock_frequency_mhz` 按供应方 `PLL_clock_config.xlsx` 的 **目标频率**查表。代码内置全部 199 行的目标 MHz、实际 MHz、串口 HEX 和原表状态，不在运行时求解 PLL 参数，也不依赖 Excel 文件或读取库。表外目标（例如 26 MHz）直接报错；这只表示未收录该目标，不表示 PLL 无法生成。
+
+按约定的使用策略，`可用`（`available`）不发警告，`最近可用`（`maybe available`）发出 `RuntimeWarning`，提示硬件运行可能不稳定，并列出目标、实际频率和串口数据。例如 24 MHz 对应 `2828A4`，无警告；目标 284 MHz 对应表中实际 283.2 MHz、`E813A4`，发出警告。标签按原表保留，并非本次运行的硬件实测结论。表中第 4 行还注明未校验 VCO 上限。
+
+通过 `usb.clock_setting` 查看选中行的 `target_frequency_mhz`、`actual_frequency_mhz`、`serial_hex` 和 `status`。发送字节始终取表中原值，包括 20 MHz 的 `88B624`，不根据公式重新选择分频参数。
+
+频率选项将该行的同一配置用于 Config、Work、Readback 三阶段，以 9600/8N1、高字节优先发送并检查匹配回显。需要三个阶段分别配置时，仍可使用 `pll=PLLConfig(port, config_hex, work_hex, readback_hex)`；原始 `pll` 与 `clock_frequency_mhz` 不能同时指定。
+
+顶层导出 `Session`、`UsbConfig` 和 `PLLConfig`。常规推理使用 `torch.compile`；`Session` 用于原始回包等诊断。三阶段原始 HEX 配置需先从 `cim22` 导入 `PLLConfig`，并使用已确认适合板卡的参数。
+
+省略串口选项时，两平台均使用用户手动设置的时钟；Linux 上指定串口设备不存在时也使用手动时钟。`clock_setting` 只表示选中表项，不证明时钟已发送、已生效或回显已通过。用户需在运行前手动完成所需时钟设置。Linux 串口存在但权限不足、通信失败或回显不匹配时仍返回错误。省略全部 PLL/频率选项保持原有手动时钟路径。
+
+已验证板卡默认发送控制字为 `0x03`（link 0/channel 3）、每次 OUT 最多 512 字节，接收请求为 32768 字节。每个 Session 持有 USB 设备以服务顺序推理；传输故障中止当前事务，首次重新配置会报告旧故障并释放设备，随后可显式重试配置。重新打开句柄不表示硬件已复位，也不保证物理链路恢复。Linux 驱动只在当前接口设置不符时重新选择，避免重复选择触发的重开故障；当前修复仍需按实际板卡和用例验收，不能由主机测试推断长期稳定性。
 
 ## 开发与测试
 
