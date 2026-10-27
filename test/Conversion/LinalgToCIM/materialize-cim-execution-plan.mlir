@@ -58,8 +58,8 @@ module {
 // CHECK-NEXT: cim.dispatch {{.*}}macro_idx = 1 : i64
 // CHECK-NEXT: cim.once {{.*}}core_idx = 0 : i64{{.*}}group_id = 0 : i64
 // CHECK-NOT: macro_idx
-// CHECK-NEXT: %[[READ0:.*]] = cim.readback {{.*}}macro_idx = 0 : i64{{.*}} : tensor<16xi21>
-// CHECK-NEXT: %[[READ1:.*]] = cim.readback {{.*}}macro_idx = 1 : i64{{.*}} : tensor<16xi21>
+// CHECK-NEXT: %[[READ0:.*]] = cim.readback {{.*}}macro_idx = 0 : i64{{.*}}test_core_x = 0 : i64, test_core_xy = -31 : i64, test_core_y = 0 : i64{{.*}} : tensor<16xi21>
+// CHECK-NEXT: %[[READ1:.*]] = cim.readback {{.*}}macro_idx = 1 : i64{{.*}}test_core_x = 0 : i64, test_core_xy = -31 : i64, test_core_y = 0 : i64{{.*}} : tensor<16xi21>
 // CHECK-NEXT: cim.group_barrier {group_id = 0 : i64}
 // CHECK-NEXT: "cim.yield"(%[[READ0]], %[[READ1]])
 // CHECK: %[[EXT0:.*]] = arith.extsi %[[TX]]#0

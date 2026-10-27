@@ -142,9 +142,10 @@ packCIMInt8InputCacheRow(llvm::ArrayRef<int8_t> values) {
   std::array<uint64_t, 16> words{};
   if (values.size() != 64)
     return words;
+  // Match the logical K order of the weight layout and supplier Cache rows.
   for (size_t lane = 0; lane < values.size(); ++lane) {
-    const size_t word = 15 - lane / 4;
-    const size_t shift = 16 * (lane % 4);
+    const size_t word = lane / 4;
+    const size_t shift = 16 * (3 - lane % 4);
     words[word] |= static_cast<uint64_t>(static_cast<uint8_t>(values[lane]))
                    << shift;
   }

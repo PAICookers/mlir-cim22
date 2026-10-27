@@ -2,6 +2,7 @@
 
 #include "CIM22/Runtime/CIMBoardRunner.h"
 #include "CIM22/Runtime/CIMPacketCodec.h"
+#include "CIM22/Support/Int8WeightLayout.h"
 
 #include "llvm/Support/Error.h"
 
@@ -231,8 +232,8 @@ void testPacketCodec() {
   input[2] = 127;
   input[3] = -128;
   const auto words = packCIMInt8InputCacheRow(input);
-  CHECK(words[15] == 0x0080007f00fe0001ULL);
-  for (size_t index = 0; index < 15; ++index)
+  CHECK(words[0] == 0x000100fe007f0080ULL);
+  for (size_t index = 1; index < 16; ++index)
     CHECK(words[index] == 0);
 
   llvm::SmallVector<uint64_t> flits;
@@ -274,7 +275,8 @@ void testBoardRunner() {
   CHECK(device.program.operations[1].flits.size() == 1);
   CHECK((device.program.operations[1].flits.front() >> 60) == 0x8);
   CHECK(device.program.operations[2].flits.size() == 17);
-  CHECK(device.program.operations[2].flits.back() == 0x0080007f00fe0001ULL);
+  CHECK(device.program.operations[2].flits[1] == 0x000100fe007f0080ULL);
+  CHECK(device.program.operations[2].flits.back() == 0);
   CHECK(device.program.operations[2].postDelayMs == 1);
   CHECK(device.program.operations[3].flits.size() == 257);
   CHECK(device.program.operations[3].postDelayMs == 2);
@@ -599,9 +601,41 @@ void testMalformedResponseDoesNotPublishPartialOutputs() {
     CHECK(output == untouched);
   device.close();
 }
+// Independently reconstruct physical Cache/CIM operands using the Windows
+// chip_test.cpp cacheInputLane/cimWeightLane formulas, not production inverses.
+void testInt8PhysicalDotProduct() {
+  std::array<uint8_t, 16 * 64> weights{};
+  for (size_t lane = 0; lane < 16; ++lane)
+    for (size_t k = 0; k < 64; ++k)
+      weights[lane * 64 + k] = static_cast<uint8_t>(3 * k + 5 * lane);
+  const auto cim = mlir::cim22::mapInt8WeightTileToCIMWords(weights);
+  const auto signedByte = [](uint8_t value) -> int32_t {
+    return value < 128 ? value : static_cast<int32_t>(value) - 256;
+  };
+  for (size_t k = 0; k < 64; ++k) {
+    std::array<int8_t, 64> input{};
+    input[k] = k % 2 ? -3 : 2;
+    const auto cache = packCIMInt8InputCacheRow(input);
+    for (size_t lane = 0; lane < 16; ++lane) {
+      int32_t dot = 0;
+      for (size_t p = 0; p < 64; ++p) {
+        const auto x =
+            static_cast<uint8_t>(cache[15 - p / 4] >> (16 * (p % 4)));
+        uint8_t w = 0;
+        for (size_t bit = 0; bit < 8; ++bit)
+          w |= ((cim[(p % 32) * 8 + bit] >> (2 * lane + (p >= 32))) & 1U)
+               << bit;
+        dot += signedByte(x) * signedByte(w);
+      }
+      CHECK(dot == input[k] * signedByte(weights[lane * 64 + k]));
+    }
+  }
+}
+
 } // namespace
 
 int main() {
+  testInt8PhysicalDotProduct();
   testPacketCodec();
   testBoardRunner();
   testGroupExecutionOrder();
