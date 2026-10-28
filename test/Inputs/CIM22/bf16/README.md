@@ -1,11 +1,11 @@
 # BF16 Supplier Snapshots
 
-The four fixed cases come from two handoff ZIP bundles, with one case for each Macro. The 32 text files retain supplier names and expected values. Weight files reuse the existing `../<case_id>/cim_w.txt` snapshots. Lit reads these paths directly and does not require a manifest, byte-level hash, the handoff directory or the supplier Python script; line endings do not affect parsed values.
+The four fixed cases contain 32 tracked supplier reference files. Weight files reuse the existing `../<case_id>/cim_w.txt` snapshots. Lit reads the tracked files directly; line endings do not affect parsed values.
 
-| Case directories | Archive / original member directory | Source |
-| --- | --- | --- |
-| `cim22_tb_0p9_macro1`, `cim22_tb_0p9_macro2` | `CIM22_tb.zip` / `CIM22_tb/0p9_0509_last/` | HWSRC-018 |
-| `test_data_1_17_macro1`, `test_data_1_17_macro2` | `test_data_1_17.zip` / `test_data_1_17/` | HWSRC-020 |
+Case directories:
+
+- [cim22_tb_0p9_macro1](cim22_tb_0p9_macro1/), [cim22_tb_0p9_macro2](cim22_tb_0p9_macro2/).
+- [test_data_1_17_macro1](test_data_1_17_macro1/), [test_data_1_17_macro2](test_data_1_17_macro2/).
 
 The retained files contain these independent stages:
 
@@ -18,6 +18,6 @@ The retained files contain these independent stages:
 
 The current replay checks input Cache words, Weight_EXP packing and BF16 response layout. Three mutations verify that each layout comparison rejects discrepancies. Historical prealignment and arithmetic outputs remain unchanged as evidence; they are not numerical expectations for the selected candidate runner. Candidate arithmetic is tested separately in `BF16SupportTest.cpp` and `CIMSoftwareRunnerTest.cpp`.
 
-Response words are constructed by concatenating the fixed output tokens and 48 padding bits. This tests the adopted provisional layout, not an actual RTL response. The newer top-level `CIM22_tb/Output_1/2.txt` files are not substituted for these explicitly paired final BF16 files.
+Response words are constructed by concatenating the fixed output tokens and 48 padding bits. This tests the adopted provisional layout, not an actual RTL response.
 
-Evidence level: **historical-layout-match**, not RTL/board-verified. These bundles contain already-prealigned integer weights and separately generated exponents; they cannot establish raw BF16 weight preprocessing or IEEE equivalence.
+Evidence level: **historical-layout-match**, not RTL/board-verified. These snapshots contain already-prealigned integer weights and separately generated exponents; they cannot establish raw BF16 weight preprocessing or IEEE equivalence.

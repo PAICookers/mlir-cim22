@@ -24,7 +24,7 @@ Linux 无需安装 Cypress `cyusb_linux` SDK；Linux 运行时直接使用 libus
 
 预编译用户不需要 LLVM/MLIR、CMake 或 protoc；其他系统动态库要求以所用 wheel 的构建环境说明为准。
 
-将维护者提供的 `mlir_cim22-*.whl`，以及从 [torch-mlir releases](https://github.com/llvm/torch-mlir/releases) 下载与当前后端兼容的 `torch_mlir-*.whl` 放入 `downloads/`。目录中每种 wheel 只保留一个版本，然后执行：
+将从 [Actions 预编译流程](../BUILDING.md#github-actions-预编译-wheel) 下载的 `mlir_cim22-*.whl`，以及从 [torch-mlir releases](https://github.com/llvm/torch-mlir/releases) 下载与当前后端兼容的 `torch_mlir-*.whl` 放入 `downloads/`。目录中每种 wheel 只保留一个版本，然后执行：
 
 ```sh
 uv venv --python 3.12 .venv
@@ -66,13 +66,15 @@ uv pip install --python .venv/bin/python \
 .venv/bin/python python/examples/torch_compile.py
 ```
 
-预编译安装和源码构建安装都要求 `mlir-cim22`、torch-mlir 和应用使用同一个虚拟环境。当前发行目标是 Linux x86-64。
+预编译安装和源码构建安装都要求 `mlir-cim22`、torch-mlir 和应用使用同一个虚拟环境。预编译 wheel 支持 Linux x86-64 和 Windows x64；上文命令面向 Linux，Windows 安装见下节。
 
 ### Windows x64
 
-Windows 使用 `mlir_cim22-1.0.0-py3-none-win_amd64.whl` 和
+Windows 使用对应版本的 `mlir_cim22-<version>-py3-none-win_amd64.whl` 和
 [torch_mlir-20260923.595-cp312-abi3-win_amd64.whl](https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260923.595-cp312-abi3-win_amd64.whl)。
 不能安装 Linux 的 torch-mlir wheel。已验证 Python 3.12、CPU PyTorch 2.14.1；前端使用现成 wheel，无需下载 torch-mlir 源码。
+
+下面以正式版 `1.0.0` 为例；安装其他正式版或开发快照时，将项目 wheel 文件名替换为实际下载的文件名。
 
 首次编译模型需要 Visual Studio 2022 Build Tools 的 MSVC x64 和 Windows SDK。
 从 **x64 Native Tools Command Prompt** 启动 PowerShell，确保 `cl` 和 `link` 可用，再执行：
@@ -212,9 +214,9 @@ compiled = torch.compile(
 )
 ```
 
-`clock_frequency_mhz` 按供应方 `PLL_clock_config.xlsx` 的 **目标频率**查表。代码内置全部 199 行的目标 MHz、实际 MHz、串口 HEX 和原表状态，不在运行时求解 PLL 参数，也不依赖 Excel 文件或读取库。表外目标（例如 26 MHz）直接报错；这只表示未收录该目标，不表示 PLL 无法生成。
+`clock_frequency_mhz` 按仓库内置的 [PLL 频率表](cim22/pll.py)查询**目标频率**。表中有 199 项目标 MHz、实际 MHz、串口 HEX 和可用性状态，不在运行时求解 PLL 参数。表外目标（例如 26 MHz）直接报错；这只表示未收录该目标，不表示 PLL 无法生成。
 
-按约定的使用策略，`可用`（`available`）不发警告，`最近可用`（`maybe available`）发出 `RuntimeWarning`，提示硬件运行可能不稳定，并列出目标、实际频率和串口数据。例如 24 MHz 对应 `2828A4`，无警告；目标 284 MHz 对应表中实际 283.2 MHz、`E813A4`，发出警告。标签按原表保留，并非本次运行的硬件实测结论。表中第 4 行还注明未校验 VCO 上限。
+按约定的使用策略，`可用`（`available`）不发警告，`可能可用`（`maybe available`）发出 `RuntimeWarning`，提示硬件运行可能不稳定，并列出目标、实际频率和串口数据。例如 24 MHz 对应 `2828A4`，无警告；目标 284 MHz 对应表中实际 283.2 MHz、`E813A4`，发出警告。这些状态是表内预设标签，不代表本次运行已完成硬件稳定性验证。
 
 通过 `usb.clock_setting` 查看选中行的 `target_frequency_mhz`、`actual_frequency_mhz`、`serial_hex` 和 `status`。发送字节始终取表中原值，包括 20 MHz 的 `88B624`，不根据公式重新选择分频参数。
 

@@ -7,7 +7,7 @@
 | 部分            | 位置                                      | 用途                                       |
 | --------------- | ----------------------------------------- | ------------------------------------------ |
 | 编译器          | `include/`、`lib/`、`tools/`        | 方言、转换、映射和 `mlir-cim22-opt` 工具 |
-| 运行时          | `lib/Runtime/`、`lib/Execution/`      | 模型加载、CPU/CIM 执行和 Linux USB 通信    |
+| 运行时          | `lib/Runtime/`、`lib/Execution/`      | 模型加载、CPU/CIM 执行和 Linux/Windows USB 通信 |
 | PyTorch 后端    | [python/](python/README.md)                | 将捕获的模型经 torch-mlir 交给本编译器     |
 | 本地 Web 工作台 | [web/](web/README.md)                      | 固定 DVS 模型导入、编译与软件结果对比      |
 | 模型格式        | [schema/](schema/README.md)                | 内嵌模型数据、字段约束与格式维护           |

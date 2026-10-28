@@ -192,8 +192,8 @@ schema 本身没有 stride/device 字段。
 [序列化非规范化说明](https://protobuf.dev/programming-guides/serialization-not-canonical/)。
 项目实际接受什么，仍以 reader 和测试为准。
 
-本次开发调整还沿用了顶层字段的重新编号与 `backend` 命名，未提供旧模型迁移。
-旧共享库必须重新编译；当前顶层版本尚未强制检查，不能依赖它自动识别旧布局。
+当前格式未提供旧模型迁移。格式变更后，旧模型共享库必须重新编译；
+顶层版本尚未强制检查，不能依赖它自动识别旧布局。
 
 ### 生成与验证
 
@@ -221,7 +221,7 @@ cmake --build build/test --target check-cim22-protobuf
 
 ```sh
 uv sync --project python --python 3.12 --locked --group dev \
-  --reinstall-package mlir-cim22
+  --reinstall-package mlir-cim22 -Ccmake.define.MLIR_DIR="$MLIR_DIR"
 uv run --directory python --no-sync pytest \
   tests/test_model_format.py tests/test_artifacts.py
 ```
@@ -248,9 +248,10 @@ uv run --directory python --no-sync pytest \
 - `ModelData` 校验覆盖格式、固定长度和绑定引用，不是完整的 target/runner verifier。
   USB runner 还检查 core/group、路由范围和返回路由等额外限制；不要只靠
   “Protobuf 解析成功”判断可执行性。
-- schema 接受 `BF16` 不等于板端 BF16 数值回读已闭环。当前 board runner 的
-  decoded BF16 `run` 仍拒绝执行，raw `capture` 属诊断路径；应查看其当前实现与未决契约。
-- 加载模型共享库会经过 `dlopen` 和模型导出函数；Protobuf 校验不能使不可信原生库安全。
+- schema 接受 `BF16` 不等于已完成实板数值验收。当前 board runner 的 `run`
+  从回包 token 的低 16 位提取 BF16 位模式；
+  raw `capture` 保留原始回包供诊断。布局与数值正确性仍需实板验证。
+- 加载模型共享库会调用系统动态库加载器和模型导出函数；Protobuf 校验不能使不可信原生库安全。
   模型仍需来自可信编译流程。
 - 修改软硬件语义时使用现有项目证据与文档技能；本 README 只描述软件契约，
   不替代芯片规范、传输协议或板端验证记录。

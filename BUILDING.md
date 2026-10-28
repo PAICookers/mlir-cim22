@@ -158,6 +158,30 @@ cim22/
 
 按 [Python 安装指南](python/README.md#安装)安装该 wheel，再运行自检脚本。
 
+## GitHub Actions 预编译 wheel
+
+[wheel 工作流](.github/workflows/wheels.yml) 在 `main` 更新或推送 `v*` 标签时自动构建，也支持从 Actions 页面手动运行；没有每日定时任务。Linux 使用 manylinux_2_28 x86-64，Windows 使用 Windows Server 2022 / MSVC x64；两者均为 Release、USB 开启、测试和 ONNX 导入器关闭。
+
+源码 `python/pyproject.toml` 的版本是当前开发目标，例如 `1.0.0`：
+
+- 分支构建在目标版本后加 `.dev`、提交的 UTC 日期和六位工作流序号（1–999999），例如 `1.0.0.dev20261028000042`。手动运行选择分支时遵循同一规则。
+- 正式构建使用标签版本：源码版本为 `1.0.0` 时推送 `v1.0.0`，生成 `1.0.0`；标签与源码不一致则构建失败。手动运行选择标签时也会核对。
+
+```text
+mlir_cim22-1.0.0.dev20261028000042-py3-none-manylinux_2_28_x86_64.whl
+mlir_cim22-1.0.0.dev20261028000042-py3-none-win_amd64.whl
+mlir_cim22-1.0.0-py3-none-manylinux_2_28_x86_64.whl
+mlir_cim22-1.0.0-py3-none-win_amd64.whl
+```
+
+发布时先确认源码版本和测试，再对对应提交创建并推送 `vX.Y.Z` 标签。正式版之后，将源码版本及锁文件中的本项目版本更新到下一个开发目标，再继续合入开发变更。`.dev` 是 Python 预发布版本，排在对应正式版之前；与正式版共享包索引时，通常需要显式选择版本或使用 `pip install --pre`。
+
+### Windows 的最小 CyAPI 依赖
+
+Actions 直接使用仓库中的 [third_party/cyapi](third_party/cyapi/README.md)，不下载或运行 FX3 SDK EXE，不登录英飞凌账号，也不需要私有依赖仓库或访问凭据。该目录保留官方 FX3 SDK 1.3.5 的两个必要头文件、x64 `CyAPI.lib`、组件 `license.rtf`、SDK `license.txt` 和 SHA256 校验清单；厂商文件内容与原始安装包一致。
+
+CyAPI 使用其原始许可，不适用本项目的 Apache 许可。Windows wheel 的 `.dist-info/licenses/third-party/cyapi/` 保留两份协议及依赖说明，`cim22/share/licenses/cyapi/license.rtf` 保留现有运行库许可副本。保留声明不改变协议授予的用途与分发范围；发布含 CyAPI 的产物时仍须遵守两份协议。
+
 ## 测试与开发
 
 ### Python 开发
@@ -229,7 +253,7 @@ uv build --python 3.12 --wheel
 ```
 
 源码包内 C++ 源码位于 `native/`，由构建配置自动定位。
-`tools/` 仅打包其 CMake 文件和两个编译工具源码：`mlir-cim22-opt` 由正常的 `torch.compile` lowering 调用；`mlir-cim22-onnx-import` 随 `MLIRCIM22_ENABLE_ONNX` 启用，用于 ONNX 诊断和测试。源码包保留两者以支持可选构建；wheel 的安装内容由 CMake 安装目标决定。本地供应方测试副本和临时工具不进入源码包。
+`tools/` 仅打包其 CMake 文件和两个编译工具源码：`mlir-cim22-opt` 由正常的 `torch.compile` lowering 调用；`mlir-cim22-onnx-import` 随 `MLIRCIM22_ENABLE_ONNX` 启用，用于 ONNX 诊断和测试。源码包保留两者以支持可选构建；wheel 的安装内容由 CMake 安装目标决定。
 
 `uv --offline` 只限制 Python 下载，不能阻止 CMake FetchContent 访问网络。离线构建应预先准备固定版本及其传递依赖源码，并通过以下构建参数指定本地路径；仅启用 ONNX 时需要最后一项：
 
@@ -262,16 +286,16 @@ cmake --build ../llvm-build-windows --parallel 2 --target mlir-opt `
   MLIRLLVMToLLVMIRTranslation MLIRTargetLLVMIRExport
 ```
 
-Windows USB 使用供应方 `FrameHandler_USB_32b` 对应的 **Cypress CyAPI / CyUSB3** 驱动，不使用 libusb/WinUSB。准备匹配 x64 和 MSVC 运行库的 Cypress EZ-USB FX3 SDK；`CYAPI_ROOT` 指向 SDK 根目录（`library/cpp/inc`、`library/cpp/lib/x64/CyAPI.lib`），也可分别指定 `CYAPI_INCLUDE_DIR` 和 `CYAPI_LIBRARY`。
+Windows USB 使用 **Cypress CyAPI / CyUSB3** 驱动。仓库的 `third_party/cyapi` 已包含构建所需的官方 x64 依赖；也可自备匹配 x64 和 MSVC 运行库的 Cypress EZ-USB FX3 SDK。`CYAPI_ROOT` 指向该目录或 SDK 根目录（`library/cpp/inc`、`library/cpp/lib/x64/CyAPI.lib`），也可分别指定 `CYAPI_INCLUDE_DIR` 和 `CYAPI_LIBRARY`。
 
 ```powershell
 cmake -G Ninja -S . -B build/windows -DCMAKE_BUILD_TYPE=Release `
   -DMLIR_DIR=../llvm-build-windows/lib/cmake/mlir `
-  -DCIM22_ENABLE_USB=ON -DCYAPI_ROOT="C:/path/to/EZ-USB FX3 SDK/1.3"
+  -DCIM22_ENABLE_USB=ON -DCYAPI_ROOT="$PWD/third_party/cyapi"
 cmake --build build/windows --parallel 2
 ```
 
-供应方压缩包内的 `CyAPI.lib` 是 **x86**，不能链接到 x64 编译器；配置阶段会检查链接兼容性并报错，需要 SDK 中的 x64 版本，不能通过改文件名或 wheel 标签解决。SDK 及供应方源码保持外部依赖，不复制进仓库。
+`CyAPI.lib` 必须为 x64，并与 MSVC 运行库配置匹配；CMake 配置阶段会检查链接兼容性。
 
 原生工具位于 `build/windows/bin`，runtime/compiler DLL 位于 `build/windows/lib`。CyAPI 静态链接，运行机器仍需安装匹配板卡的 Cypress CyUSB3 驱动和 MSVC x64 运行库。Windows 根据 VID/PID、可选 USB 地址选择唯一设备，核对接口及端点；不支持 `busNumber`。保留单个异步 IN 请求，轮询超时不取消请求；OUT 每次最多发送 512 字节，沿用现有 12 字节记录协议。关闭时如驱动未归还请求所有权，会保留相关资源至进程退出，避免释放仍在使用的缓冲区。
 
@@ -283,10 +307,10 @@ Windows 驱动的无硬件测试使用项目自有 SDK 替身，可在启用原�
 
 ```powershell
 $env:CMAKE_GENERATOR = "Ninja"
-uv build --python 3.12 python --wheel --out-dir wheelhouse `
+uv build --python 3.12 python --wheel --out-dir python/dist `
   -C build-dir=build/windows-wheel `
   -C cmake.define.MLIR_DIR=C:/path/to/llvm-build-windows/lib/cmake/mlir `
-  -C "cmake.define.CYAPI_ROOT=C:/path/to/EZ-USB FX3 SDK/1.3"
+  -C "cmake.define.CYAPI_ROOT=$PWD/third_party/cyapi"
 ```
 
 Windows wheel 包含 `mlir-cim22-opt.exe`、`cim22_compiler.dll`、`cim22_runtime.dll` 和模型链接所需的 `.lib`。Python 后端使用 MSVC 将 COFF `.obj` 链接为模型 `.dll`，通过与 Linux 相同的模型 ABI 加载。`torch.compile` 软件推理和 DLL 重新加载的用法见 [Windows 安装说明](python/README.md#windows-x64)。
@@ -297,7 +321,7 @@ Windows wheel 包含 `mlir-cim22-opt.exe`、`cim22_compiler.dll`、`cim22_runtim
 uv sync --project python --python 3.12 --locked --group dev `
   -C build-dir=build/windows `
   -C cmake.define.MLIR_DIR=C:/path/to/llvm-build-windows/lib/cmake/mlir `
-  -C "cmake.define.CYAPI_ROOT=C:/path/to/EZ-USB FX3 SDK/1.3"
+  -C "cmake.define.CYAPI_ROOT=$PWD/third_party/cyapi"
 uv run --directory python --no-sync pytest tests/test_artifacts.py tests/test_backend.py tests/test_convolution.py tests/test_model_format.py tests/test_native_compiler.py tests/test_usb_runtime.py
 ```
 
