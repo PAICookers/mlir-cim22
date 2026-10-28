@@ -66,3 +66,6 @@ __pycache__/
 build/
 skills-lock.json
 .codebase-memory/artifact.json
+
+# Reviewed prebuilt Windows USB dependency.
+!/third_party/cyapi/library/cpp/lib/x64/CyAPI.lib

@@ -22,7 +22,7 @@ PyTorch 推理和 CIM22 软件运行结果。页面由 FastAPI 提供，不需�
 启动服务：
 
 ```sh
-cim22-web --model-dir /path/to/DVSGesture_MobileNetSNN_QAT_INT8_C16_T32
+cim22-web --model-dir /path/to/model-package
 ```
 
 打开 <http://127.0.0.1:8000>，在页面中填写权重文件和测试集目录。模型包、
@@ -66,7 +66,8 @@ npm run build
 Python wheel：
 
 ```sh
-uv build --python 3.12 python --out-dir python/dist
+uv build --python 3.12 python --wheel --out-dir python/dist \
+  -Ccmake.define.MLIR_DIR="$MLIR_DIR"
 ```
 
 前端开发服务器可用 `pnpm dev` 启动；它会把 `/api` 请求代理到本地 8000

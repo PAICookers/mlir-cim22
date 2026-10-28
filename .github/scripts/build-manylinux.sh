@@ -106,4 +106,4 @@ echo "glibc 2.28: installed native CLI and library loading PASS"
   ldd --version | sed -n '1p'
 }
 cd /out
-sha256sum ./*.whl > SHA256SUMS
+sha256sum ./*.whl > SHA256SUMS-linux
