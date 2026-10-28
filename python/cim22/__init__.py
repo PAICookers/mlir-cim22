@@ -1,3 +1,5 @@
-from cim22.runtime import Session, UsbConfig
+"""User-facing runtime configuration and diagnostic session APIs."""
 
-__all__ = ["Session", "UsbConfig"]
+from cim22.runtime import PLLConfig, Session, UsbConfig
+
+__all__ = ["PLLConfig", "Session", "UsbConfig"]

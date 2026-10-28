@@ -45,7 +45,9 @@ sdist.include = ["cim22/web/static"]
 "../include" = "native/include"
 "../lib" = "native/lib"
 "../schema" = "native/schema"
-"../tools" = "native/tools"
+"../tools/CMakeLists.txt" = "native/tools/CMakeLists.txt"
+"../tools/mlir-cim22-opt" = "native/tools/mlir-cim22-opt"
+"../tools/mlir-cim22-onnx-import" = "native/tools/mlir-cim22-onnx-import"
 "../test" = "native/test"
 "tests/_generated" = "native/python/tests/_generated"
 

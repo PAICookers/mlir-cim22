@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef CIM22_RUNTIME_DETAIL_USBDRIVER_H
-#define CIM22_RUNTIME_DETAIL_USBDRIVER_H
+#ifndef CIM22_RUNTIME_USBDRIVER_H
+#define CIM22_RUNTIME_USBDRIVER_H
 
 #include "CIM22/Runtime/CIMDevice.h"
 #include "CIM22/Runtime/UsbCIMDevice.h"
@@ -28,9 +28,14 @@ class UsbDriver {
 public:
   virtual ~UsbDriver() = default;
 
+  // Success means the initial IN request is already submitted, before any OUT.
+  // Driver-owned buffers remain valid through their completion callback.
   virtual llvm::Error open(const UsbCIMDeviceConfig &config) = 0;
   virtual llvm::Expected<size_t> write(llvm::ArrayRef<uint8_t> bytes) = 0;
   virtual llvm::Expected<size_t> read(llvm::MutableArrayRef<uint8_t> bytes) = 0;
+  // Request shutdown without releasing outstanding transfer buffers; drain
+  // collects tail completions after the reader joins. Errors remain observable
+  // until close, which waits before releasing driver-owned buffers.
   virtual void cancel() = 0;
   // After cancel and joining the reader, return completed tail bytes until
   // zero, or a real receive error. An expected cancellation is not an error.
@@ -51,4 +56,4 @@ createUsbCIMDevice(const UsbCIMDeviceConfig &config,
 
 } // namespace cim22::runtime::detail
 
-#endif // CIM22_RUNTIME_DETAIL_USBDRIVER_H
+#endif // CIM22_RUNTIME_USBDRIVER_H

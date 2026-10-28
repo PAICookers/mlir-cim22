@@ -2700,12 +2700,14 @@ public:
             readback->setAttr(
                 "output_cache_address",
                 bodyBuilder.getI64IntegerAttr(*nTile % kOutputCacheRows));
+            // left_down_1 uses xy6(-15, 1)=0x3f; signed-magnitude storage
+            // represents these packed direction/channel bits as -31.
             readback->setAttr("test_core_xy",
-                              bodyBuilder.getI64IntegerAttr(-route[0]));
+                              bodyBuilder.getI64IntegerAttr(-31));
             readback->setAttr("test_core_x",
-                              bodyBuilder.getI64IntegerAttr(-route[1]));
+                              bodyBuilder.getI64IntegerAttr(0));
             readback->setAttr("test_core_y",
-                              bodyBuilder.getI64IntegerAttr(-route[2]));
+                              bodyBuilder.getI64IntegerAttr(0));
             readbacks.push_back(readback);
             readbackValues.push_back(readback.getResult());
           }

@@ -159,6 +159,11 @@ llvm::Error validateInputs(const CIMTransaction &executable,
     if (binding.dataType == CIMDataType::BF16 &&
         input.bf16Values.size() != kCIMInputElements)
       return runnerError("CIM input view must contain exactly 64 BF16 values");
+    if (binding.dataType == CIMDataType::BF16 &&
+        llvm::any_of(input.bf16Values, [](uint16_t value) {
+          return ((value >> 7) & 0xff) == 0xff;
+        }))
+      return runnerError("CIM BF16 input does not support NaN or infinity");
   }
   for (const ReadbackBinding &binding : executable.getReadbacks()) {
     if (binding.dataType != CIMDataType::Int8 &&
@@ -191,10 +196,9 @@ llvm::Error validateOutputs(const CIMTransaction &executable,
         output.values.size() != kCIMOutputElements)
       return runnerError(
           "CIM output view must contain exactly 16 INT32 values");
-    if (binding.dataType == CIMDataType::BF16)
-      return runnerError(
-          "CIM board BF16 readback is disabled until response packing is "
-          "verified (CTQ-037/HWQ-LAYOUT-003); use raw capture for diagnostics");
+    if (binding.dataType == CIMDataType::BF16 &&
+        output.bf16Values.size() != kCIMOutputElements)
+      return runnerError("CIM output view must contain exactly 16 BF16 values");
   }
   return llvm::Error::success();
 }
@@ -257,6 +261,11 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
         if (llvm::Error error = appendCIMWeightExponentPacket(
                 weight.route, exponentWords, select.flits))
           return std::move(error);
+      } else {
+        const std::array<uint64_t, 2> exponentWords{};
+        if (llvm::Error error = appendCIMWeightExponentPacket(
+                weight.route, exponentWords, select.flits))
+          return std::move(error);
       }
       program.operations.push_back(std::move(select));
       emitTrace(trace, sequence, CIMTraceEventKind::SelectMacro, group.groupId,
@@ -303,6 +312,7 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
   // before triggering work. Keep all Once flits in one batch so the board
   // pacing delay begins only after every active Core has been started.
   CIMDeviceOperation startWork;
+  startWork.phase = CIMDevicePhase::Work;
   startWork.postDelayMs = policy.workDelayMs;
   for (const CIMGroup &group : executable.getGroups()) {
     startWork.flits.push_back(encodeCIMWorkOnceFlit(group.works.front().route));
@@ -310,10 +320,10 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
   }
   program.operations.push_back(std::move(startWork));
 
-  // The BF16 testbench uses Once -> idle, provisionally retained only for raw
-  // diagnostics pending CTQ-037/HWQ-LAYOUT-003.
+  // The supplier BF16 testbench returns to idle after Once.
   if (hasBF16(executable)) {
     CIMDeviceOperation idle;
+    idle.phase = CIMDevicePhase::Work;
     for (const CIMGroup &group : executable.getGroups())
       idle.flits.push_back(encodeCIMWorkIdleFlit(group.works.front().route));
     program.operations.push_back(std::move(idle));
@@ -328,8 +338,9 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
     CIMDeviceReadbackCommand command;
     command.outputIndex = outputIndex;
     command.dataType = readback.dataType;
-    command.request.flits.push_back(encodeCIMControlFlit(
+    command.selection.flits.push_back(encodeCIMControlFlit(
         readback.route, readback.macroSlot, readback.dataType));
+    command.selection.postDelayMs = policy.readbackSelectDelayMs;
     command.request.flits.push_back(encodeCIMOutputCacheReadFlit(
         readback.route, readback.outputCacheAddress));
     program.readbacks.push_back(std::move(command));
@@ -371,7 +382,8 @@ llvm::Error validateResponse(const CIMTransaction &executable,
   return llvm::Error::success();
 }
 
-llvm::Error decodeResponse(const CIMDeviceResponse &response,
+llvm::Error decodeResponse(const CIMTransaction &executable,
+                           const CIMDeviceResponse &response,
                            CIMRunOutputs &outputs) {
   std::vector<std::array<int32_t, kCIMOutputElements>> decodedInt21(
       outputs.values.size());
@@ -382,8 +394,16 @@ llvm::Error decodeResponse(const CIMDeviceResponse &response,
     decodedInt21[result.outputIndex] = *values;
   }
   for (size_t index = 0; index < outputs.values.size(); ++index) {
-    std::copy(decodedInt21[index].begin(), decodedInt21[index].end(),
-              outputs.values[index].values.begin());
+    if (executable.getReadbacks()[index].dataType == CIMDataType::BF16) {
+      // Hardware already converted to BF16. The unsigned cast extracts the
+      // slot's low 16 bits, ignoring the upper five even after sign extension.
+      std::transform(decodedInt21[index].begin(), decodedInt21[index].end(),
+                     outputs.values[index].bf16Values.begin(),
+                     [](int32_t slot) { return static_cast<uint16_t>(slot); });
+    } else {
+      std::copy(decodedInt21[index].begin(), decodedInt21[index].end(),
+                outputs.values[index].values.begin());
+    }
   }
   return llvm::Error::success();
 }
@@ -404,7 +424,7 @@ llvm::Error CIMBoardRunner::run(const execution::CIMTransaction &executable,
     emitTrace(trace, sequence, execution::CIMTraceEventKind::Error);
     return response.takeError();
   }
-  if (llvm::Error error = decodeResponse(*response, outputs)) {
+  if (llvm::Error error = decodeResponse(executable, *response, outputs)) {
     emitTrace(trace, sequence, execution::CIMTraceEventKind::Error);
     return error;
   }

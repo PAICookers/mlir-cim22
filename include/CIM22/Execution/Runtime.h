@@ -23,6 +23,13 @@ typedef struct CIM22UsbConfig {
   uint32_t receive_poll_timeout_ms;
   uint32_t response_timeout_ms;
 } CIM22UsbConfig;
+// Separate extension: the original USB configuration layout is unchanged.
+typedef struct CIM22PLLConfig {
+  const char *port;
+  uint32_t configuration_word;
+  uint32_t work_word;
+  uint32_t readback_word;
+} CIM22PLLConfig;
 // Shared models need only the execution runtime. Packet loading and object
 // emission are compiler-only functions in libcim22_compiler.
 void *cim22_session_load_shared(const char *model_file, char *error,
@@ -47,6 +54,12 @@ int cim22_session_invoke(void *session, void **buffers, const int64_t *counts,
                          int64_t num_buffers);
 int cim22_session_configure_usb(void *session, const CIM22UsbConfig *config,
                                 char *error, size_t error_capacity);
+// Null/empty port selects a manually managed clock without serial verification.
+// Linux also permits a missing port; Windows rejects nonempty serial ports.
+int cim22_session_configure_usb_with_pll(void *session,
+                                         const CIM22UsbConfig *config,
+                                         const CIM22PLLConfig *pll, char *error,
+                                         size_t error_capacity);
 int64_t cim22_session_num_readbacks(void *session, int64_t transaction);
 // Diagnostic only: BF16 input bits in dynamic-binding order (64 per row).
 // Output is one header and six body flits per readback, in binding order.

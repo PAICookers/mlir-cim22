@@ -1,19 +1,30 @@
 """USB artifact selection and boundary checks without a physical device."""
 
+import ctypes
 import os
+import threading
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 import torch
 from torch._dynamo.exc import BackendCompilerFailed
 
-from cim22 import Session, UsbConfig
-from cim22.runtime import MODEL_SUFFIX
+from cim22 import PLLConfig, Session, UsbConfig
+from cim22.runtime import MODEL_SUFFIX, _PLLConfig, _UsbConfig
 
 from ._generated import cim22_model_pb2 as proto
+
+
+def test_public_runtime_exports() -> None:
+    import cim22
+
+    assert set(cim22.__all__) == {"PLLConfig", "Session", "UsbConfig"}
+
 
 if TYPE_CHECKING:
     from .conftest import EmbeddedModel, ModelLibrary
@@ -55,6 +66,125 @@ def test_usb_config_rejects_truncation(
         replace(usb_config, **{field: value})
 
 
+@pytest.fixture
+def pll_config() -> PLLConfig:
+    return PLLConfig("/dev/serial/by-id/pll", "2828A4", "2c28a4", "3028A4")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("port", ""),
+        ("port", "pll\0other"),
+        ("config_hex", "2828A"),
+        ("config_hex", "02828A4"),
+        ("work_hex", "0x2828A4"),
+        ("work_hex", "28 8A4"),
+        ("readback_hex", "2828AG"),
+    ],
+)
+def test_pll_config_rejects_invalid_commands(
+    pll_config: PLLConfig,
+    field: str,
+    value: str,
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        replace(pll_config, **{field: value})
+
+
+def test_supplier_defaults_preserve_legacy_usb_abi(
+    usb_config: UsbConfig,
+) -> None:
+    assert usb_config.physical_link == 0
+    assert usb_config.logical_channel == 3
+    assert usb_config.response_timeout_ms == 7000
+    assert usb_config.pll is None
+    # Existing native callers pass this unversioned structure by pointer.
+    assert ctypes.sizeof(_UsbConfig) == 28
+    assert _UsbConfig.transfer_timeout_ms.offset == 16
+    assert _UsbConfig.response_timeout_ms.offset == 24
+
+
+@pytest.fixture
+def mock_usb_session() -> tuple[Session, Mock, Mock]:
+    session = Session.__new__(Session)
+    session._lock = threading.RLock()
+    session._handle = 123
+    legacy = Mock(return_value=0)
+    with_pll = Mock(return_value=0)
+    session._library = SimpleNamespace(
+        cim22_session_configure_usb=legacy,
+        cim22_session_configure_usb_with_pll=with_pll,
+    )
+    return session, legacy, with_pll
+
+
+def test_manual_clock_uses_legacy_usb_entry(
+    usb_config: UsbConfig, mock_usb_session: tuple[Session, Mock, Mock]
+) -> None:
+    session, legacy, with_pll = mock_usb_session
+    session.configure_usb(usb_config)
+    legacy.assert_called_once()
+    with_pll.assert_not_called()
+    native = ctypes.cast(legacy.call_args.args[1], ctypes.POINTER(_UsbConfig))
+    assert native.contents.physical_link == 0
+    assert native.contents.response_timeout_ms == 7000
+
+
+def test_optional_pll_commands_reach_separate_native_config(
+    usb_config: UsbConfig,
+    pll_config: PLLConfig,
+    mock_usb_session: tuple[Session, Mock, Mock],
+) -> None:
+    session, legacy, with_pll = mock_usb_session
+    session.configure_usb(replace(usb_config, pll=pll_config))
+    legacy.assert_not_called()
+    with_pll.assert_called_once()
+    native = ctypes.cast(with_pll.call_args.args[2], ctypes.POINTER(_PLLConfig))
+    assert native.contents.port == os.fsencode(pll_config.port)
+    assert native.contents.configuration_word == 0x2828A4
+    assert native.contents.work_word == 0x2C28A4
+    assert native.contents.readback_word == 0x3028A4
+
+
+def test_missing_pll_device_is_delegated_to_native_manual_fallback(
+    tmp_path: Path,
+    usb_config: UsbConfig,
+    pll_config: PLLConfig,
+    mock_usb_session: tuple[Session, Mock, Mock],
+) -> None:
+    session, _, with_pll = mock_usb_session
+    missing = tmp_path / "no-such-serial-device"
+    assert not missing.exists()
+    session.configure_usb(
+        replace(usb_config, pll=replace(pll_config, port=str(missing)))
+    )
+    # Native open decides availability; Python must not reject an absent port.
+    with_pll.assert_called_once()
+
+
+def test_present_pll_error_is_not_hidden(
+    usb_config: UsbConfig,
+    pll_config: PLLConfig,
+    mock_usb_session: tuple[Session, Mock, Mock],
+) -> None:
+    session, _, with_pll = mock_usb_session
+
+    def fail(
+        _handle: int,
+        _usb: object,
+        _pll: object,
+        error: ctypes.Array,
+        _capacity: int,
+    ) -> int:
+        error.value = b"PLL echo timeout"
+        return 1
+
+    with_pll.side_effect = fail
+    with pytest.raises(RuntimeError, match="PLL echo timeout"):
+        session.configure_usb(replace(usb_config, pll=pll_config))
+
+
 @pytest.mark.integration
 def test_usb_session_checks(
     model_library: "ModelLibrary",
@@ -92,6 +222,27 @@ def test_usb_session_checks(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("field", ["config_hex", "work_hex", "readback_hex"])
+def test_native_rejects_pll_limits_before_opening_usb(
+    model_library: "ModelLibrary",
+    transaction_artifact: proto.ModelArtifact,
+    usb_config: UsbConfig,
+    pll_config: PLLConfig,
+    field: str,
+) -> None:
+    transaction_artifact.backend = proto.USB
+    # Valid HEX syntax reaches native validation; no USB device is opened.
+    pll = replace(pll_config, **{field: "000000"})
+    with (
+        Session(
+            model_library(transaction_artifact.SerializeToString(), 1)
+        ) as session,
+        pytest.raises(RuntimeError, match="PLL VCO must be at least 250 MHz"),
+    ):
+        session.configure_usb(replace(usb_config, pll=pll))
+
+
+@pytest.mark.integration
 def test_software_session_rejects_usb(
     model_library: "ModelLibrary",
     usb_config: UsbConfig,
@@ -116,7 +267,7 @@ def test_compiled_usb_backend(
 ) -> None:
     value = torch.ones(1, 64)
     compiled = torch.compile(
-        torch.nn.Linear(64, 16).eval(),
+        torch.nn.Linear(64, 48).eval(),
         backend="cim22",
         fullgraph=True,
         dynamic=False,
@@ -137,6 +288,28 @@ def test_compiled_usb_backend(
         for kernel in model.kernels
         for binding in kernel.transaction.inputs
     )
+    # The supplier return field xy6(-15, 1)=0x3f is stored as -31.
+    # Cover both macros and a non-ingress core independently of the forward route.
+    works = [
+        (work.core_slot, work.macro_slot)
+        for kernel in model.kernels
+        for group in kernel.transaction.groups
+        for work in group.works
+    ]
+    assert works == [(0, 0), (0, 1), (1, 0)]
+    for kernel in model.kernels:
+        assert kernel.transaction.readbacks
+        assert all(
+            list(binding.test_core) == [-31, 0, 0]
+            for binding in kernel.transaction.readbacks
+        )
+        routes = [
+            packet
+            for packet in kernel.transaction.packets
+            if packet.kind == proto.RETURN_ROUTE
+        ]
+        assert len(routes) == len(kernel.transaction.readbacks)
+        assert all(list(packet.test_core) == [-31, 0, 0] for packet in routes)
 
 
 @pytest.mark.integration
@@ -223,3 +396,78 @@ def test_usb_address_selection(usb_config: UsbConfig) -> None:
             replace(usb_config, bus_number=1, device_address=3).device_address
             == 3
         )
+
+
+def test_frequency_selection_reaches_all_native_pll_phases(
+    usb_config: UsbConfig, mock_usb_session: tuple[Session, Mock, Mock]
+) -> None:
+    session, legacy, with_pll = mock_usb_session
+    selected = replace(
+        usb_config,
+        clock_frequency_mhz=24,
+        pll_port="/dev/serial/by-id/pll",
+    )
+    assert selected.clock_setting.serial_hex == "2828A4"
+    session.configure_usb(selected)
+    legacy.assert_not_called()
+    native = ctypes.cast(with_pll.call_args.args[2], ctypes.POINTER(_PLLConfig))
+    assert native.contents.port == b"/dev/serial/by-id/pll"
+    assert native.contents.configuration_word == 0x2828A4
+    assert native.contents.work_word == 0x2828A4
+    assert native.contents.readback_word == 0x2828A4
+    changed = replace(selected, clock_frequency_mhz=32)
+    session.configure_usb(changed)
+    native = ctypes.cast(with_pll.call_args.args[2], ctypes.POINTER(_PLLConfig))
+    assert native.contents.work_word == 0x2C20B4
+
+
+def test_maybe_available_row_is_warned_and_its_literal_bytes_are_sent(
+    usb_config: UsbConfig, mock_usb_session: tuple[Session, Mock, Mock]
+) -> None:
+    session, _, with_pll = mock_usb_session
+    with pytest.warns(RuntimeWarning, match="may be unstable"):
+        selected = replace(
+            usb_config, clock_frequency_mhz=284, pll_port="/missing-pll"
+        )
+    assert selected.clock_setting.actual_frequency_mhz == 283.2
+    assert selected.clock_setting.status == "maybe available"
+    session.configure_usb(selected)
+    native = ctypes.cast(with_pll.call_args.args[2], ctypes.POINTER(_PLLConfig))
+    assert native.contents.work_word == 0xE813A4
+
+
+def test_frequency_without_serial_keeps_manual_clock(
+    usb_config: UsbConfig, mock_usb_session: tuple[Session, Mock, Mock]
+) -> None:
+    session, legacy, with_pll = mock_usb_session
+    selected = replace(usb_config, clock_frequency_mhz=24)
+    assert selected.clock_setting.actual_frequency_mhz == 24
+    session.configure_usb(selected)
+    legacy.assert_called_once()
+    with_pll.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"pll_port": "/dev/pll"}, "requires clock_frequency_mhz"),
+        ({"clock_frequency_mhz": 24, "pll_port": ""}, "pll_port"),
+        ({"clock_frequency_mhz": 24, "pll_port": "a\0b"}, "pll_port"),
+        ({"clock_frequency_mhz": True}, "not a listed target"),
+        ({"clock_frequency_mhz": 26}, "not a listed target"),
+    ],
+)
+def test_frequency_usb_configuration_validation(
+    usb_config: UsbConfig,
+    changes: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        replace(usb_config, **changes)
+
+
+def test_raw_pll_and_frequency_cannot_conflict(
+    usb_config: UsbConfig, pll_config: PLLConfig
+) -> None:
+    with pytest.raises(ValueError, match="either pll or clock_frequency_mhz"):
+        replace(usb_config, pll=pll_config, clock_frequency_mhz=24)

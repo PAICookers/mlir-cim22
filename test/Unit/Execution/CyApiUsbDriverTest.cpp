@@ -1,5 +1,5 @@
 // Tests the real adapter against a controlled SDK, without a USB board.
-#include "CIM22/Runtime/Detail/UsbDriver.h"
+#include "UsbDriver.h"
 #include <windows.h>
 
 // Match the official SDK's prerequisite include order.

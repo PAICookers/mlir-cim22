@@ -5,13 +5,16 @@ import os
 import threading
 import weakref
 from contextlib import ExitStack, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.resources import files
 from pathlib import Path
 from types import TracebackType
+from typing import Literal, Self
 
 import numpy as np
 from numpy.typing import NDArray
+
+from .pll import PLLClockSetting, select_pll_clock
 
 type FloatArray = NDArray[np.float32]
 
@@ -37,8 +40,43 @@ def _release_session(
 
 
 @dataclass(frozen=True, slots=True)
+class PLLConfig:
+    """Optional serial commands for Config, Work and Readback clock phases.
+
+    Commands are six-digit HEX strings; native configuration checks PLL limits
+    before opening USB.
+    On Linux, a missing serial device uses the manually configured clock;
+    an available device must return an exact echo. Windows serial control is
+    unsupported: omit PLLConfig and pll_port and configure the clock manually.
+    """
+
+    port: str
+    config_hex: str
+    work_hex: str
+    readback_hex: str
+
+    def __post_init__(self) -> None:
+        if not self.port or "\0" in self.port:
+            raise ValueError("port must be non-empty and contain no NUL")
+        for name, value in (
+            ("config_hex", self.config_hex),
+            ("work_hex", self.work_hex),
+            ("readback_hex", self.readback_hex),
+        ):
+            if len(value) != 6 or any(
+                char not in "0123456789abcdefABCDEF" for char in value
+            ):
+                raise ValueError(f"{name} must be a six-digit HEX string")
+
+
+@dataclass(frozen=True, slots=True)
 class UsbConfig:
-    """Platform USB bridge selection and transfer settings."""
+    """Platform USB bridge settings and optional supplier PLL selection.
+
+    clock_frequency_mhz selects the same clock in all three phases. Without
+    pll_port the caller configures that clock manually; clock_setting records
+    the selected table frequency, not a measured or verified hardware clock.
+    """
 
     vendor_id: int
     product_id: int
@@ -48,31 +86,40 @@ class UsbConfig:
     device_address: int = 0xFF
     interface_number: int = 0
     alternate_setting: int = 0
-    physical_link: int = 2
+    physical_link: int = 0
     logical_channel: int = 3
-    word_byte_order: int = 0
+    word_byte_order: Literal[0, 1] = 0
     transfer_timeout_ms: int = 5000
     receive_poll_timeout_ms: int = 200
-    response_timeout_ms: int = 60000
+    response_timeout_ms: int = 7000
+    pll: PLLConfig | None = None
+    clock_frequency_mhz: float | None = None
+    pll_port: str | None = None
+    clock_setting: PLLClockSetting | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
-        for name, lower, upper in (
-            ("vendor_id", 1, 0xFFFF),
-            ("product_id", 1, 0xFFFF),
-            ("bulk_in_endpoint", 0x81, 0x8F),
-            ("bulk_out_endpoint", 1, 0x0F),
-            ("bus_number", 0, 0xFF),
-            ("device_address", 0, 0xFF),
-            ("interface_number", 0, 0xFF),
-            ("alternate_setting", 0, 0xFF),
-            ("physical_link", 0, 3),
-            ("logical_channel", 0, 7),
-            ("word_byte_order", 0, 1),
-            ("transfer_timeout_ms", 1, 0xFFFFFFFF),
-            ("receive_poll_timeout_ms", 1, 0xFFFFFFFF),
-            ("response_timeout_ms", 1, 0xFFFFFFFF),
+        # ctypes wraps integers, so check wire ranges before conversion.
+        for name, value, lower, upper in (
+            ("vendor_id", self.vendor_id, 1, 0xFFFF),
+            ("product_id", self.product_id, 1, 0xFFFF),
+            ("bulk_in_endpoint", self.bulk_in_endpoint, 0x81, 0x8F),
+            ("bulk_out_endpoint", self.bulk_out_endpoint, 1, 0x0F),
+            ("bus_number", self.bus_number, 0, 0xFF),
+            ("device_address", self.device_address, 0, 0xFF),
+            ("interface_number", self.interface_number, 0, 0xFF),
+            ("alternate_setting", self.alternate_setting, 0, 0xFF),
+            ("physical_link", self.physical_link, 0, 3),
+            ("logical_channel", self.logical_channel, 0, 7),
+            ("word_byte_order", self.word_byte_order, 0, 1),
+            ("transfer_timeout_ms", self.transfer_timeout_ms, 1, 0xFFFFFFFF),
+            (
+                "receive_poll_timeout_ms",
+                self.receive_poll_timeout_ms,
+                1,
+                0xFFFFFFFF,
+            ),
+            ("response_timeout_ms", self.response_timeout_ms, 1, 0xFFFFFFFF),
         ):
-            value = getattr(self, name)
             if type(value) is not int:
                 raise TypeError(f"{name} must be an integer")
             if not lower <= value <= upper:
@@ -82,6 +129,21 @@ class UsbConfig:
                 raise ValueError("bus_number is not supported by Windows CyAPI")
         elif (self.bus_number == 0xFF) != (self.device_address == 0xFF):
             raise ValueError("Specify both bus_number and device_address")
+        if self.pll_port is not None:
+            if not self.pll_port or "\0" in self.pll_port:
+                raise ValueError(
+                    "pll_port must be non-empty and contain no NUL"
+                )
+            if self.clock_frequency_mhz is None:
+                raise ValueError("pll_port requires clock_frequency_mhz")
+        if self.clock_frequency_mhz is not None:
+            if self.pll is not None:
+                raise ValueError("Specify either pll or clock_frequency_mhz")
+            object.__setattr__(
+                self,
+                "clock_setting",
+                select_pll_clock(self.clock_frequency_mhz),
+            )
 
 
 def runtime_library(library: Path | None = None) -> Path:
@@ -211,24 +273,34 @@ class Session:
         self.num_transactions = lib.cim22_session_num_transactions(self._handle)
 
     def configure_usb(self, config: UsbConfig) -> None:
-        """Open the configured USB device for a USB artifact."""
-        if not isinstance(config, UsbConfig):
-            raise TypeError("config must be a UsbConfig")
+        """Open USB with optional PLL control or a manually configured clock."""
         with self._lock:
             self._require_open()
-            native = self._library.cim22_session_configure_usb
-            native.argtypes = [
+            argument_types = [
                 ctypes.c_void_p,
                 ctypes.POINTER(_UsbConfig),
+            ]
+            native_config = _UsbConfig.from_config(config)
+            arguments = [self._handle, ctypes.byref(native_config)]
+            pll = config.pll
+            if config.clock_setting is not None and config.pll_port is not None:
+                word = config.clock_setting.serial_hex
+                pll = PLLConfig(config.pll_port, word, word, word)
+            if pll is None:
+                native = self._library.cim22_session_configure_usb
+            else:
+                native = self._library.cim22_session_configure_usb_with_pll
+                native_pll = _PLLConfig.from_config(pll)
+                argument_types.append(ctypes.POINTER(_PLLConfig))
+                arguments.append(ctypes.byref(native_pll))
+            native.argtypes = [
+                *argument_types,
                 ctypes.c_char_p,
                 ctypes.c_size_t,
             ]
             native.restype = ctypes.c_int
-            native_config = _UsbConfig.from_config(config)
             error = ctypes.create_string_buffer(16384)
-            if native(
-                self._handle, ctypes.byref(native_config), error, len(error)
-            ):
+            if native(*arguments, error, len(error)):
                 raise RuntimeError(error.value.decode(errors="replace"))
 
     def capture_usb(
@@ -238,8 +310,8 @@ class Session:
 
         Inputs are contiguous uint16 BF16 bit patterns shaped (bindings, 64),
         in dynamic-binding order. Returns (readbacks, 7) uint64 flits: header,
-        then six body flits. This diagnostic does not produce tensor outputs;
-        BF16 board sequencing and row packing remain unqualified (CTQ-037).
+        then six body flits. This diagnostic preserves the response unchanged
+        for protocol inspection; use normal invocation for tensor outputs.
         """
         with self._lock:
             self._require_open()
@@ -376,7 +448,7 @@ class _UsbConfig(ctypes.Structure):
     ]
 
     @classmethod
-    def from_config(cls, config: UsbConfig) -> "_UsbConfig":
+    def from_config(cls, config: UsbConfig) -> Self:
         return cls(
             config.vendor_id,
             config.product_id,
@@ -392,4 +464,22 @@ class _UsbConfig(ctypes.Structure):
             config.transfer_timeout_ms,
             config.receive_poll_timeout_ms,
             config.response_timeout_ms,
+        )
+
+
+class _PLLConfig(ctypes.Structure):
+    _fields_ = [
+        ("port", ctypes.c_char_p),
+        ("configuration_word", ctypes.c_uint32),
+        ("work_word", ctypes.c_uint32),
+        ("readback_word", ctypes.c_uint32),
+    ]
+
+    @classmethod
+    def from_config(cls, config: PLLConfig) -> Self:
+        return cls(
+            os.fsencode(config.port),
+            int(config.config_hex, 16),
+            int(config.work_hex, 16),
+            int(config.readback_hex, 16),
         )

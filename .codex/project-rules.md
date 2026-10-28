@@ -66,6 +66,8 @@ supplier, generated, and third-party code under their existing handling rules.
 - Use concise Google-style docstrings for public modules, classes, and APIs.
   Add `Args`, `Returns`, and `Raises` sections when needed to explain the
   contract. Comments explain constraints and reasons rather than restating code.
+- Keep `cim22.__init__` limited to user-facing APIs. Import internal tables,
+  helpers and native-library discovery from their owning modules.
 
 ### Errors, Resources, And Side Effects
 
@@ -108,11 +110,11 @@ supplier, generated, and third-party code under their existing handling rules.
 - Default to Release with tests and the ONNX diagnostic importer disabled.
   Debug is a standard CMake build type, not a separate runtime ABI or backend.
   Enable `MLIRCIM22_INCLUDE_TESTS` and `MLIRCIM22_ENABLE_ONNX` explicitly for
-  native testing; enable the Python `compiler` extra and `dev` group as needed.
+  native testing; use the Python `dev` group for pytest and fixture dependencies.
 - Use the pinned Protobuf/protoc pair from FetchContent. ONNX is optional and
   shares these targets; do not reintroduce system-package selection branches.
-  USB builds require Linux and libusb; `CIM22_ENABLE_USB=OFF` builds software
-  support only. USB artifacts must not silently fall back to software.
+  USB builds use Linux libusb or Windows x64 CyAPI; `CIM22_ENABLE_USB=OFF`
+  builds software support only. USB artifacts must not fall back to software.
 - Reinstall the editable package after native, TableGen, schema or CMake edits
   with `uv sync --project python --reinstall-package mlir-cim22`, using
   the same build directory and required CMake options. Build-environment changes
@@ -153,14 +155,16 @@ supplier, generated, and third-party code under their existing handling rules.
 - Codebase Memory walks the repository filesystem, so untracked source and
   documentation are indexed unless excluded by `.cbmignore` or an indexer
   skip-list. Git tracking status is not an indexing boundary.
-- Use `index_repository` with the registered project name, `full` mode and
-  persistence when refreshing this checkout. The current project is
-  `home-kafcoppelia-WORK-mlir-pku-cim22`; resolve it with `list_projects` if the
-  registration changes.
+- Resolve the current-root index with `index_status(project="@current")` when
+  supported; otherwise match `list_projects` by checkout root. Refresh that
+  project with `index_repository`, `full` mode and persistence; never repoint
+  another worktree's registered project.
 - The persisted graph stores relative paths. Before sharing an export, remove
   checkout and Git-directory metadata, compact/recompress the SQLite graph, and
   verify that no machine paths remain. Keep the live index bound to this
   checkout.
+- Keep `.codebase-memory/artifact.json` local. Index only reviewed source/build
+  trees; use the same narrow tool allowlist as the source distribution.
 - Check index coverage and read reported partial ranges before relying on graph
   results. A clean coverage result is best-effort evidence, not proof of
   completeness.

@@ -13,6 +13,10 @@
 
 需要 Git、C++17 编译器、**CMake >=3.28**、Ninja，以及默认 USB 构建需要的 `pkg-config` 和 libusb 开发文件。Python 后端和测试还需 Python 3.12 与 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
 
+Linux USB 后端直接使用系统 libusb，无需安装 Cypress `cyusb_linux` SDK。CMake 通过 `pkg-config` 获取 libusb 的头文件与链接配置。设备访问权限和板卡配套的 FX3 固件需另行准备；安装主机库不会下载设备固件。
+
+PLL 自动串口控制仅支持 Linux，使用 POSIX 接口，不需要 PyUSB 或 pyserial。Linux 上未提供串口或指定设备不存在时，使用用户手动设置的时钟，不计为程序已配置或校验 PLL。Windows 保留 CyAPI USB 支持，省略串口选项并手动设钟；请求自动串口控制会报错。设备权限及可选串口的使用方法见 [USB 与 PLL 配置](python/README.md#usb-与-pll-配置)。
+
 例如 Ubuntu 24.04：
 
 ```sh
@@ -33,29 +37,31 @@ CMake 会下载并构建固定的 **Protobuf/protoc 31.1**；启用 ONNX 时还�
 
 已有兼容工具链时，只需设置其 `lib/cmake/mlir` 为 `MLIR_DIR`，可跳过本节构建。本项目要求 LLVM/MLIR **>=22**；验证版本是 **22.1.8**。
 
-以下在仓库旁建立工具链源码与构建目录：
+参考 [MLIR 官方入门指南](https://mlir.llvm.org/getting_started/)，以下在仓库旁拉取已验证的 `llvmorg-22.1.8` tag，并建立构建目录。只启用 MLIR 和本机代码生成目标，使用 Release 并保留断言检查：
 
 ```sh
-git init ../llvm-project
-git -C ../llvm-project remote add origin https://github.com/llvm/llvm-project.git
-git -C ../llvm-project fetch --depth=1 origin ca7933e47d3a3451d81e72ac174dcb5aa28b59d1
-git -C ../llvm-project checkout --detach FETCH_HEAD
+git clone --depth 1 --branch llvmorg-22.1.8 \
+  https://github.com/llvm/llvm-project.git ../llvm-project
 
 cmake -G Ninja -S ../llvm-project/llvm -B ../llvm-build \
+  -DLLVM_ENABLE_PROJECTS=mlir \
+  -DLLVM_TARGETS_TO_BUILD=Native \
   -DCMAKE_BUILD_TYPE=Release \
-  -DLLVM_ENABLE_PROJECTS=mlir -DLLVM_TARGETS_TO_BUILD=X86 \
-  -DBUILD_SHARED_LIBS=OFF -DLLVM_BUILD_LLVM_DYLIB=OFF \
-  -DLLVM_LINK_LLVM_DYLIB=OFF -DLLVM_ENABLE_PIC=ON \
-  -DMLIR_ENABLE_BINDINGS_PYTHON=OFF -DMLIR_ENABLE_EXECUTION_ENGINE=ON \
-  -DLLVM_INCLUDE_TESTS=ON -DLLVM_INCLUDE_EXAMPLES=OFF \
-  -DLLVM_INCLUDE_BENCHMARKS=OFF \
-  -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_ZSTD=OFF \
-  -DLLVM_ENABLE_LIBXML2=OFF -DLLVM_ENABLE_LIBEDIT=OFF
-cmake --build ../llvm-build --parallel 4
+  -DLLVM_ENABLE_ASSERTIONS=ON
+cmake --build ../llvm-build --parallel 8
 export MLIR_DIR="$(cd ../llvm-build && pwd)/lib/cmake/mlir"
 ```
 
-静态 PIC 库供本项目链接；torch-mlir 使用自身的 Python 绑定，无需 LLVM Python 绑定。保留工具链源码和构建目录，后续打开新终端时重新设置 `MLIR_DIR`、`CC`、`CXX`。
+LLVM 默认生成启用 PIC 的静态库。PIC 即位置无关代码，使这些库中的代码可以链接进本项目的共享库（如 `libcim22_compiler.so`）；这里的“静态”指 LLVM/MLIR 依赖库的形式，本项目仍会生成 `.so`。torch-mlir 使用自身的 Python 绑定，无需额外启用 LLVM/MLIR Python 绑定。保留工具链源码和构建目录。
+
+后续源码构建使用以下工具链变量；打开新终端时需重新设置：
+
+| 变量            | 含义                                                                                                                                  |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `MLIR_DIR`    | 必需：LLVM/MLIR 工具链中包含 `MLIRConfig.cmake` 的目录，例如上面的 `../llvm-build/lib/cmake/mlir`，不是本项目的 `build/`        |
+| `CC`、`CXX` | 可选：首次配置时选择 C/C++ 编译器；上例使用 `clang`、`clang++`，未设置时由 CMake 选择系统默认编译器。已有构建目录会缓存编译器选择 |
+
+只在 `cmake` 命令中传入 `-DMLIR_DIR=...` 会将路径保存到该构建目录的缓存，不会设置终端环境变量，也不会传给其他构建目录。
 
 编辑器出现 `Could not find ... MLIRConfig.cmake` 时，为它使用的构建目录重新配置：
 
@@ -128,12 +134,15 @@ build/bin/mlir-cim22-opt \
 
 发布包含 Web 界面的 wheel 前，先按 [Web 构建说明](web/README.md#从源码构建) 生成静态页面。
 
-设置好上述工具链变量后执行：
+在当前终端设置 `MLIR_DIR`，并显式传给 wheel 构建。将下面的路径替换为实际 LLVM/MLIR 工具链路径；若按上文构建，使用 `$(cd ../llvm-build && pwd)/lib/cmake/mlir`：
 
 ```sh
+export MLIR_DIR="/path/to/llvm-build/lib/cmake/mlir"
 CMAKE_BUILD_PARALLEL_LEVEL=4 uv build --python 3.12 python \
-  --wheel --out-dir python/dist
+  --wheel --out-dir python/dist -Ccmake.define.MLIR_DIR="$MLIR_DIR"
 ```
+
+本体使用的 `build/` 与打包使用的 `python/build/` 各自保存 CMake 缓存；即使本体刚编译成功，wheel 也不会自动读取 `build/CMakeCache.txt`。
 
 scikit-build-core 调用根 CMake 工程，默认构建 **Release、USB 开启、测试和 ONNX 关闭**。构建 wheel 本身不需要安装 PyTorch 或 torch-mlir。产物为 `python/dist/mlir_cim22-1.0.0-py3-none-linux_x86_64.whl`，包含：
 
@@ -147,25 +156,25 @@ cim22/
   web/static/assets/
 ```
 
-按 [Python 安装指南](python/README.md#安装)安装该 wheel，再运行自检脚本。普通用户仍需系统 `cc` 和链接开发环境来编译模型。本机构建只保证面向本机 ABI；可移植 manylinux 分发还需独立构建和验收。
+按 [Python 安装指南](python/README.md#安装)安装该 wheel，再运行自检脚本。
 
 ## 测试与开发
 
 ### Python 开发
 
-`uv sync` 创建 `python/.venv`，按锁文件安装开发依赖和本项目的 editable 版本，并构建原生组件。已有 Python 源码的修改在新进程中直接生效，无需重新打包：
+先在当前终端按[构建 wheel](#构建-wheel)设置 `MLIR_DIR`，并保持 `CC`、`CXX` 与首次配置一致。`uv sync` 创建 `python/.venv`，按锁文件安装开发依赖和本项目的 editable 版本，并构建原生组件。已有 Python 源码的修改在新进程中直接生效，无需重新打包：
 
 ```sh
-CMAKE_BUILD_PARALLEL_LEVEL=2 uv sync --project python --python 3.12 \
-  --locked
+CMAKE_BUILD_PARALLEL_LEVEL=4 uv sync --project python --python 3.12 \
+  --locked -Ccmake.define.MLIR_DIR="$MLIR_DIR"
 uv run --directory python --no-sync pytest
 ```
 
 修改 C++、TableGen、schema 或 CMake 后，显式重建安装，再启动测试或应用：
 
 ```sh
-CMAKE_BUILD_PARALLEL_LEVEL=2 uv sync --project python --locked \
-  --reinstall-package mlir-cim22
+CMAKE_BUILD_PARALLEL_LEVEL=4 uv sync --project python --locked \
+  --reinstall-package mlir-cim22 -Ccmake.define.MLIR_DIR="$MLIR_DIR"
 ```
 
 保留首次构建时使用的构建目录和 Debug/USB/ONNX 参数。editable 只省去 Python 源码改动后的打包，不替代原生重建或发行 wheel 验收。
@@ -220,6 +229,7 @@ uv build --python 3.12 --wheel
 ```
 
 源码包内 C++ 源码位于 `native/`，由构建配置自动定位。
+`tools/` 仅打包其 CMake 文件和两个编译工具源码：`mlir-cim22-opt` 由正常的 `torch.compile` lowering 调用；`mlir-cim22-onnx-import` 随 `MLIRCIM22_ENABLE_ONNX` 启用，用于 ONNX 诊断和测试。源码包保留两者以支持可选构建；wheel 的安装内容由 CMake 安装目标决定。本地供应方测试副本和临时工具不进入源码包。
 
 `uv --offline` 只限制 Python 下载，不能阻止 CMake FetchContent 访问网络。离线构建应预先准备固定版本及其传递依赖源码，并通过以下构建参数指定本地路径；仅启用 ONNX 时需要最后一项：
 

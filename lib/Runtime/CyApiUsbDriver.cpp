@@ -1,6 +1,6 @@
 //===- CyApiUsbDriver.cpp - Windows Cypress USB transport ---*- C++ -*-===//
 
-#include "CIM22/Runtime/Detail/UsbDriver.h"
+#include "UsbDriver.h"
 
 #include <windows.h>
 

@@ -17,7 +17,8 @@ namespace cim22::runtime {
 struct CIMBoardRunPolicy {
   uint32_t cacheWriteDelayMs = 1;
   uint32_t weightWriteDelayMs = 2;
-  uint32_t workDelayMs = 2;
+  uint32_t workDelayMs = 20;
+  uint32_t readbackSelectDelayMs = 100;
 };
 
 class CIMBoardRunner final : public execution::CIMRunner {
@@ -31,7 +32,6 @@ public:
                   execution::CIMTraceSink *trace = nullptr) override;
 
   // Capture validated response headers and six raw body flits per readback.
-  // BF16 execution is diagnostic until CTQ-037/HWQ-LAYOUT-003 is resolved.
   llvm::Expected<CIMDeviceResponse>
   capture(const execution::CIMTransaction &executable,
           const execution::CIMRunInputs &inputs,

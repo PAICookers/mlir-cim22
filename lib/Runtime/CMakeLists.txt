@@ -60,7 +60,13 @@ if(CIM22_ENABLE_USB)
     set(_cim22_usb_driver_source CyApiUsbDriver.cpp)
   else()
     find_package(PkgConfig REQUIRED)
-    pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET GLOBAL libusb-1.0)
+    pkg_check_modules(LIBUSB QUIET IMPORTED_TARGET GLOBAL libusb-1.0)
+    if(NOT LIBUSB_FOUND)
+      message(FATAL_ERROR
+        "Linux USB support requires libusb-1.0 development files, not the Cypress "
+        "SDK. Install libusb-1.0-0-dev (Debian/Ubuntu), libusb (Arch), or "
+        "libusb1-devel (Fedora), or set CIM22_ENABLE_USB=OFF for software only.")
+    endif()
     add_library(cim22_usb_driver ALIAS PkgConfig::LIBUSB)
     set(_cim22_usb_driver_source LibusbUsbDriver.cpp)
   endif()
@@ -70,7 +76,7 @@ set(_cim22_runtime_sources Runtime.cpp ModelData.cpp CIMBoardRunner.cpp)
 if(CIM22_ENABLE_USB)
   find_package(Threads REQUIRED)
   list(APPEND _cim22_runtime_sources UsbCIMDevice.cpp UsbRecordCodec.cpp
-       ${_cim22_usb_driver_source})
+       ${_cim22_usb_driver_source} PLLSerial.cpp)
 endif()
 add_library(cim22_runtime SHARED ${_cim22_runtime_sources}
   ${_cim22_proto_cpp}

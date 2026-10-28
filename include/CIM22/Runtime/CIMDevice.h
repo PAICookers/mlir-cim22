@@ -21,17 +21,22 @@
 
 namespace cim22::runtime {
 
+enum class CIMDevicePhase : uint8_t { Configuration, Work, Readback };
+
 // One ordered CIM flit batch followed by an optional board pacing delay.
 // Backends may split a batch into physical transfers, but must not reorder its
 // flits or apply the delay before the complete batch is written.
 struct CIMDeviceOperation {
   llvm::SmallVector<uint64_t> flits;
   uint32_t postDelayMs = 0;
+  CIMDevicePhase phase = CIMDevicePhase::Configuration;
 };
 
 struct CIMDeviceReadbackCommand {
   size_t outputIndex = 0;
   execution::CIMDataType dataType = execution::CIMDataType::Int8;
+  // Macro selection must settle before the request is sent.
+  CIMDeviceOperation selection;
   CIMDeviceOperation request;
 };
 
@@ -50,6 +55,8 @@ struct CIMDeviceReadback {
 
 struct CIMDeviceResponse {
   std::vector<CIMDeviceReadback> readbacks;
+  // False includes manually managed clocks and unavailable optional serial.
+  std::array<bool, 3> pllVerified{};
 };
 
 class CIMDevice {

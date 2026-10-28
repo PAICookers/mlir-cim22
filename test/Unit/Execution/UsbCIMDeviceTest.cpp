@@ -2,15 +2,17 @@
 
 #include "CIM22/Runtime/UsbCIMDevice.h"
 #include "CIM22/Execution/Runtime.h"
-#include "CIM22/Runtime/Detail/UsbDriver.h"
+#include "CIM22/Runtime/CIMPacketCodec.h"
 #include "CIM22/Runtime/UsbRecordCodec.h"
 #include "Session.h"
+#include "UsbDriver.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
@@ -19,11 +21,36 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#ifndef _WIN32
+#include <poll.h>
+#include <pty.h>
+#endif
 #include <string>
+#include <thread>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include <utility>
 #include <vector>
 
 using namespace cim22::runtime;
+
+#ifndef _WIN32
+namespace {
+std::unique_ptr<detail::UsbDriver> injectedPlatformDriver;
+unsigned platformFactoryCalls = 0;
+} // namespace
+
+namespace cim22::runtime::detail {
+// Interpose the Linux shared-library factory to exercise the real public API
+// without opening hardware or adding a production test hook.
+LLVM_EXTERNAL_VISIBILITY std::unique_ptr<UsbDriver> createPlatformUsbDriver() {
+  ++platformFactoryCalls;
+  assert(injectedPlatformDriver);
+  return std::move(injectedPlatformDriver);
+}
+} // namespace cim22::runtime::detail
+#endif
 
 namespace {
 constexpr std::array<uint64_t, 6> kResponse{
@@ -113,8 +140,7 @@ public:
 private:
   void appendRecord(uint64_t flit) {
     const UsbRecord record{
-        static_cast<uint8_t>((config_.physicalLink + 1) & 0x3),
-        static_cast<uint8_t>((config_.logicalChannel + 1) & 0x7), flit};
+        0, static_cast<uint8_t>((config_.logicalChannel + 1) & 0x7), flit};
     auto bytes = UsbRecordCodec::encode(record, config_.wordByteOrder);
     if (corruptHeader_)
       bytes[0] = 0x80;
@@ -165,10 +191,12 @@ CIMDeviceProgram makeProgram() {
   program.operations.push_back(std::move(select));
   CIMDeviceOperation once;
   once.flits = {0x9000000000000001ULL};
+  once.phase = CIMDevicePhase::Work;
   program.operations.push_back(std::move(once));
   CIMDeviceReadbackCommand readback;
   readback.outputIndex = 0;
-  readback.request.flits = {0x8000000000000000ULL, 0x500000000081c000ULL};
+  readback.selection.flits = {0x8000000000000000ULL};
+  readback.request.flits = {0x500000000081c000ULL};
   program.readbacks.push_back(std::move(readback));
   return program;
 }
@@ -177,7 +205,13 @@ void testSupplierInteractionDefaults() {
   UsbCIMDeviceConfig config;
   assert(config.wordByteOrder == UsbWordByteOrder::BigEndian);
   assert(config.startupDelayMs == 20);
-  assert(config.maxTransferBytes == kUsbRecordBytes * 256);
+  assert(config.maxTransferBytes == 512);
+  assert(config.receiveChunkBytes == 32768);
+  assert(config.responseTimeoutMs == 7000);
+  assert(config.physicalLink == 0 && config.logicalChannel == 3);
+  const auto record = UsbRecordCodec::encode(
+      {config.physicalLink, config.logicalChannel, 0xa00000000003f000ULL});
+  assert(record[0] == 0 && record[1] == 0 && record[2] == 0 && record[3] == 3);
 }
 
 void expectSuccess(llvm::Error error) {
@@ -214,6 +248,15 @@ void testRecordCodecResidualBytes() {
 }
 
 void testRecordCodecWordByteOrder() {
+  // Supplier left_down_1 return field (0x3f) in a big-endian USB record.
+  const std::array<int32_t, 6> route{};
+  const std::array<int32_t, 3> testCore{-31, 0, 0};
+  const uint64_t returnFlit = encodeCIMReturnRouteFlit(route, 0, testCore);
+  assert(returnFlit == 0xa00000000003f000ULL);
+  const std::array<uint8_t, kUsbRecordBytes> supplierReturn{
+      0x00, 0x00, 0x00, 0x13, 0xa0, 0x00, 0x00, 0x00, 0x00, 0x03, 0xf0, 0x00};
+  assert(UsbRecordCodec::encode({2, 3, returnFlit}) == supplierReturn);
+
   const UsbRecord record{2, 3, 0x1122334455667788ULL};
   const std::array<uint8_t, kUsbRecordBytes> bigEndian{
       0x00, 0x00, 0x00, 0x13, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
@@ -337,6 +380,50 @@ void testWriteFailureIsSticky() {
   assert(driverView->pendingWriteBytes() == 0);
 }
 
+#ifndef _WIN32
+void testFailedOpenPreservesSessionFault() {
+  class EarlyFailureDriver final : public FakeUsbDriver {
+  public:
+    llvm::Expected<size_t> read(llvm::MutableArrayRef<uint8_t>) override {
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "injected startup IN failure");
+    }
+  };
+  injectedPlatformDriver = std::make_unique<EarlyFailureDriver>();
+  Session session;
+  session.model.backend = RuntimeBackend::USB;
+  CIM22UsbConfig config{};
+  config.vendor_id = 0x1234;
+  config.product_id = 0x5678;
+  config.bus_number = config.device_address = 0xff;
+  config.bulk_in_endpoint = 0x81;
+  config.bulk_out_endpoint = 0x01;
+  config.logical_channel = 3;
+  config.transfer_timeout_ms = 1000;
+  config.receive_poll_timeout_ms = 200;
+  config.response_timeout_ms = 7000;
+  std::array<char, 256> error{};
+  assert(cim22_session_configure_usb(&session, &config, error.data(),
+                                     error.size()) != 0);
+  assert(std::string(error.data()).find("startup IN failure") !=
+         std::string::npos);
+  assert(session.device && session.device->isFaulted());
+  assert(!session.runner);
+  CIM22PLLConfig pll{};
+  assert(cim22_session_configure_usb_with_pll(&session, &config, &pll,
+                                              error.data(), error.size()) != 0);
+  assert(std::string(error.data()).find("failed before reconfiguration") !=
+         std::string::npos);
+  assert(!session.device && !session.runner);
+  injectedPlatformDriver = std::make_unique<FakeUsbDriver>();
+  assert(cim22_session_configure_usb(&session, &config, error.data(),
+                                     error.size()) == 0);
+  assert(session.device && session.runner);
+  assert(platformFactoryCalls == 2);
+}
+
+#endif
+
 void testExplicitReopenAfterFault() {
   auto driver = std::make_unique<FakeUsbDriver>(true);
   FakeUsbDriver *driverView = driver.get();
@@ -372,17 +459,47 @@ void testExplicitReopenAfterFault() {
 }
 
 void testRejectsUnsolicitedAndOverflowResponses() {
+  class BurstDriver final : public FakeUsbDriver {
+  public:
+    explicit BurstDriver(size_t count)
+        : FakeUsbDriver(false, count), remaining_(count * kUsbRecordBytes) {}
+    llvm::Expected<size_t> read(llvm::MutableArrayRef<uint8_t> bytes) override {
+      if (!remaining_)
+        return FakeUsbDriver::read(bytes);
+      size_t total = 0;
+      while (total < remaining_) {
+        auto part = FakeUsbDriver::read(bytes.slice(total, remaining_ - total));
+        if (!part)
+          return part.takeError();
+        assert(*part > 0);
+        total += *part;
+      }
+      remaining_ = 0;
+      return total;
+    }
+
+  private:
+    size_t remaining_;
+  };
   for (size_t count : {size_t{1}, size_t{8}}) {
+    auto config = makeConfig();
+    config.receiveChunkBytes = 8 * kUsbRecordBytes;
+    config.startupDelayMs = 0;
     auto device = detail::createUsbCIMDevice(
-        makeConfig(), std::make_unique<FakeUsbDriver>(false, count));
+        config, std::make_unique<BurstDriver>(count));
     llvm::Error openError = device->open();
-    if (count == 8) {
-      assert(openError);
+    if (openError) {
+      assert(count == 8);
       assert(llvm::toString(std::move(openError)).find("queue overflow") !=
              std::string::npos);
       continue;
     }
-    expectSuccess(std::move(openError));
+    // Wait for the whole burst, not just receive-thread startup.
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (!device->isFaulted() && std::chrono::steady_clock::now() < deadline)
+      std::this_thread::yield();
+    assert(device->isFaulted());
     CIMDeviceResponse response;
     const std::string message =
         takeError(device->execute(makeProgram(), response));
@@ -522,6 +639,258 @@ void testDrainsBeforeClose() {
     assert(device->isFaulted());
   }
 }
+void testSupplierWeightPacketChunks() {
+  class WholeTransferDriver final : public FakeUsbDriver {
+  public:
+    llvm::Expected<size_t> write(llvm::ArrayRef<uint8_t> bytes) override {
+      sizes.push_back(bytes.size());
+      return bytes.size();
+    }
+    std::vector<size_t> sizes;
+  };
+  auto config = makeConfig();
+  config.maxTransferBytes = 512;
+  auto driver = std::make_unique<WholeTransferDriver>();
+  auto *view = driver.get();
+  auto device = detail::createUsbCIMDevice(config, std::move(driver));
+  expectSuccess(device->open());
+  CIMDeviceProgram program;
+  CIMDeviceOperation weights;
+  weights.flits.resize(257);
+  program.operations.push_back(std::move(weights));
+  CIMDeviceResponse response;
+  expectSuccess(device->execute(program, response));
+  assert(
+      (view->sizes == std::vector<size_t>{512, 512, 512, 512, 512, 512, 12}));
+  assert((response.pllVerified == std::array<bool, 3>{false, false, false}));
+  device->close();
+}
+
+#ifndef _WIN32
+void testThreePLLPhases(bool wrongWorkEcho) {
+  int master = -1, slave = -1;
+  char name[128]{};
+  assert(::openpty(&master, &slave, name, nullptr, nullptr) == 0);
+  std::atomic<unsigned> echoed{0};
+  class PhaseDriver final : public FakeUsbDriver {
+  public:
+    explicit PhaseDriver(std::atomic<unsigned> &echoed) : echoed_(echoed) {}
+    llvm::Expected<size_t> write(llvm::ArrayRef<uint8_t> bytes) override {
+      const size_t before = writes().size();
+      auto count = FakeUsbDriver::write(bytes);
+      if (count && writes().size() != before) {
+        const unsigned expected =
+            writes().size() == 1 ? 1 : (writes().size() == 2 ? 2 : 3);
+        assert(echoed_.load() == expected);
+      }
+      return count;
+    }
+
+  private:
+    std::atomic<unsigned> &echoed_;
+  };
+  std::thread peer([&] {
+    const std::array<uint32_t, 3> words{0x2828a4, 0x2c28a4, 0x3028a4};
+    for (unsigned phase = 0; phase < (wrongWorkEcho ? 2u : 3u); ++phase) {
+      std::array<uint8_t, 3> bytes{};
+      size_t offset = 0;
+      while (offset < bytes.size()) {
+        pollfd descriptor{master, POLLIN, 0};
+        assert(::poll(&descriptor, 1, 1000) == 1);
+        const ssize_t count =
+            ::read(master, bytes.data() + offset, bytes.size() - offset);
+        assert(count > 0);
+        offset += count;
+      }
+      assert(bytes[0] == (words[phase] >> 16) &&
+             bytes[1] == ((words[phase] >> 8) & 0xff) &&
+             bytes[2] == (words[phase] & 0xff));
+      if (wrongWorkEcho && phase == 1)
+        bytes.back() ^= 1;
+      echoed.store(phase + 1);
+      assert(::write(master, bytes.data(), bytes.size()) == 3);
+    }
+  });
+  auto config = makeConfig();
+  config.pll = PLLSerialConfig{name, 0x2828a4, 0x2c28a4, 0x3028a4};
+  auto driver = std::make_unique<PhaseDriver>(echoed);
+  auto *view = driver.get();
+  auto device = detail::createUsbCIMDevice(config, std::move(driver));
+  expectSuccess(device->open());
+  CIMDeviceResponse response;
+  llvm::Error result = device->execute(makeProgram(), response);
+  peer.join();
+  if (wrongWorkEcho) {
+    assert(takeError(std::move(result)).find("PLL echo timed out") !=
+           std::string::npos);
+    assert(view->writes().size() == 1);
+    assert(device->isFaulted());
+  } else {
+    expectSuccess(std::move(result));
+    assert((response.pllVerified == std::array<bool, 3>{true, true, true}));
+  }
+  device->close();
+  ::close(master);
+  ::close(slave);
+}
+
+void testMissingPLLUsesManualClock() {
+  auto config = makeConfig();
+  config.pll = PLLSerialConfig{"/missing-cim22-pll-device", 0x2828a4, 0x2828a4,
+                               0x2828a4};
+  auto device =
+      detail::createUsbCIMDevice(config, std::make_unique<FakeUsbDriver>());
+  expectSuccess(device->open());
+  CIMDeviceResponse response;
+  expectSuccess(device->execute(makeProgram(), response));
+  assert((response.pllVerified == std::array<bool, 3>{false, false, false}));
+  device->close();
+}
+
+#endif
+
+void testNativePLLExtensionValidation() {
+  Session session;
+  session.model.backend = RuntimeBackend::USB;
+  CIM22UsbConfig config{};
+  CIM22PLLConfig pll{"/missing-cim22-pll-device", 0x1000000, 0x2828a4,
+                     0x2828a4};
+  std::array<char, 256> error{};
+  assert(cim22_session_configure_usb_with_pll(&session, &config, &pll,
+                                              error.data(), error.size()) != 0);
+  assert(std::string(error.data()).find("three bytes") != std::string::npos);
+  assert(!session.device);
+}
+
+struct ReadFailureState {
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool requested = false;
+  bool consumed = false;
+  bool cancelled = false;
+};
+
+class PublishedReadError final : public llvm::ErrorInfo<PublishedReadError> {
+public:
+  static char ID;
+  explicit PublishedReadError(ReadFailureState &state) : state_(state) {}
+  void log(llvm::raw_ostream &stream) const override {
+    stream << "injected asynchronous IN error";
+    // Portable code holds its receive lock while consuming this error. Once
+    // write resumes, its next chunk must see the published receive fault.
+    std::lock_guard<std::mutex> lock(state_.mutex);
+    state_.consumed = true;
+    state_.condition.notify_all();
+  }
+  std::error_code convertToErrorCode() const override {
+    return llvm::inconvertibleErrorCode();
+  }
+
+private:
+  ReadFailureState &state_;
+};
+char PublishedReadError::ID = 0;
+
+void testReceiveFailureStopsLaterChunks() {
+  class FailureDriver final : public FakeUsbDriver {
+  public:
+    llvm::Error open(const UsbCIMDeviceConfig &config) override {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.requested = state.consumed = state.cancelled = false;
+      return FakeUsbDriver::open(config);
+    }
+    llvm::Expected<size_t> write(llvm::ArrayRef<uint8_t> bytes) override {
+      ++calls;
+      std::unique_lock<std::mutex> lock(state.mutex);
+      state.requested = true;
+      state.condition.notify_all();
+      assert(state.condition.wait_for(lock, std::chrono::seconds(1),
+                                      [&] { return state.consumed; }));
+      return bytes.size();
+    }
+    llvm::Expected<size_t> read(llvm::MutableArrayRef<uint8_t>) override {
+      std::unique_lock<std::mutex> lock(state.mutex);
+      state.condition.wait(lock,
+                           [&] { return state.requested || state.cancelled; });
+      if (state.cancelled)
+        return size_t{0};
+      return llvm::make_error<PublishedReadError>(state);
+    }
+    void cancel() override {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.cancelled = true;
+      state.condition.notify_all();
+    }
+    size_t calls = 0;
+    ReadFailureState state;
+  };
+  auto config = makeConfig();
+  config.maxTransferBytes = 512;
+  auto driver = std::make_unique<FailureDriver>();
+  auto *view = driver.get();
+  auto device = detail::createUsbCIMDevice(config, std::move(driver));
+  expectSuccess(device->open());
+  CIMDeviceProgram program = makeProgram();
+  program.operations.front().flits.resize(257);
+  CIMDeviceResponse response;
+  assert(
+      takeError(device->execute(program, response)).find("asynchronous IN") !=
+      std::string::npos);
+  assert(view->calls == 1);
+  assert(device->isFaulted());
+  device->close();
+}
+
+void testCloseRetainsLateDataBetweenReads() {
+  class LateDriver final : public FakeUsbDriver {
+  public:
+    llvm::Error open(const UsbCIMDeviceConfig &config) override {
+      std::lock_guard<std::mutex> lock(mutex);
+      cancelled = false;
+      calls = 0;
+      return FakeUsbDriver::open(config);
+    }
+    llvm::Expected<size_t> read(llvm::MutableArrayRef<uint8_t> bytes) override {
+      std::unique_lock<std::mutex> lock(mutex);
+      ++calls;
+      condition.notify_all();
+      if (calls == 1) {
+        condition.wait(lock, [&] { return cancelled; });
+        return size_t{0};
+      }
+      if (calls > 2)
+        return size_t{0};
+      bytes[0] = 0;
+      return size_t{1};
+    }
+    llvm::Expected<size_t>
+    drain(llvm::MutableArrayRef<uint8_t> bytes) override {
+      return read(bytes);
+    }
+    void cancel() override {
+      std::lock_guard<std::mutex> lock(mutex);
+      cancelled = true;
+      condition.notify_all();
+    }
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool cancelled = false;
+    unsigned calls = 0;
+  };
+  auto driver = std::make_unique<LateDriver>();
+  auto *view = driver.get();
+  auto device = detail::createUsbCIMDevice(makeConfig(), std::move(driver));
+  expectSuccess(device->open());
+  {
+    std::unique_lock<std::mutex> lock(view->mutex);
+    assert(view->condition.wait_for(lock, std::chrono::seconds(1),
+                                    [&] { return view->calls != 0; }));
+  }
+  device->close();
+  assert(device->isFaulted());
+  expectSuccess(device->open());
+  assert(!device->isFaulted());
+}
 } // namespace
 
 int main() {
@@ -534,6 +903,9 @@ int main() {
   testTimeoutAndCancellation();
   testWriteFailureIsSticky();
   testExplicitReopenAfterFault();
+#ifndef _WIN32
+  testFailedOpenPreservesSessionFault();
+#endif
   testRejectsUnsolicitedAndOverflowResponses();
   testRejectsInvalidTransferConfig();
   testRejectsInvalidEndpointAddresses();
@@ -541,5 +913,14 @@ int main() {
   testPreservesRawBF16Readback();
   testPreservesErrorDuringStop();
   testDrainsBeforeClose();
+  testSupplierWeightPacketChunks();
+#ifndef _WIN32
+  testThreePLLPhases(false);
+  testThreePLLPhases(true);
+  testMissingPLLUsesManualClock();
+#endif
+  testNativePLLExtensionValidation();
+  testReceiveFailureStopsLaterChunks();
+  testCloseRetainsLateDataBetweenReads();
   return 0;
 }

@@ -1,14 +1,19 @@
 //===- LibusbUsbDriver.cpp - Linux libusb driver ------------*- C++ -*-===//
 
-#include "CIM22/Runtime/Detail/UsbDriver.h"
+#include "UsbDriver.h"
 
 #include "llvm/Support/Error.h"
 
 #include <libusb.h>
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
 namespace cim22::runtime::detail {
 namespace {
@@ -77,17 +82,6 @@ public:
       return interfaceError;
     }
 
-    if (libusb_kernel_driver_active(handle_, config.interfaceNumber) == 1) {
-      result = libusb_detach_kernel_driver(handle_, config.interfaceNumber);
-      // Another opener may have detached the driver after the active check.
-      // Let the kernel claim decide ownership instead of reporting a stale
-      // detach result as the final error.
-      if (result != LIBUSB_SUCCESS && result != LIBUSB_ERROR_NOT_FOUND) {
-        close();
-        return libusbError("libusb_detach_kernel_driver", result);
-      }
-      detached_ = result == LIBUSB_SUCCESS;
-    }
     // Linux enforces exclusive interface ownership across handles/processes.
     result = libusb_claim_interface(handle_, config.interfaceNumber);
     if (result != LIBUSB_SUCCESS) {
@@ -101,11 +95,61 @@ public:
       return libusbError("libusb_claim_interface", result);
     }
     claimed_ = true;
-    result = libusb_set_interface_alt_setting(handle_, config.interfaceNumber,
-                                              config.alternateSetting);
-    if (result != LIBUSB_SUCCESS) {
+    uint8_t currentAlternate = 0;
+    result = libusb_control_transfer(
+        handle_,
+        LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_STANDARD |
+            LIBUSB_RECIPIENT_INTERFACE,
+        LIBUSB_REQUEST_GET_INTERFACE, 0, config.interfaceNumber,
+        &currentAlternate, sizeof(currentAlternate), config.transferTimeoutMs);
+    if (result != sizeof(currentAlternate)) {
       close();
-      return libusbError("libusb_set_interface_alt_setting", result);
+      if (result < 0)
+        return libusbError("libusb GET_INTERFACE", result);
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "libusb GET_INTERFACE returned length %d; "
+                                     "expected 1",
+                                     result);
+    }
+    // Reselecting the same alt resets Linux endpoint state and caused IN
+    // EPROTO/0B on this FX3 bridge after data; the device-side cause is
+    // unknown.
+    if (currentAlternate != config.alternateSetting) {
+      result = libusb_set_interface_alt_setting(handle_, config.interfaceNumber,
+                                                config.alternateSetting);
+      if (result != LIBUSB_SUCCESS) {
+        close();
+        return libusbError("libusb_set_interface_alt_setting", result);
+      }
+    }
+    if (config_.receiveChunkBytes == 0 ||
+        config_.receiveChunkBytes >
+            static_cast<size_t>(std::numeric_limits<int>::max()) ||
+        config_.receivePollTimeoutMs == 0) {
+      close();
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "CIM USB receive size or event wait is invalid");
+    }
+    readBuffer_.resize(config_.receiveChunkBytes);
+    readTransfer_ = libusb_alloc_transfer(0);
+    if (!readTransfer_) {
+      close();
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "libusb_alloc_transfer IN failed");
+    }
+    libusb_fill_bulk_transfer(
+        readTransfer_, handle_, config_.bulkInEndpoint, readBuffer_.data(),
+        static_cast<int>(readBuffer_.size()), readCompleted, this, 0);
+    int submitResult;
+    {
+      std::lock_guard<std::mutex> lock(readMutex_);
+      stopping_ = false;
+      submitResult = submitRead();
+    }
+    if (submitResult != LIBUSB_SUCCESS) {
+      close();
+      return libusbError("libusb_submit_transfer IN", submitResult);
     }
     return llvm::Error::success();
   }
@@ -114,40 +158,141 @@ public:
     if (bytes.empty())
       return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                      "CIM USB write cannot be empty");
-    return transfer(config_.bulkOutEndpoint,
-                    const_cast<unsigned char *>(bytes.data()), bytes.size(),
-                    config_.transferTimeoutMs, "libusb_bulk_transfer OUT");
+    {
+      std::lock_guard<std::mutex> lock(readMutex_);
+      if (!readError_.empty())
+        return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       readError_);
+      if (!handle_ || stopping_)
+        return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       "CIM USB device is not open");
+    }
+    const size_t request = std::min(
+        bytes.size(), static_cast<size_t>(std::numeric_limits<int>::max()));
+    int transferred = 0;
+    // A synchronous OUT can dispatch the IN callback on this thread.
+    const int result = libusb_bulk_transfer(
+        handle_, config_.bulkOutEndpoint,
+        const_cast<unsigned char *>(bytes.data()), static_cast<int>(request),
+        &transferred, config_.transferTimeoutMs);
+    if (transferred < 0 || static_cast<size_t>(transferred) > request)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "libusb_bulk_transfer OUT returned invalid length %d; requested=%zu",
+          transferred, request);
+    if (result != LIBUSB_SUCCESS)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "libusb_bulk_transfer OUT: %s (%d); requested=%zu transferred=%d; "
+          "failed prefix is not retried",
+          libusb_error_name(result), result, request, transferred);
+    {
+      std::lock_guard<std::mutex> lock(readMutex_);
+      if (!readError_.empty())
+        return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       readError_);
+    }
+    return static_cast<size_t>(transferred);
   }
 
   llvm::Expected<size_t> read(llvm::MutableArrayRef<uint8_t> bytes) override {
     if (bytes.empty())
       return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                      "CIM USB read buffer cannot be empty");
-    auto result =
-        transfer(config_.bulkInEndpoint, bytes.data(), bytes.size(),
-                 config_.receivePollTimeoutMs, "libusb_bulk_transfer IN");
-    return result;
+    while (true) {
+      {
+        std::lock_guard<std::mutex> lock(readMutex_);
+        if (!handle_)
+          return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                         "CIM USB device is not open");
+        if (!readError_.empty())
+          return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                         readError_);
+        if (readComplete_) {
+          readComplete_ = false;
+          const size_t count = static_cast<size_t>(readLength_);
+          if (count > bytes.size()) {
+            readError_ = "CIM USB IN completion exceeds the caller buffer";
+            return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                           readError_);
+          }
+          std::copy_n(readBuffer_.begin(), count, bytes.begin());
+          if (!stopping_) {
+            const int result = submitRead();
+            if (result != LIBUSB_SUCCESS) {
+              readError_ = "libusb_submit_transfer IN: " +
+                           std::string(libusb_error_name(result));
+              return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                             readError_);
+            }
+          }
+          return count;
+        }
+        if (stopping_ && !readPending_)
+          return size_t{0};
+      }
+      const int result = pumpEvents();
+      if (result != LIBUSB_SUCCESS && result != LIBUSB_ERROR_INTERRUPTED) {
+        std::lock_guard<std::mutex> lock(readMutex_);
+        readError_ = "libusb_handle_events IN: " +
+                     std::string(libusb_error_name(result));
+        return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       readError_);
+      }
+    }
   }
 
   void cancel() override {
-    // Synchronous libusb transfers are bounded by receivePollTimeoutMs, so the
-    // common receive thread exits without an unbounded driver wait.
+    {
+      std::lock_guard<std::mutex> lock(readMutex_);
+      stopping_ = true;
+      if (readPending_ && !cancelRequested_) {
+        const int result = libusb_cancel_transfer(readTransfer_);
+        if (result != LIBUSB_SUCCESS && result != LIBUSB_ERROR_NOT_FOUND)
+          readError_ = "libusb_cancel_transfer IN: " +
+                       std::string(libusb_error_name(result));
+        cancelRequested_ = true;
+      }
+    }
+    if (context_)
+      libusb_interrupt_event_handler(context_);
+  }
+
+  llvm::Expected<size_t> drain(llvm::MutableArrayRef<uint8_t> bytes) override {
+    return read(bytes);
   }
 
   void close() override {
+    cancel();
+    while (true) {
+      {
+        std::lock_guard<std::mutex> lock(readMutex_);
+        if (!readPending_)
+          break;
+      }
+      const int result = pumpEvents();
+      if (result != LIBUSB_SUCCESS && result != LIBUSB_ERROR_INTERRUPTED)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    // Submitted buffers belong to libusb until the completion callback runs.
+    if (readTransfer_)
+      libusb_free_transfer(readTransfer_);
+    readTransfer_ = nullptr;
+    readBuffer_.clear();
     if (handle_) {
       if (claimed_)
         libusb_release_interface(handle_, config_.interfaceNumber);
-      if (detached_)
-        libusb_attach_kernel_driver(handle_, config_.interfaceNumber);
       libusb_close(handle_);
     }
     handle_ = nullptr;
     claimed_ = false;
-    detached_ = false;
     if (context_)
       libusb_exit(context_);
     context_ = nullptr;
+    readComplete_ = false;
+    readLength_ = 0;
+    cancelRequested_ = false;
+    readError_.clear();
   }
 
 private:
@@ -189,30 +334,53 @@ private:
     return llvm::Error::success();
   }
 
-  llvm::Expected<size_t> transfer(uint8_t endpoint, unsigned char *data,
-                                  size_t size, uint32_t timeout,
-                                  const llvm::Twine &operation) {
-    if (!handle_)
-      return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                     "CIM USB device is not open");
-    const size_t request =
-        std::min(size, static_cast<size_t>(std::numeric_limits<int>::max()));
-    int transferred = 0;
-    const int result =
-        libusb_bulk_transfer(handle_, endpoint, data, static_cast<int>(request),
-                             &transferred, timeout);
-    if (result == LIBUSB_ERROR_TIMEOUT)
-      return static_cast<size_t>(transferred);
-    if (result != LIBUSB_SUCCESS)
-      return libusbError(operation, result);
-    return static_cast<size_t>(transferred);
+  // Called with readMutex_ held; submit does not invoke the callback inline.
+  int submitRead() {
+    const int result = libusb_submit_transfer(readTransfer_);
+    readPending_ = result == LIBUSB_SUCCESS;
+    return result;
+  }
+
+  int pumpEvents() {
+    timeval timeout{
+        static_cast<time_t>(config_.receivePollTimeoutMs / 1000),
+        static_cast<suseconds_t>((config_.receivePollTimeoutMs % 1000) * 1000)};
+    return libusb_handle_events_timeout_completed(context_, &timeout, nullptr);
+  }
+
+  static void LIBUSB_CALL readCompleted(libusb_transfer *transfer) {
+    auto &self = *static_cast<LibusbUsbDriver *>(transfer->user_data);
+    std::lock_guard<std::mutex> lock(self.readMutex_);
+    self.readPending_ = false;
+    self.readComplete_ = true;
+    self.readLength_ = transfer->actual_length;
+    if (transfer->actual_length < 0 ||
+        transfer->actual_length > transfer->length) {
+      self.readError_ = "CIM USB IN completion returned invalid length " +
+                        std::to_string(transfer->actual_length);
+    } else if (transfer->status != LIBUSB_TRANSFER_COMPLETED &&
+               !(transfer->status == LIBUSB_TRANSFER_CANCELLED &&
+                 self.stopping_)) {
+      self.readError_ =
+          "CIM USB IN status=" + std::to_string(transfer->status) +
+          " requested=" + std::to_string(transfer->length) +
+          " transferred=" + std::to_string(transfer->actual_length);
+    }
   }
 
   libusb_context *context_ = nullptr;
   libusb_device_handle *handle_ = nullptr;
   UsbCIMDeviceConfig config_;
   bool claimed_ = false;
-  bool detached_ = false;
+  std::mutex readMutex_;
+  libusb_transfer *readTransfer_ = nullptr;
+  std::vector<uint8_t> readBuffer_;
+  std::string readError_;
+  int readLength_ = 0;
+  bool readPending_ = false;
+  bool readComplete_ = false;
+  bool stopping_ = true;
+  bool cancelRequested_ = false;
 };
 } // namespace
 
