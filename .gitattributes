@@ -1,0 +1,2 @@
+# Preserve original vendor files and their checksums on every platform.
+/third_party/cyapi/** -text

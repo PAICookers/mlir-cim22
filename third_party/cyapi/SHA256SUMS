@@ -1,0 +1,5 @@
+386afa0c5c8c8255545d4cfa2f1773acb33d5e00cfde42b264c2267435c01bc9  library/cpp/inc/CyAPI.h
+5f91da3d82420328de18db10686f9d2af9dd8a67ef974c0019fcf1517beb183b  library/cpp/inc/CyUSB30_def.h
+c50526f07ee32eac35e5ec252052617cd9c321f8b232a01693fb0c725dec39b9  library/cpp/lib/x64/CyAPI.lib
+bc84859620251643a9a3c8d1f5cf841c62162f2858be587c1d1b650be5ae00af  license/license.rtf
+df467a3dc4b7487ad4132adcea35a36b70ec0b255469689f869fbe0cfa63a308  license/license.txt
