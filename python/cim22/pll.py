@@ -225,8 +225,6 @@ def select_pll_clock(frequency_mhz: float) -> PLLClockSetting:
     Unlisted targets raise ValueError. Neither serial commands nor nearest
     frequencies are calculated at runtime.
     """
-    if type(frequency_mhz) not in (int, float):
-        raise TypeError("clock_frequency_mhz must be an int or float")
     setting = next(
         (
             row

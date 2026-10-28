@@ -220,6 +220,8 @@ compiled = torch.compile(
 
 频率选项将该行的同一配置用于 Config、Work、Readback 三阶段，以 9600/8N1、高字节优先发送并检查匹配回显。需要三个阶段分别配置时，仍可使用 `pll=PLLConfig(port, config_hex, work_hex, readback_hex)`；原始 `pll` 与 `clock_frequency_mhz` 不能同时指定。
 
+Python 配置检查六位 HEX 格式、数值范围和选项冲突；原生层在打开 USB 前统一检查原始 PLL 命令的 VCO 下限。频率入口按表查找，未匹配到表项时抛出 `ValueError`。
+
 顶层导出 `Session`、`UsbConfig` 和 `PLLConfig`。常规推理使用 `torch.compile`；`Session` 用于原始回包等诊断。三阶段原始 HEX 配置需先从 `cim22` 导入 `PLLConfig`，并使用已确认适合板卡的参数。
 
 省略串口选项时，两平台均使用用户手动设置的时钟；Linux 上指定串口设备不存在时也使用手动时钟。`clock_setting` 只表示选中表项，不证明时钟已发送、已生效或回显已通过。用户需在运行前手动完成所需时钟设置。Linux 串口存在但权限不足、通信失败或回显不匹配时仍返回错误。省略全部 PLL/频率选项保持原有手动时钟路径。

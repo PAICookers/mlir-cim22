@@ -88,15 +88,24 @@ def test_stored_serial_fields_agree_with_table_frequencies(
 
 @pytest.mark.parametrize(
     "value",
-    [0, -1, 15.74, 26, 283.2, 1001, float("inf"), float("nan"), 10**400],
+    [
+        0,
+        -1,
+        15.74,
+        26,
+        283.2,
+        1001,
+        float("inf"),
+        float("nan"),
+        10**400,
+        True,
+        False,
+        "24",
+        None,
+        object(),
+    ],
 )
-def test_unlisted_frequencies_are_not_synthesized(value: float) -> None:
+def test_unlisted_frequencies_are_not_synthesized(value: object) -> None:
     # 26 MHz is physically synthesizable but absent from the supplier target rows.
     with pytest.raises(ValueError, match="not a listed target"):
-        select_pll_clock(value)
-
-
-@pytest.mark.parametrize("value", [True, False, "24", None, object()])
-def test_frequency_rejects_non_numeric_inputs(value: object) -> None:
-    with pytest.raises(TypeError, match="clock_frequency_mhz"):
         select_pll_clock(value)

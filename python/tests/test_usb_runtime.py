@@ -54,7 +54,6 @@ def usb_config() -> UsbConfig:
         ("response_timeout_ms", 1.5, TypeError),
         ("vendor_id", True, TypeError),
         ("bus_number", 1, ValueError),
-        ("pll", "/dev/ttyUSB0", TypeError),
     ],
 )
 def test_usb_config_rejects_truncation(
@@ -73,27 +72,23 @@ def pll_config() -> PLLConfig:
 
 
 @pytest.mark.parametrize(
-    ("field", "value", "error"),
+    ("field", "value"),
     [
-        ("port", 1, TypeError),
-        ("port", "", ValueError),
-        ("port", "pll\0other", ValueError),
-        ("config_hex", 0x2828A4, TypeError),
-        ("config_hex", "2828A", ValueError),
-        ("config_hex", "02828A4", ValueError),
-        ("work_hex", "0x2828A4", ValueError),
-        ("work_hex", "28 8A4", ValueError),
-        ("readback_hex", "2828AG", ValueError),
-        ("readback_hex", "000000", ValueError),
+        ("port", ""),
+        ("port", "pll\0other"),
+        ("config_hex", "2828A"),
+        ("config_hex", "02828A4"),
+        ("work_hex", "0x2828A4"),
+        ("work_hex", "28 8A4"),
+        ("readback_hex", "2828AG"),
     ],
 )
 def test_pll_config_rejects_invalid_commands(
     pll_config: PLLConfig,
     field: str,
-    value: object,
-    error: type[Exception],
+    value: str,
 ) -> None:
-    with pytest.raises(error, match=field):
+    with pytest.raises(ValueError, match=field):
         replace(pll_config, **{field: value})
 
 
@@ -224,6 +219,27 @@ def test_usb_session_checks(
         compiled.configure_usb(usb_config)
     with pytest.raises(RuntimeError, match="closed"):
         compiled.capture_usb(0, inputs)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("field", ["config_hex", "work_hex", "readback_hex"])
+def test_native_rejects_pll_limits_before_opening_usb(
+    model_library: "ModelLibrary",
+    transaction_artifact: proto.ModelArtifact,
+    usb_config: UsbConfig,
+    pll_config: PLLConfig,
+    field: str,
+) -> None:
+    transaction_artifact.backend = proto.USB
+    # Valid HEX syntax reaches native validation; no USB device is opened.
+    pll = replace(pll_config, **{field: "000000"})
+    with (
+        Session(
+            model_library(transaction_artifact.SerializeToString(), 1)
+        ) as session,
+        pytest.raises(RuntimeError, match="PLL VCO must be at least 250 MHz"),
+    ):
+        session.configure_usb(replace(usb_config, pll=pll))
 
 
 @pytest.mark.integration
@@ -432,27 +448,21 @@ def test_frequency_without_serial_keeps_manual_clock(
 
 
 @pytest.mark.parametrize(
-    ("changes", "error", "message"),
+    ("changes", "message"),
     [
-        ({"pll_port": "/dev/pll"}, ValueError, "requires clock_frequency_mhz"),
-        ({"clock_frequency_mhz": 24, "pll_port": 1}, TypeError, "pll_port"),
-        ({"clock_frequency_mhz": 24, "pll_port": ""}, ValueError, "pll_port"),
-        (
-            {"clock_frequency_mhz": 24, "pll_port": "a\0b"},
-            ValueError,
-            "pll_port",
-        ),
-        ({"clock_frequency_mhz": True}, TypeError, "clock_frequency_mhz"),
-        ({"clock_frequency_mhz": 26}, ValueError, "not a listed target"),
+        ({"pll_port": "/dev/pll"}, "requires clock_frequency_mhz"),
+        ({"clock_frequency_mhz": 24, "pll_port": ""}, "pll_port"),
+        ({"clock_frequency_mhz": 24, "pll_port": "a\0b"}, "pll_port"),
+        ({"clock_frequency_mhz": True}, "not a listed target"),
+        ({"clock_frequency_mhz": 26}, "not a listed target"),
     ],
 )
 def test_frequency_usb_configuration_validation(
     usb_config: UsbConfig,
     changes: dict[str, object],
-    error: type[Exception],
     message: str,
 ) -> None:
-    with pytest.raises(error, match=message):
+    with pytest.raises(ValueError, match=message):
         replace(usb_config, **changes)
 
 

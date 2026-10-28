@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from importlib.resources import files
 from pathlib import Path
 from types import TracebackType
+from typing import Literal, Self
 
 import numpy as np
 from numpy.typing import NDArray
@@ -42,6 +43,8 @@ def _release_session(
 class PLLConfig:
     """Optional serial commands for Config, Work and Readback clock phases.
 
+    Commands are six-digit HEX strings; native configuration checks PLL limits
+    before opening USB.
     On Linux, a missing serial device uses the manually configured clock;
     an available device must return an exact echo. Windows serial control is
     unsupported: omit PLLConfig and pll_port and configure the clock manually.
@@ -53,23 +56,17 @@ class PLLConfig:
     readback_hex: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.port, str):
-            raise TypeError("port must be a string")
         if not self.port or "\0" in self.port:
             raise ValueError("port must be non-empty and contain no NUL")
-        for name in ("config_hex", "work_hex", "readback_hex"):
-            value = getattr(self, name)
-            if not isinstance(value, str):
-                raise TypeError(f"{name} must be a six-digit HEX string")
+        for name, value in (
+            ("config_hex", self.config_hex),
+            ("work_hex", self.work_hex),
+            ("readback_hex", self.readback_hex),
+        ):
             if len(value) != 6 or any(
                 char not in "0123456789abcdefABCDEF" for char in value
             ):
                 raise ValueError(f"{name} must be a six-digit HEX string")
-            word = int(value, 16)
-            nf = ((word >> 18) & 0x3F) + 1
-            nr = ((word >> 14) & 0x0F) + 1
-            if 24 * nf < 250 * nr:
-                raise ValueError(f"{name} PLL VCO must be at least 250 MHz")
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +88,7 @@ class UsbConfig:
     alternate_setting: int = 0
     physical_link: int = 0
     logical_channel: int = 3
-    word_byte_order: int = 0
+    word_byte_order: Literal[0, 1] = 0
     transfer_timeout_ms: int = 5000
     receive_poll_timeout_ms: int = 200
     response_timeout_ms: int = 7000
@@ -101,23 +98,28 @@ class UsbConfig:
     clock_setting: PLLClockSetting | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
-        for name, lower, upper in (
-            ("vendor_id", 1, 0xFFFF),
-            ("product_id", 1, 0xFFFF),
-            ("bulk_in_endpoint", 0x81, 0x8F),
-            ("bulk_out_endpoint", 1, 0x0F),
-            ("bus_number", 0, 0xFF),
-            ("device_address", 0, 0xFF),
-            ("interface_number", 0, 0xFF),
-            ("alternate_setting", 0, 0xFF),
-            ("physical_link", 0, 3),
-            ("logical_channel", 0, 7),
-            ("word_byte_order", 0, 1),
-            ("transfer_timeout_ms", 1, 0xFFFFFFFF),
-            ("receive_poll_timeout_ms", 1, 0xFFFFFFFF),
-            ("response_timeout_ms", 1, 0xFFFFFFFF),
+        # ctypes wraps integers, so check wire ranges before conversion.
+        for name, value, lower, upper in (
+            ("vendor_id", self.vendor_id, 1, 0xFFFF),
+            ("product_id", self.product_id, 1, 0xFFFF),
+            ("bulk_in_endpoint", self.bulk_in_endpoint, 0x81, 0x8F),
+            ("bulk_out_endpoint", self.bulk_out_endpoint, 1, 0x0F),
+            ("bus_number", self.bus_number, 0, 0xFF),
+            ("device_address", self.device_address, 0, 0xFF),
+            ("interface_number", self.interface_number, 0, 0xFF),
+            ("alternate_setting", self.alternate_setting, 0, 0xFF),
+            ("physical_link", self.physical_link, 0, 3),
+            ("logical_channel", self.logical_channel, 0, 7),
+            ("word_byte_order", self.word_byte_order, 0, 1),
+            ("transfer_timeout_ms", self.transfer_timeout_ms, 1, 0xFFFFFFFF),
+            (
+                "receive_poll_timeout_ms",
+                self.receive_poll_timeout_ms,
+                1,
+                0xFFFFFFFF,
+            ),
+            ("response_timeout_ms", self.response_timeout_ms, 1, 0xFFFFFFFF),
         ):
-            value = getattr(self, name)
             if type(value) is not int:
                 raise TypeError(f"{name} must be an integer")
             if not lower <= value <= upper:
@@ -127,11 +129,7 @@ class UsbConfig:
                 raise ValueError("bus_number is not supported by Windows CyAPI")
         elif (self.bus_number == 0xFF) != (self.device_address == 0xFF):
             raise ValueError("Specify both bus_number and device_address")
-        if self.pll is not None and not isinstance(self.pll, PLLConfig):
-            raise TypeError("pll must be a PLLConfig or None")
         if self.pll_port is not None:
-            if not isinstance(self.pll_port, str):
-                raise TypeError("pll_port must be a string or None")
             if not self.pll_port or "\0" in self.pll_port:
                 raise ValueError(
                     "pll_port must be non-empty and contain no NUL"
@@ -276,8 +274,6 @@ class Session:
 
     def configure_usb(self, config: UsbConfig) -> None:
         """Open USB with optional PLL control or a manually configured clock."""
-        if not isinstance(config, UsbConfig):
-            raise TypeError("config must be a UsbConfig")
         with self._lock:
             self._require_open()
             argument_types = [
@@ -452,7 +448,7 @@ class _UsbConfig(ctypes.Structure):
     ]
 
     @classmethod
-    def from_config(cls, config: UsbConfig) -> "_UsbConfig":
+    def from_config(cls, config: UsbConfig) -> Self:
         return cls(
             config.vendor_id,
             config.product_id,
@@ -480,7 +476,7 @@ class _PLLConfig(ctypes.Structure):
     ]
 
     @classmethod
-    def from_config(cls, config: PLLConfig) -> "_PLLConfig":
+    def from_config(cls, config: PLLConfig) -> Self:
         return cls(
             os.fsencode(config.port),
             int(config.config_hex, 16),
