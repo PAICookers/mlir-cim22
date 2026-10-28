@@ -1,6 +1,9 @@
-name: Build Linux wheels
+name: Build Linux and Windows wheels
 
 on:
+  push:
+    branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
 env:
@@ -121,6 +124,11 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
 
+      - name: Set release or development wheel version
+        run: |
+          python3 .github/scripts/test_prepare_wheel.py
+          python3 .github/scripts/prepare-wheel.py
+
       - name: Build native wheel in manylinux
         env:
           PROJECT_COMMIT: ${{ github.sha }}
@@ -147,7 +155,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          path: python/dist/manylinux/SHA256SUMS
+          path: python/dist/manylinux/SHA256SUMS-linux
           archive: false
           if-no-files-found: error
           retention-days: 14
@@ -167,13 +175,13 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          pattern: mlir_cim22-*.whl
+          pattern: mlir_cim22-*-manylinux*.whl
           merge-multiple: true
           path: python/dist/manylinux
 
       - uses: actions/download-artifact@v8
         with:
-          name: SHA256SUMS
+          name: SHA256SUMS-linux
           path: python/dist/manylinux
 
       - uses: actions/setup-python@v7
@@ -182,7 +190,92 @@ jobs:
 
       - name: Validate checksum
         working-directory: python/dist/manylinux
-        run: sha256sum --check SHA256SUMS
+        run: sha256sum --check SHA256SUMS-linux
 
       - name: Validate installed wheel outside checkout
         run: bash .github/scripts/test-wheel.sh python/dist/manylinux
+
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 360
+    env:
+      CMAKE_GENERATOR: Ninja
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install build tools
+        run: python -m pip install uv==0.13.1 ninja==1.13.2 wheel
+
+      - uses: actions/cache@v6
+        id: windows-sdk
+        with:
+          path: .cache/windows/llvm-sdk
+          key: llvm-sdk-windows-2022-x64-${{ env.LLVM_COMMIT }}-${{ hashFiles('.github/scripts/build-llvm-sdk.ps1') }}
+
+      - uses: actions/checkout@v7
+        if: steps.windows-sdk.outputs.cache-hit != 'true'
+        with:
+          repository: llvm/llvm-project
+          ref: ${{ env.LLVM_COMMIT }}
+          path: .cache/windows/llvm-source
+          persist-credentials: false
+
+      - name: Build static Windows LLVM/MLIR SDK
+        if: steps.windows-sdk.outputs.cache-hit != 'true'
+        run: .github/scripts/build-llvm-sdk.ps1 -SourceDir .cache/windows/llvm-source -SdkDir .cache/windows/llvm-sdk
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+
+      - name: Build frontend
+        working-directory: web
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Set release or development wheel version
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python .github/scripts/test_prepare_wheel.py
+          python .github/scripts/prepare-wheel.py
+
+      - name: Build Windows wheel with USB support
+        run: .github/scripts/build-windows-wheel.ps1 -SdkDir .cache/windows/llvm-sdk -CyapiRoot third_party/cyapi -DistDir python/dist/windows
+
+      - name: Validate installed Windows wheel outside checkout
+        run: .github/scripts/test-windows-wheel.ps1 -DistDir python/dist/windows
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: python/dist/windows/*.whl
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: python/dist/windows/SHA256SUMS-windows
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
