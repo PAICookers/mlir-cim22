@@ -257,6 +257,7 @@ jobs:
       - name: Set release or development wheel version
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
+          .github/scripts/test-windows-build-arguments.ps1
           python .github/scripts/test_prepare_wheel.py
           python .github/scripts/prepare-wheel.py
 

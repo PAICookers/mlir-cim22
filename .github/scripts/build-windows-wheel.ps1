@@ -46,10 +46,10 @@ try {
     if ($sdists.Count -ne 1) { throw 'Expected exactly one source archive' }
     tar -xzf $sdists[0].FullName --strip-components=1 -C $source.FullName
     uv build --python 3.12 $source.FullName --wheel --out-dir "$stageDir/wheel" `
-        -Ccmake.build-type=Release "-Ccmake.define.MLIR_DIR=$env:MLIR_DIR" `
-        -Ccmake.define.CIM22_ENABLE_USB=ON "-Ccmake.define.CYAPI_ROOT=$CyapiRoot" `
-        -Ccmake.define.CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL `
-        -Ccmake.define.CMAKE_JOB_POOLS=link=1 -Ccmake.define.CMAKE_JOB_POOL_LINK=link
+        '-Ccmake.build-type=Release' "-Ccmake.define.MLIR_DIR=$env:MLIR_DIR" `
+        '-Ccmake.define.CIM22_ENABLE_USB=ON' "-Ccmake.define.CYAPI_ROOT=$CyapiRoot" `
+        '-Ccmake.define.CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL' `
+        '-Ccmake.define.CMAKE_JOB_POOLS=link=1' '-Ccmake.define.CMAKE_JOB_POOL_LINK=link'
     $wheels = @(Get-ChildItem "$stageDir/wheel/*.whl")
     if ($wheels.Count -ne 1) { throw 'Expected exactly one Windows wheel' }
     python -m wheel unpack $wheels[0].FullName --dest "$stageDir/unpacked"
