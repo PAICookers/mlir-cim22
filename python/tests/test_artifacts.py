@@ -179,7 +179,10 @@ def test_embedded_protobuf_contract(
     assert model.kernels
 
 
-def test_model_lifetime_and_unicode_path(tmp_path: Path) -> None:
+@pytest.mark.parametrize("owner_first", [True, False])
+def test_model_lifetime_and_unicode_path(
+    tmp_path: Path, owner_first: bool
+) -> None:
     """Two models and duplicate loads retain their own code and release files."""
     folder = tmp_path / "\u6a21\u578b with spaces"
     first_path = folder / f"first{MODEL_SUFFIX}"
@@ -209,9 +212,17 @@ def test_model_lifetime_and_unicode_path(tmp_path: Path) -> None:
         ) as second,
         Session(first_path) as duplicate,
     ):
+        if MODEL_SUFFIX == ".dll":
+            private_dlls = list(folder.glob(".cim22-*/model.dll"))
+            assert len(private_dlls) == 2
+            assert all(not first_path.samefile(path) for path in private_dlls)
         np.testing.assert_array_equal(first(value.numpy())[0], 2)
-        first.close()
-        np.testing.assert_array_equal(duplicate(value.numpy())[0], 2)
+        if owner_first:
+            first.close()
+            np.testing.assert_array_equal(duplicate(value.numpy())[0], 2)
+        else:
+            duplicate.close()
+            np.testing.assert_array_equal(first(value.numpy())[0], 2)
         np.testing.assert_array_equal(second(value.numpy())[0], 3)
     assert not list(folder.glob(".cim22-*"))
     # Deletion fails on Windows if any loader still owns the DLL.

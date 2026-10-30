@@ -174,9 +174,15 @@ def _compile(
                 for path in (linalg, packet, object_file):
                     shutil.copyfile(path, debug_dir / path.name)
             if artifact_path is not None:
-                # Atomic publication on the same filesystem, without replacing
-                # an existing artifact if a concurrent compilation won the race.
-                os.link(shared, artifact_path)
+                if os.name == "nt":
+                    # A saved DLL must not keep the Session's private DLL locked.
+                    publication = folder / "artifact.dll"
+                    shutil.copyfile(shared, publication)
+                    # Windows rename is atomic and refuses an existing target.
+                    os.rename(publication, artifact_path)
+                else:
+                    # Atomic publication without replacing a concurrent winner.
+                    os.link(shared, artifact_path)
             if os.name == "nt":
                 # Retain only the locked DLL until native Session destruction.
                 for path in folder.iterdir():
