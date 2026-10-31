@@ -23,9 +23,11 @@ enum DataType {
   INT8 = 1;
   BF16 = 2;
   FP32 = 3;
+  INT32 = 4;
 }
 
-// Boundary tensors are static, contiguous CPU FP32; empty dimensions is rank 0.
+// Boundary tensors are static, contiguous CPU INT8, FP32 or INT32;
+// empty dimensions is rank 0. BF16 is reserved for transaction payloads.
 message TensorSignature {
   repeated int64 dimensions = 1 [packed = true];
   DataType data_type = 2;

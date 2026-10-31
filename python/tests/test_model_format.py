@@ -31,6 +31,9 @@ def test_protobuf_interoperability(
         assert session.num_transactions == int(with_transaction)
         assert session.input_shapes == ()
         assert session.output_shapes == ((),)
+        assert tuple(dtype.name for dtype in session.output_dtypes) == (
+            "float32",
+        )
 
 
 @pytest.mark.parametrize(
@@ -39,6 +42,8 @@ def test_protobuf_interoperability(
         "empty",
         "truncated",
         "dtype",
+        "unspecified-dtype",
+        "bf16-boundary",
         "shape",
         "overflow",
         "missing-transaction",
@@ -55,6 +60,10 @@ def test_invalid_model_metadata(
     match failure:
         case "dtype":
             model.outputs[0].data_type = 99
+        case "unspecified-dtype":
+            model.outputs[0].data_type = proto.UNSPECIFIED
+        case "bf16-boundary":
+            model.outputs[0].data_type = proto.BF16
         case "shape":
             model.outputs[0].dimensions.append(-1)
         case "overflow":

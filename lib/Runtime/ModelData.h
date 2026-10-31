@@ -8,9 +8,13 @@
 
 namespace cim22::runtime {
 enum class RuntimeBackend { Software, USB };
+// Numeric values match the artifact DataType and runtime dtype query ABI.
+enum class BoundaryDataType : int64_t { Int8 = 1, FP32 = 3, Int32 = 4 };
 
 struct ModelData {
   llvm::SmallVector<llvm::SmallVector<int64_t>> shapes;
+  // Parallel to shapes; every boundary tensor has an explicit element type.
+  llvm::SmallVector<BoundaryDataType> types;
   std::vector<execution::CIMTransaction> transactions;
   std::vector<std::string> kernelNames;
   int64_t numInputs = 0;

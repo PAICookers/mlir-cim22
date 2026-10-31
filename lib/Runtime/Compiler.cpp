@@ -81,17 +81,33 @@ void addModelDescriptor(llvm::Module &module, StringRef entryName,
 LogicalResult
 defineDispatchWrapper(func::FuncOp stub, int64_t id, func::FuncOp dispatchFunc,
                       const ::cim22::execution::CIMTransaction &transaction) {
+  Type inputType =
+      cast<MemRefType>(dispatchFunc.getArgumentTypes()[1]).getElementType();
+  Type outputType =
+      cast<MemRefType>(dispatchFunc.getArgumentTypes()[2]).getElementType();
+  bool int8 = inputType.isInteger(8);
+  auto dataType = int8 ? ::cim22::execution::CIMDataType::Int8
+                       : ::cim22::execution::CIMDataType::BF16;
+  if (llvm::any_of(
+          transaction.getDynamicInputs(),
+          [&](const auto &binding) { return binding.dataType != dataType; }) ||
+      llvm::any_of(transaction.getReadbacks(), [&](const auto &binding) {
+        return binding.dataType != dataType;
+      }))
+    return stub.emitError("runtime transaction has incompatible data types");
   for (Type type : stub.getArgumentTypes()) {
     auto tensor = dyn_cast<RankedTensorType>(type);
     if (!tensor || tensor.getShape() != ArrayRef<int64_t>{64} ||
-        !tensor.getElementType().isBF16())
-      return stub.emitError("runtime supports BF16 transaction inputs only");
+        tensor.getEncoding() || tensor.getElementType() != inputType)
+      return stub.emitError("runtime transaction input type mismatch");
   }
   for (Type type : stub.getResultTypes()) {
     auto tensor = dyn_cast<RankedTensorType>(type);
     if (!tensor || tensor.getShape() != ArrayRef<int64_t>{16} ||
-        !tensor.getElementType().isBF16())
-      return stub.emitError("runtime supports BF16 transaction outputs only");
+        tensor.getEncoding() ||
+        (int8 ? !tensor.getElementType().isInteger(21)
+              : tensor.getElementType() != outputType))
+      return stub.emitError("runtime transaction output type mismatch");
   }
   if (stub.getNumResults() != transaction.getReadbacks().size())
     return stub.emitError("runtime readback count differs from Host results");
@@ -102,12 +118,12 @@ defineDispatchWrapper(func::FuncOp stub, int64_t id, func::FuncOp dispatchFunc,
       builder, loc,
       MemRefType::get(
           {static_cast<int64_t>(transaction.getDynamicInputs().size()), 64},
-          builder.getBF16Type()));
+          inputType));
   Value output = memref::AllocaOp::create(
       builder, loc,
       MemRefType::get(
           {static_cast<int64_t>(transaction.getReadbacks().size()), 16},
-          builder.getBF16Type()));
+          outputType));
   Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
   Value bound = arith::ConstantIndexOp::create(builder, loc, 64);
   Value one = arith::ConstantIndexOp::create(builder, loc, 1);
@@ -142,6 +158,11 @@ defineDispatchWrapper(func::FuncOp stub, int64_t id, func::FuncOp dispatchFunc,
         [&](OpBuilder &nested, Location at, ValueRange indices) {
           Value value = memref::LoadOp::create(nested, at, output,
                                                ValueRange{row, indices[0]});
+          // Runners provide signed i21 tile values in i32 storage.
+          if (int8)
+            value = arith::TruncIOp::create(
+                nested, at, cast<RankedTensorType>(type).getElementType(),
+                value);
           tensor::YieldOp::create(nested, at, value);
         }));
   }
@@ -183,16 +204,25 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
   for (Type type : boundary) {
     auto tensor = dyn_cast<RankedTensorType>(type);
     if (!tensor || !tensor.hasStaticShape() || tensor.getEncoding() ||
-        !tensor.getElementType().isF32() ||
+        !(tensor.getElementType().isF32() ||
+          tensor.getElementType().isSignlessInteger(8) ||
+          tensor.getElementType().isSignlessInteger(32)) ||
         llvm::any_of(tensor.getShape(), [](int64_t dim) { return dim <= 0; }))
-      return entry.emitError("runtime boundary requires static FP32 tensors");
+      return entry.emitError(
+          "runtime boundary requires static FP32, i8 or i32 tensors");
     session.model.shapes.emplace_back(tensor.getShape());
+    session.model.types.push_back(
+        tensor.getElementType().isF32()
+            ? ::cim22::runtime::BoundaryDataType::FP32
+        : tensor.getElementType().isInteger(8)
+            ? ::cim22::runtime::BoundaryDataType::Int8
+            : ::cim22::runtime::BoundaryDataType::Int32);
   }
   OpBuilder builder(&context);
   builder.setInsertionPointToEnd(host.getBody());
-  if (host.lookupSymbol("cim22_dispatch"))
-    return host.emitError(
-        "reserved runtime symbol cim22_dispatch already exists");
+  if (host.lookupSymbol("cim22_dispatch") ||
+      host.lookupSymbol("cim22_dispatch_int8"))
+    return host.emitError("reserved runtime dispatch symbol already exists");
   auto dispatchFunc = func::FuncOp::create(
       builder, host.getLoc(), "cim22_dispatch",
       builder.getFunctionType(
@@ -202,6 +232,15 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
           {}));
   dispatchFunc.setPrivate();
   dispatchFunc->setAttr("llvm.emit_c_interface", builder.getUnitAttr());
+  auto dispatchInt8 = func::FuncOp::create(
+      builder, host.getLoc(), "cim22_dispatch_int8",
+      builder.getFunctionType(
+          {builder.getI64Type(),
+           MemRefType::get({ShapedType::kDynamic, 64}, builder.getI8Type()),
+           MemRefType::get({ShapedType::kDynamic, 16}, builder.getI32Type())},
+          {}));
+  dispatchInt8.setPrivate();
+  dispatchInt8->setAttr("llvm.emit_c_interface", builder.getUnitAttr());
   for (auto kernel : device.getOps<func::FuncOp>()) {
     auto stub = host.lookupSymbol<func::FuncOp>(kernel.getSymName());
     if (!stub || !stub.isDeclaration() ||
@@ -229,9 +268,14 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
     }
     single->getBody()->push_back(kernel->clone());
     auto transaction = mlir::cim22::target::compileCIMTransaction(*single);
-    if (failed(transaction) ||
-        failed(defineDispatchWrapper(stub, session.model.transactions.size(),
-                                     dispatchFunc, *transaction)))
+    if (failed(transaction))
+      return failure();
+    bool int8 = !transaction->getReadbacks().empty() &&
+                transaction->getReadbacks().front().dataType ==
+                    ::cim22::execution::CIMDataType::Int8;
+    if (failed(defineDispatchWrapper(stub, session.model.transactions.size(),
+                                     int8 ? dispatchInt8 : dispatchFunc,
+                                     *transaction)))
       return failure();
     session.model.transactions.push_back(std::move(*transaction));
     session.model.kernelNames.push_back(kernel.getSymName().str());
@@ -337,7 +381,11 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
         {mangle("_mlir_ciface_cim22_dispatch"),
          llvm::orc::ExecutorSymbolDef(
              llvm::orc::ExecutorAddr::fromPtr(&_mlir_ciface_cim22_dispatch),
-             llvm::JITSymbolFlags::Exported)}};
+             llvm::JITSymbolFlags::Exported)},
+        {mangle("_mlir_ciface_cim22_dispatch_int8"),
+         llvm::orc::ExecutorSymbolDef(llvm::orc::ExecutorAddr::fromPtr(
+                                          &_mlir_ciface_cim22_dispatch_int8),
+                                      llvm::JITSymbolFlags::Exported)}};
   });
   auto invoke = (*engine)->lookupPacked(("_mlir_ciface_" + entryName).str());
   if (!invoke) {

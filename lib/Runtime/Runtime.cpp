@@ -10,6 +10,7 @@
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
 #include <cstring>
+#include <type_traits>
 #ifdef __linux__
 #include <dlfcn.h>
 #endif
@@ -80,27 +81,61 @@ extern "C" void *cim22_session_load_shared(const char *path, char *error,
   return session.release();
 }
 
-extern "C" void
-_mlir_ciface_cim22_dispatch(int64_t id, StridedMemRefType<uint16_t, 2> *input,
-                            StridedMemRefType<uint16_t, 2> *output) {
-  Session &session = *activeSession;
-  std::fill_n(output->data + output->offset,
-              output->sizes[0] * output->sizes[1], uint16_t{0});
-  if (!session.error.empty())
+namespace {
+// Share descriptor validation and error propagation across the two tile ABIs.
+template <typename Input, typename Output>
+void dispatch(int64_t id, StridedMemRefType<Input, 2> *input,
+              StridedMemRefType<Output, 2> *output) {
+  if (!activeSession)
     return;
+  Session &session = *activeSession;
+  constexpr bool int8 = std::is_same_v<Input, int8_t>;
+  constexpr auto dataType = int8 ? ::cim22::execution::CIMDataType::Int8
+                                 : ::cim22::execution::CIMDataType::BF16;
   if (id < 0 || static_cast<size_t>(id) >= session.model.transactions.size() ||
+      !input || !output || !input->data || !output->data || input->offset < 0 ||
+      output->offset < 0 || input->sizes[0] < 0 || output->sizes[0] < 0 ||
       input->sizes[1] != 64 || input->strides[1] != 1 ||
       input->strides[0] != 64 || output->sizes[1] != 16 ||
       output->strides[1] != 1 || output->strides[0] != 16) {
     session.error = "invalid native CIM dispatch descriptor";
     return;
   }
+  const auto &transaction = session.model.transactions[id];
+  if (static_cast<size_t>(input->sizes[0]) !=
+          transaction.getDynamicInputs().size() ||
+      static_cast<size_t>(output->sizes[0]) !=
+          transaction.getReadbacks().size() ||
+      llvm::any_of(
+          transaction.getDynamicInputs(),
+          [](const auto &binding) { return binding.dataType != dataType; }) ||
+      llvm::any_of(transaction.getReadbacks(), [](const auto &binding) {
+        return binding.dataType != dataType;
+      })) {
+    session.error = "native CIM dispatch transaction type or count mismatch";
+    return;
+  }
+  std::fill_n(output->data + output->offset,
+              output->sizes[0] * output->sizes[1], Output{0});
+  if (!session.error.empty())
+    return;
   SmallVector<::cim22::execution::CIMInputView> inputs;
   SmallVector<::cim22::execution::CIMOutputView> outputs;
-  for (int64_t i = 0; i < input->sizes[0]; ++i)
-    inputs.push_back({{}, {input->data + input->offset + i * 64, 64}});
-  for (int64_t i = 0; i < output->sizes[0]; ++i)
-    outputs.push_back({{}, {output->data + output->offset + i * 16, 16}});
+  for (int64_t i = 0; i < input->sizes[0]; ++i) {
+    llvm::ArrayRef<Input> row(input->data + input->offset + i * 64, 64);
+    if constexpr (int8)
+      inputs.push_back({row, {}});
+    else
+      inputs.push_back({{}, row});
+  }
+  for (int64_t i = 0; i < output->sizes[0]; ++i) {
+    llvm::MutableArrayRef<Output> row(output->data + output->offset + i * 16,
+                                      16);
+    if constexpr (int8)
+      outputs.push_back({row, {}});
+    else
+      outputs.push_back({{}, row});
+  }
   if (!session.runner) {
     session.error =
         session.model.backend == cim22::runtime::RuntimeBackend::USB
@@ -110,10 +145,23 @@ _mlir_ciface_cim22_dispatch(int64_t id, StridedMemRefType<uint16_t, 2> *input,
   }
   ::cim22::execution::CIMRunOutputs runOutputs{outputs};
   ++session.dispatches;
-  if (auto error = session.runner->run(session.model.transactions[id], {inputs},
-                                       runOutputs))
+  if (auto error = session.runner->run(transaction, {inputs}, runOutputs))
     session.error =
         session.model.kernelNames[id] + ": " + llvm::toString(std::move(error));
+}
+} // namespace
+
+extern "C" void
+_mlir_ciface_cim22_dispatch(int64_t id, StridedMemRefType<uint16_t, 2> *input,
+                            StridedMemRefType<uint16_t, 2> *output) {
+  dispatch(id, input, output);
+}
+
+extern "C" void
+_mlir_ciface_cim22_dispatch_int8(int64_t id,
+                                 StridedMemRefType<int8_t, 2> *input,
+                                 StridedMemRefType<int32_t, 2> *output) {
+  dispatch(id, input, output);
 }
 
 extern "C" void cim22_session_destroy(void *handle) {
@@ -140,6 +188,13 @@ extern "C" int64_t cim22_session_dim(void *handle, int64_t tensor,
   return axis >= 0 && axis < cim22_session_rank(handle, tensor)
              ? s->model.shapes[tensor][axis]
              : -1;
+}
+extern "C" int64_t cim22_session_dtype(void *handle, int64_t tensor) {
+  auto *session = static_cast<Session *>(handle);
+  if (!session || tensor < 0 ||
+      static_cast<size_t>(tensor) >= session->model.shapes.size())
+    return -1;
+  return static_cast<int64_t>(session->model.types[tensor]);
 }
 extern "C" int64_t cim22_session_num_transactions(void *handle) {
   return handle ? static_cast<Session *>(handle)->model.transactions.size()
