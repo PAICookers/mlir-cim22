@@ -86,7 +86,7 @@ uv pip install --python .venv/Scripts/python.exe ./downloads/torch_mlir-20260923
 .venv/Scripts/python.exe python/examples/torch_compile.py
 ```
 
-应用中的 `torch.compile` 调用相同。Windows 生成、加载 `.dll`，Linux 使用 `.so`；两者不能跨平台加载。已保存的模型可由 `Session(Path("model.dll"))` 加载，不再需要 C 链接器或 torch-mlir，仍需匹配的 CIM22 runtime 和 MSVC x64 运行库。`Session` 接收内部扁平 NumPy FP32 输入，形状可通过 `input_shapes` 查看，不能代替 PyTorch 包装层处理原始模型的状态和嵌套返回值。
+应用中的 `torch.compile` 调用相同。Windows 生成、加载 `.dll`，Linux 使用 `.so`；两者不能跨平台加载。已保存的模型可由 `Session(Path("model.dll"))` 加载，不再需要 C 链接器或 torch-mlir，仍需匹配的 CIM22 runtime 和 MSVC x64 运行库。`Session` 接收内部扁平 NumPy 输入，形状和 dtype 分别通过 `input_shapes`、`input_dtypes` 查看，不能代替 PyTorch 包装层处理原始模型的状态和嵌套返回值。
 
 Windows 临时模型 DLL 保留到 Session 关闭或编译缓存释放；加载期间不能删除该 DLL。USB 使用 Cypress CyUSB3 驱动，软件推理不要求连接板卡。当前验证覆盖软件推理及 USB 接口契约，不代表已完成真实板卡或完整 DVS 测试集验收。Web UI 仍依赖 Linux 的 `fcntl`，尚未移植到 Windows。
 
@@ -116,7 +116,10 @@ with torch.no_grad():
 
 with torch.inference_mode():
     compiled = torch.compile(
-        model, backend="cim22", fullgraph=True, dynamic=False,
+        model,
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
         options={"runtime": "software"},
     )
     output = compiled(torch.ones(1, 64))
@@ -140,7 +143,7 @@ torch.Size([1, 16])
 
 ## 使用约定
 
-- 使用 `torch.inference_mode()` 或 `torch.no_grad()`，输入为连续 CPU FP32 Tensor，保持形状、布局及推理上下文一致。同一模型按顺序执行。
+- 使用 `torch.inference_mode()` 或 `torch.no_grad()`，输入为连续 CPU Tensor，按编译签名使用 FP32、INT8 或 INT32，保持形状、布局及推理上下文一致。同一模型按顺序执行。
 - 只读且无输出别名的参数会冻结为 CIM 权重。修改这些权重后须调用 `torch.compiler.reset()` 并重新编译；运行时权重保留在 CPU 路径。
 - AOTAutograd 负责支持的原地更新和状态写回。带状态模型在每个独立序列前应按模型自身 API 重置；不会自动清零。保持各次调用的输入存储重叠关系一致。
 - `fullgraph=True` 禁止图断裂，`dynamic=False` 使用静态特化；输入形状变化可能触发重新编译。算子支持仍受 torch-mlir 和原生 lowering 覆盖范围限制。
@@ -209,7 +212,10 @@ usb = UsbConfig(
     pll_port="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
 )
 compiled = torch.compile(
-    model, backend="cim22", fullgraph=True, dynamic=False,
+    model,
+    backend="cim22",
+    fullgraph=True,
+    dynamic=False,
     options={"usb_config": usb},
 )
 ```
@@ -235,3 +241,22 @@ Python 配置检查六位 HEX 格式、数值范围和选项冲突；原生层�
 完整步骤见 [BUILDING](../BUILDING.md#pytorch-编译后端)：准备 LLVM/MLIR 后，可生成 wheel 或构建 editable 安装。Python 源码修改立即可见；C++、TableGen、schema 或 CMake 修改需要显式重建。
 
 [开发与测试](../BUILDING.md#测试与开发)给出重建、pytest、lit 和 Protobuf 更新命令。应用特有的依赖应安装在自己的环境中；Python ONNX、Protobuf 和 pytest 是开发依赖，预编译 wheel 的普通运行无需安装这些包。
+
+## 显式 INT8
+
+`torch.compile` 对显式 `i8 × i8 → i32` 的静态整数 contraction 使用
+INT8 降级（例如 `torch._int_mm`），权重必须是不可变常量。普通
+`torch.matmul` 的 INT8 输出不等于 INT32 累加契约；FP32 输入也不会按数值范围
+自动量化。超出单 tile 有符号 21 位范围或不满足布局/类型约束的算子留在 Host。
+
+单 Macro 按 K=64、N=16 分块，每个有符号 INT21 部分结果须在
+`[-1048576, 1048575]` 内，尾块补零。Host 将部分结果符号扩展为 INT32 后
+沿 K 归约、沿 N 拼接，保留源程序的 INT32 算术语义。
+
+USB 模式使用相同的 INT8 输入/INT32 输出签名。通过后端选项
+`runtime="usb"`、`usb_config=UsbConfig(...)` 配置后，模型调用经生产 USB
+运行时收发；功能与接口实现、软件测试、实板验证分别记录。
+
+内部 Session 按编译签名接收 NumPy `int8`、`float32` 或 `int32`，结果按签名
+分配；不做隐式 dtype 转换。INT8 Conv 的原生 Linalg 路径支持 batch=1、
+NCHW/FCHW 和 dilation=1；这不代表普通 PyTorch Conv 自动导出该整数形式。

@@ -46,15 +46,18 @@ Schema 不保存活动张量、设备句柄、USB 配置、线程/锁或会话�
 
 `TensorSignature.dimensions = 1` 是静态维度列表：空列表表示 rank-0 标量，
 不是未知 shape。各维必须大于 0，元素总数不能溢出 `int64_t`。
-`data_type = 2` 在边界只能为 `FP32`；CPU、连续布局等内存要求由调用边界检查，
+`data_type = 2` 在边界只能为 `INT8`、`FP32` 或 `INT32`；CPU、连续布局等内存要求由调用边界检查，
 schema 本身没有 stride/device 字段。
+
+原生 `ModelData.types` 与 `shapes` 必须逐项对应；编译器和解码器都会填写
+每个边界 dtype，包括旧 FP32 模型。空类型列表不表示默认 FP32。
 
 `Kernel.kernel_name = 1` 必须非空且在模型内唯一，用于标识与错误定位；
 `transaction = 2` 必须存在。运行时按列表索引 dispatch，并非按名字动态查找 kernel。
 
 `DataType` 的固定编号为 `UNSPECIFIED = 0`、`INT8 = 1`、
-`BF16 = 2`、`FP32 = 3`。当前 transaction 的权重、输入、回读与 packet
-只允许 `INT8` 或 `BF16`；边界只允许 `FP32`。枚举中存在某类型不意味着所有路径支持它。
+`BF16 = 2`、`FP32 = 3`、`INT32 = 4`。当前 transaction 的权重、输入、回读与 packet
+只允许 `INT8` 或 `BF16`；边界允许 `INT8`、`FP32`、`INT32`。枚举中存在某类型不意味着所有路径支持它。
 
 ### Transaction：一个 kernel 的静态执行数据
 
