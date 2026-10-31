@@ -31,11 +31,19 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR})
 add_compile_options(-UNDEBUG)
 
 add_executable(mlir-cim22-model-data-test EXCLUDE_FROM_ALL
-  Unit/Execution/ModelDataTest.cpp)
+  Unit/Execution/ModelDataTest.cpp
+  "${PROJECT_SOURCE_DIR}/lib/Runtime/ModelData.cpp"
+  "${PROJECT_BINARY_DIR}/lib/Runtime/generated/cim22_model.pb.cc")
 llvm_update_compile_flags(mlir-cim22-model-data-test)
 target_include_directories(mlir-cim22-model-data-test PRIVATE
-  "${PROJECT_SOURCE_DIR}/lib/Runtime")
-target_link_libraries(mlir-cim22-model-data-test PRIVATE cim22_runtime LLVMSupport)
+  "${PROJECT_SOURCE_DIR}/lib/Runtime"
+  "${PROJECT_BINARY_DIR}/lib/Runtime/generated")
+# Keep LLVM Error RTTI in one image: static LLVMSupport copies in a Windows
+# DLL and its test executable have distinct error-class IDs. Python integration
+# tests exercise the runtime DLL's public C ABI separately.
+target_link_libraries(mlir-cim22-model-data-test PRIVATE
+  protobuf::libprotobuf-lite LLVMSupport)
+add_dependencies(mlir-cim22-model-data-test cim22_runtime)
 
 add_executable(mlir-cim22-int8-weight-layout-test EXCLUDE_FROM_ALL
   Unit/Support/Int8WeightLayoutTest.cpp
