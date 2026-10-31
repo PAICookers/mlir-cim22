@@ -10,13 +10,14 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 import torch
 from torch._dynamo.exc import BackendCompilerFailed
 
 import cim22.backend as adapter
 from cim22 import Session
-from cim22.compiler import _compile
+from cim22.compiler import RuntimeBackend, _compile, _emit_object
 from cim22.runtime import MODEL_SUFFIX
 
 pytestmark = [
@@ -190,6 +191,166 @@ def test_runtime_weights_stay_on_host(tmp_path: Path) -> None:
     (artifact,) = tmp_path.glob(f"*{MODEL_SUFFIX}")
     with Session(artifact) as session:
         assert session.num_transactions == 0
+
+
+@pytest.mark.parametrize(
+    ("transpose_weight", "overflow", "wide_sum"),
+    [
+        (False, False, False),
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ],
+)
+def test_int8_matmul_execution(
+    tmp_path: Path, transpose_weight: bool, overflow: bool, wide_sum: bool
+) -> None:
+    """Typed Torch capture executes tiled INT8 or range-unsafe Host matmul."""
+    reduction, output = (
+        (64, 16) if overflow else (128, 17) if wide_sum else (65, 17)
+    )
+
+    class Int8Matmul(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            shape = (
+                (output, reduction) if transpose_weight else (reduction, output)
+            )
+            weight = (
+                torch.arange(reduction * output).reshape(shape) % 15 - 7
+            ).to(torch.int8)
+            if overflow:
+                weight.fill_(-128)
+            elif wide_sum:
+                weight.fill_(127)
+            self.weight = torch.nn.Parameter(weight, requires_grad=False)
+
+        def forward(self, value: torch.Tensor) -> torch.Tensor:
+            weight = self.weight.t() if transpose_weight else self.weight
+            return torch._int_mm(value, weight)
+
+    packets: list[str] = []
+
+    def inspect_packet(
+        packet: Path,
+        object_file: Path,
+        library: Path,
+        runtime: RuntimeBackend,
+    ) -> None:
+        packets.append(packet.read_text(encoding="utf-8"))
+        _emit_object(packet, object_file, library, runtime)
+
+    model = Int8Matmul().eval()
+    compiled = torch.compile(
+        model,
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"runtime": "software", "artifact_dir": tmp_path},
+    )
+    with (
+        torch.inference_mode(),
+        patch("cim22.compiler._emit_object", side_effect=inspect_packet),
+        patch.object(adapter, "_compile", wraps=_compile) as compiler,
+    ):
+        values = [
+            torch.full(
+                (2, reduction), 127 if wide_sum else -128, dtype=torch.int8
+            ),
+            (torch.arange(2 * reduction).reshape(2, reduction) % 256 - 128).to(
+                torch.int8
+            ),
+        ]
+        if wide_sum:
+            values[1].fill_(-128)
+        results = []
+        for value in (*values, values[0]):
+            actual = compiled(value)
+            assert actual.dtype == torch.int32
+            torch.testing.assert_close(actual, model(value), rtol=0, atol=0)
+            weight = model.weight.t() if transpose_weight else model.weight
+            expected = (value.to(torch.int64) @ weight.to(torch.int64)).to(
+                torch.int32
+            )
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            if wide_sum:
+                assert torch.all(actual.abs() > 2**20)
+            results.append(actual)
+        assert compiler.call_count == 1
+        assert results[0].data_ptr() != results[1].data_ptr()
+        torch.testing.assert_close(results[0], results[2], rtol=0, atol=0)
+    (packet,) = packets
+    assert "cim.onnx" not in packet
+    assert f"tensor<2x{output}xi32>" in packet
+    assert ("cim.transaction" in packet) is not overflow
+    assert ("cimframe.control_int8_packet" in packet) is not overflow
+    if overflow:
+        assert "linalg.matmul" in packet
+    else:
+        assert "tensor<16xi21>" in packet
+        assert "arith.extsi" in packet
+    (artifact,) = tmp_path.glob(f"*{MODEL_SUFFIX}")
+    with Session(artifact) as session:
+        assert session.input_dtypes == (np.dtype(np.int8),)
+        assert session.output_dtypes == (np.dtype(np.int32),)
+        assert (session.num_transactions > 0) is not overflow
+        with pytest.raises(TypeError, match="int8"):
+            session(values[0].numpy().astype(np.float32))
+        assert session.dispatch_count == 0
+        np.testing.assert_array_equal(
+            session(values[0].numpy())[0], results[0].numpy()
+        )
+        assert (session.dispatch_count > 0) is not overflow
+
+
+def test_mixed_bf16_int8_dispatch(tmp_path: Path) -> None:
+    """Separate typed transactions coexist in one model and retain their ABI."""
+
+    class Mixed(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.linear = torch.nn.Linear(64, 16, bias=False)
+            with torch.no_grad():
+                self.linear.weight.fill_(1.0)
+            self.integer_weight = torch.nn.Parameter(
+                torch.ones(64, 16, dtype=torch.int8), requires_grad=False
+            )
+
+        def forward(
+            self, floating: torch.Tensor, integer: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            return self.linear(floating), torch._int_mm(
+                integer, self.integer_weight
+            )
+
+    model = Mixed().eval()
+    compiled = torch.compile(
+        model,
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"runtime": "software", "artifact_dir": tmp_path},
+    )
+    inputs = (
+        torch.full((2, 64), 2.0**-133),
+        torch.full((2, 64), -3, dtype=torch.int8),
+    )
+    with torch.inference_mode():
+        # The current supplier BF16 model maps raw 0x0001/unit weights to 64.
+        expected = (torch.full((2, 16), 64.0), model(*inputs)[1])
+        for actual, reference in zip(compiled(*inputs), expected, strict=True):
+            torch.testing.assert_close(actual, reference, rtol=0, atol=0)
+    (artifact,) = tmp_path.glob(f"*{MODEL_SUFFIX}")
+    with Session(artifact) as session:
+        assert session.num_transactions == 2
+        assert sorted(dtype.name for dtype in session.input_dtypes) == [
+            "float32",
+            "int8",
+        ]
+        assert sorted(dtype.name for dtype in session.output_dtypes) == [
+            "float32",
+            "int32",
+        ]
 
 
 def test_backend_requires_inference_context() -> None:
