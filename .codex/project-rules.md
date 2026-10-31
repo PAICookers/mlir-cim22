@@ -24,6 +24,30 @@ override these rules.
   TOML. Stop only when an action needs authority beyond the user's request or is
   destructive, external, costly, or materially expands scope.
 
+## Task Completion And Documentation
+
+- Judge completion against the user's requested scope. For code/interface
+  implementation, verify the actual call chain and relevant software/contract
+  tests. Do not add board or RTL execution as an acceptance gate unless the
+  user requests hardware validation or the task explicitly requires it.
+- Keep implementation status, software execution and real hardware evidence
+  separate. Missing board evidence limits hardware claims; it does not by
+  itself make implemented functionality or interfaces incomplete.
+- For numeric/lowering features, verify the production software computation
+  first, then the requested frontend-to-compiler/runtime path against an
+  independent reference. Confirm actual CIM dispatch and distinguish deliberate
+  Host retention. Importer/private-oracle tests are not production Session
+  execution, and Linalg Conv execution does not establish Torch Conv capture.
+- Treat an old stash as historical input. Review each hunk against the current
+  task and main branch; discard obsolete dependency policies, unrelated repairs
+  and redundant mechanisms instead of retaining them because tests pass.
+- Put usage and API contracts in existing user/module documentation and keep
+  implementation constraints in owning pass descriptions, comments or
+  docstrings. Use local task records for plans, review findings and test logs.
+  Do not add a README under lib/ or include/ just to narrate one change or
+  duplicate an existing contract. Reusable project knowledge follows the
+  existing docs/project-notes/ ownership policy.
+
 ## Python
 
 These rules apply to project-owned Python source, tests, and examples. Keep
