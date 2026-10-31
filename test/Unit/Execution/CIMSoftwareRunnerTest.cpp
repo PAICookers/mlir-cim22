@@ -8,6 +8,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstdint>
@@ -266,11 +267,124 @@ void checkRun(CIMSoftwareRunner &runner, const CIMTransaction &executable,
              expectedValue(weight, inputStorage[inputIndex], row));
   }
 }
+// Analytic expectations exercise the production runner without compiler or
+// Host fallback; the pair sweep does not duplicate its reduction loop.
+void checkInt8NumericModel() {
+  CIMSoftwareRunner runner;
+  std::array<int8_t, kCIMInputElements> input{};
+  std::array<int32_t, kCIMOutputElements> output{};
+  std::array<int64_t, kCIMOutputElements> expected{};
+  std::array<int8_t, 16 * 64> values{};
+  CIMInputView inputView{input, {}};
+  CIMOutputView outputView{output, {}};
+  CIMRunInputs inputs{llvm::ArrayRef<CIMInputView>(&inputView, 1)};
+  CIMRunOutputs outputs{llvm::MutableArrayRef<CIMOutputView>(&outputView, 1)};
+  auto transaction = [&] {
+    CIMGroup group{0, {{0, 0, 0, {}}}};
+    StaticWeightSection weight;
+    weight.groupId = weight.workId = weight.coreSlot = weight.macroSlot = 0;
+    weight.values = values;
+    std::vector<CIMFramePacket> packets;
+    for (auto kind : {CIMPacketKind::InputCacheWrite, CIMPacketKind::Weight,
+                      CIMPacketKind::ReturnRoute, CIMPacketKind::Control,
+                      CIMPacketKind::OutputCacheRead})
+      addPacket(packets, kind, 0, 0, 0, 0);
+    return CIMTransaction("cim22-4x5-v1", 1, 1, {group}, {weight},
+                          std::move(packets), {{0, 0, 0, 0}},
+                          {{0, 0, 0, 0, {}, {}}}, {});
+  };
+  auto check = [&](const CIMTransaction &executable) {
+    const auto original = input;
+    output.fill(77);
+    assert(!runner.run(executable, inputs, outputs));
+    for (size_t lane = 0; lane < output.size(); ++lane)
+      assert(static_cast<int64_t>(output[lane]) == expected[lane]);
+    assert(input == original);
+  };
+
+  // All 65,536 signed byte products at both ends of each 32-item half.
+  for (size_t k : {0, 31, 32, 63}) {
+    input.fill(0);
+    for (int base = -128; base <= 127; base += 16) {
+      values.fill(0);
+      for (size_t lane = 0; lane < output.size(); ++lane)
+        values[lane * 64 + k] =
+            static_cast<int8_t>(base + static_cast<int>(lane));
+      const auto executable = transaction();
+      for (int a = -128; a <= 127; ++a) {
+        input[k] = static_cast<int8_t>(a);
+        for (size_t lane = 0; lane < output.size(); ++lane)
+          expected[lane] =
+              static_cast<int64_t>(a) * (base + static_cast<int>(lane));
+        check(executable);
+      }
+    }
+  }
+  for (size_t k = 0; k < input.size(); ++k) {
+    input.fill(0);
+    input[k] = -128;
+    values.fill(0);
+    for (size_t lane = 0; lane < output.size(); ++lane) {
+      values[lane * 64 + k] = static_cast<int8_t>(static_cast<int>(lane) - 8);
+      expected[lane] = -128 * (static_cast<int>(lane) - 8);
+    }
+    check(transaction());
+  }
+
+  input.fill(-128);
+  values.fill(-128);
+  for (size_t lane = 0; lane < output.size(); ++lane)
+    values[lane * 64 + 63] = -127;
+  expected.fill(1048448); // 63*16384 + 16256, the nearest safe corner.
+  check(transaction());
+  values.fill(127);
+  const auto negative = transaction();
+  expected.fill(-1040384); // 64*(-128)*127.
+  check(negative);
+  input.fill(0);
+  expected.fill(0);
+  check(negative);
+  input.fill(-128);
+  expected.fill(-1040384);
+  check(negative);
+
+  input.fill(127);
+  for (size_t lane = 0; lane < output.size(); ++lane)
+    for (size_t k = 0; k < input.size(); ++k)
+      values[lane * 64 + k] = k % 2 ? -127 : 127;
+  expected.fill(0); // Equal positive/negative terms cancel before range check.
+  check(transaction());
+
+  input.fill(-128);
+  values.fill(127);
+  std::fill_n(values.end() - 64, 64, int8_t{-128});
+  output.fill(77);
+  VectorTrace trace;
+  auto error = runner.run(transaction(), inputs, outputs, &trace);
+  assert(error && "64*(-128)*(-128) must not wrap or saturate");
+  assert(llvm::toString(std::move(error)).find("signed i21") !=
+         std::string::npos);
+  for (int32_t value : output)
+    assert(value == 77); // No lane from this rejected group was published.
+  assert(trace.events.back().kind == CIMTraceEventKind::Error);
+  assert(std::none_of(trace.events.begin(), trace.events.end(),
+                      [](const auto &event) {
+                        return event.kind == CIMTraceEventKind::Complete;
+                      }));
+  expected.fill(-1040384);
+  check(negative); // A failed call does not poison the next run.
+  llvm::outs() << "PASS INT8 software model: 262144 pair-position checks, "
+                  "1024 lane-position checks, signed dense extremes, "
+                  "zero/cancellation/reuse, signed21 overflow rejection\n";
+}
 } // namespace
 
 int main(int argc, char **argv) {
   if (argc == 2 && llvm::StringRef(argv[1]) == "--bf16-layout-fixtures")
     return replayBF16Fixtures() ? 0 : 1;
+  checkInt8NumericModel();
+  if (argc == 2 && llvm::StringRef(argv[1]) == "--int8-numeric")
+    return 0;
   CIMTransaction executable = makeExecutable();
   CIMSoftwareRunner runner;
   VectorTrace trace;
