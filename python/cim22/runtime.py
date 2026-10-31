@@ -16,7 +16,13 @@ from numpy.typing import NDArray
 
 from .pll import PLLClockSetting, select_pll_clock
 
-type FloatArray = NDArray[np.float32]
+type TensorArray = NDArray[np.float32 | np.int8 | np.int32]
+
+_BOUNDARY_DTYPES = {
+    1: np.dtype(np.int8),
+    3: np.dtype(np.float32),
+    4: np.dtype(np.int32),
+}
 
 MODEL_SUFFIX = ".dll" if os.name == "nt" else ".so"
 
@@ -193,7 +199,8 @@ def compiler_library(library: Path) -> Path:
 class Session:
     """Load a compiled native model, or a raw packet for compiler diagnostics.
 
-    Inputs must be contiguous CPU FP32 arrays with the compiled static shapes.
+    Inputs must match the compiled static shapes and FP32/INT8/INT32 dtypes.
+    All arrays must be contiguous and aligned in CPU memory.
     Every call allocates independent output arrays owned by Python. Loading and
     inference never invoke PyTorch or a substitute for the native CIM runner.
     """
@@ -211,6 +218,7 @@ class Session:
             "num_inputs": ([ctypes.c_void_p], ctypes.c_int64),
             "num_outputs": ([ctypes.c_void_p], ctypes.c_int64),
             "rank": ([ctypes.c_void_p, ctypes.c_int64], ctypes.c_int64),
+            "dtype": ([ctypes.c_void_p, ctypes.c_int64], ctypes.c_int64),
             "dim": (
                 [ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64],
                 ctypes.c_int64,
@@ -270,6 +278,12 @@ class Session:
         )
         self.input_shapes = shapes[:num_inputs]
         self.output_shapes = shapes[num_inputs:]
+        dtypes = tuple(
+            _BOUNDARY_DTYPES[lib.cim22_session_dtype(self._handle, i)]
+            for i in range(num_inputs + num_outputs)
+        )
+        self.input_dtypes = dtypes[:num_inputs]
+        self.output_dtypes = dtypes[num_inputs:]
         self.num_transactions = lib.cim22_session_num_transactions(self._handle)
 
     def configure_usb(self, config: UsbConfig) -> None:
@@ -371,20 +385,19 @@ class Session:
         if self._handle is None:
             raise RuntimeError("CIM22 session is closed")
 
-    def __call__(self, *inputs: FloatArray) -> tuple[FloatArray, ...]:
+    def __call__(self, *inputs: TensorArray) -> tuple[TensorArray, ...]:
         """Execute synchronously, raising on shape, type or native runner errors."""
         with self._lock:
             self._require_open()
             if len(inputs) != len(self.input_shapes):
                 raise ValueError("Input count differs from compiled signature")
-            for index, (array, shape) in enumerate(
-                zip(inputs, self.input_shapes, strict=True)
+            for index, (array, shape, dtype) in enumerate(
+                zip(inputs, self.input_shapes, self.input_dtypes, strict=True)
             ):
-                if (
-                    not isinstance(array, np.ndarray)
-                    or array.dtype != np.float32
-                ):
-                    raise TypeError(f"Input {index} must be a NumPy FP32 array")
+                if not isinstance(array, np.ndarray) or array.dtype != dtype:
+                    raise TypeError(
+                        f"Input {index} must be a NumPy {dtype.name} array"
+                    )
                 if (
                     array.shape != shape
                     or not array.flags.c_contiguous
@@ -394,8 +407,10 @@ class Session:
                         f"Input {index} requires aligned, contiguous shape {shape}"
                     )
             outputs = tuple(
-                np.empty(shape, dtype=np.float32)
-                for shape in self.output_shapes
+                np.empty(shape, dtype=dtype)
+                for shape, dtype in zip(
+                    self.output_shapes, self.output_dtypes, strict=True
+                )
             )
             arrays = (*inputs, *outputs)
             pointers = (ctypes.c_void_p * len(arrays))(

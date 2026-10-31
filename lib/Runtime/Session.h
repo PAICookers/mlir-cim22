@@ -27,4 +27,8 @@ void copyError(llvm::StringRef message, char *buffer, size_t capacity);
 extern "C" void
 _mlir_ciface_cim22_dispatch(int64_t id, StridedMemRefType<uint16_t, 2> *input,
                             StridedMemRefType<uint16_t, 2> *output);
+extern "C" void
+_mlir_ciface_cim22_dispatch_int8(int64_t id,
+                                 StridedMemRefType<int8_t, 2> *input,
+                                 StridedMemRefType<int32_t, 2> *output);
 #endif

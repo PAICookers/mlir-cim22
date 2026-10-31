@@ -99,6 +99,7 @@ int main() {
   model.numInputs = 1;
   model.backend = RuntimeBackend::Software;
   model.shapes = {{}, {2, 3}}; // Scalar input, ordered tensor output.
+  model.types = {BoundaryDataType::FP32, BoundaryDataType::FP32};
   model.kernelNames = {"int8", "bf16"};
   model.transactions = {transaction(CIMDataType::Int8),
                         transaction(CIMDataType::BF16)};
@@ -120,6 +121,7 @@ int main() {
     return 1;
   }
   if (*encoded != *reencoded || decoded.shapes != model.shapes ||
+      decoded.types != model.types ||
       decoded.kernelNames != model.kernelNames || decoded.numInputs != 1 ||
       decoded.backend != model.backend)
     return 1;
@@ -151,6 +153,57 @@ int main() {
     if (invalidVersion)
       return 1;
     llvm::consumeError(invalidVersion.takeError());
+  }
+
+  // All supported boundary types survive independently of tile datatypes.
+  ModelData typed = model;
+  typed.numInputs = 2;
+  typed.shapes = {{}, {2, 3}, {2, 3}};
+  typed.types = {BoundaryDataType::Int8, BoundaryDataType::FP32,
+                 BoundaryDataType::Int32};
+  auto typedBytes = encodeModelData(typed);
+  if (!typedBytes) {
+    std::cerr << llvm::toString(typedBytes.takeError()) << '\n';
+    return 1;
+  }
+  ModelData typedDecoded;
+  if (auto error = decodeModelData(*typedBytes, typedDecoded)) {
+    std::cerr << llvm::toString(std::move(error)) << '\n';
+    return 1;
+  }
+  if (typedDecoded.types != typed.types ||
+      typedDecoded.shapes != typed.shapes ||
+      typedDecoded.numInputs != typed.numInputs)
+    return 1;
+
+  ModelData untyped = typed;
+  untyped.types.clear();
+  auto missingTypes = encodeModelData(untyped);
+  if (missingTypes)
+    return 1;
+  llvm::consumeError(missingTypes.takeError());
+
+  typed.types.pop_back();
+  auto invalidTypes = encodeModelData(typed);
+  if (invalidTypes)
+    return 1;
+  llvm::consumeError(invalidTypes.takeError());
+  for (int64_t type : {0, 2, 99}) {
+    typed.types.push_back(static_cast<BoundaryDataType>(type));
+    auto invalidType = encodeModelData(typed);
+    if (invalidType)
+      return 1;
+    llvm::consumeError(invalidType.takeError());
+    typed.types.pop_back();
+
+    // Version 1 with one scalar input: reject unspecified, BF16 and unknown
+    // boundary datatypes at the decoder trust boundary too.
+    std::string invalidBytes("\x08\x01\x1a\x02\x10", 5);
+    invalidBytes.push_back(static_cast<char>(type));
+    if (auto error = decodeModelData(invalidBytes, decoded))
+      llvm::consumeError(std::move(error));
+    else
+      return 1;
   }
   model.numInputs = static_cast<int64_t>(model.shapes.size()) + 1;
   auto invalidSignature = encodeModelData(model);

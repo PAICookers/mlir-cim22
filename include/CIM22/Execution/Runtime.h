@@ -1,5 +1,7 @@
-// Native runtime ABI. Inference buffers are contiguous FP32, caller-owned.
-// A session must not be destroyed while it is being invoked or inspected.
+// Native runtime ABI. Inference buffers are contiguous CPU tensors,
+// caller-owned. The model signature specifies each buffer's INT8, FP32 or INT32
+// element type. A session must not be destroyed while it is being invoked or
+// inspected.
 #ifndef CIM22_EXECUTION_RUNTIME_H
 #define CIM22_EXECUTION_RUNTIME_H
 #include <stddef.h>
@@ -46,9 +48,11 @@ int64_t cim22_session_num_inputs(void *session);
 int64_t cim22_session_num_outputs(void *session);
 int64_t cim22_session_rank(void *session, int64_t tensor);
 int64_t cim22_session_dim(void *session, int64_t tensor, int64_t axis);
+// Artifact DataType value: INT8=1, FP32=3, INT32=4; -1 for an invalid index.
+int64_t cim22_session_dtype(void *session, int64_t tensor);
 int64_t cim22_session_num_transactions(void *session);
 uint64_t cim22_session_dispatch_count(void *session);
-// Counts are numbers of FP32 elements. Failure returns nonzero, with diagnostic
+// Counts are numbers of elements. Failure returns nonzero, with diagnostic
 // available until the next invocation. Failed output buffers are unspecified.
 int cim22_session_invoke(void *session, void **buffers, const int64_t *counts,
                          int64_t num_buffers);

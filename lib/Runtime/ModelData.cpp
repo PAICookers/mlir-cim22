@@ -27,6 +27,17 @@ pb::DataType encodeType(CIMDataType type) {
   }
   return pb::UNSPECIFIED;
 }
+pb::DataType encodeType(BoundaryDataType type) {
+  switch (type) {
+  case BoundaryDataType::Int8:
+    return pb::INT8;
+  case BoundaryDataType::FP32:
+    return pb::FP32;
+  case BoundaryDataType::Int32:
+    return pb::INT32;
+  }
+  return pb::UNSPECIFIED;
+}
 CIMDataType decodeType(pb::DataType type) {
   switch (type) {
   case pb::INT8:
@@ -232,8 +243,10 @@ llvm::Error validate(const pb::ModelArtifact &model) {
     return invalid("unsupported runtime backend");
   for (const auto *tensors : {&model.inputs(), &model.outputs()})
     for (const auto &tensor : *tensors) {
-      if (tensor.data_type() != pb::FP32)
-        return invalid("boundary requires contiguous CPU FP32 tensors");
+      if (tensor.data_type() != pb::INT8 && tensor.data_type() != pb::FP32 &&
+          tensor.data_type() != pb::INT32)
+        return invalid(
+            "boundary requires contiguous CPU INT8, FP32 or INT32 tensors");
       int64_t elements = 1;
       for (int64_t dim : tensor.dimensions())
         if (dim <= 0 || llvm::MulOverflow(elements, dim, elements))
@@ -382,6 +395,7 @@ CIMTransaction decodeTransaction(const pb::Transaction &from) {
 llvm::Expected<std::string> encodeModelData(const ModelData &model) {
   if (model.numInputs < 0 ||
       static_cast<size_t>(model.numInputs) > model.shapes.size() ||
+      model.types.size() != model.shapes.size() ||
       model.kernelNames.size() != model.transactions.size())
     return invalid("signature/kernel counts");
   pb::ModelArtifact artifact;
@@ -392,7 +406,7 @@ llvm::Expected<std::string> encodeModelData(const ModelData &model) {
     auto *tensor = i < static_cast<size_t>(model.numInputs)
                        ? artifact.add_inputs()
                        : artifact.add_outputs();
-    tensor->set_data_type(pb::FP32);
+    tensor->set_data_type(encodeType(model.types[i]));
     encodeArray(model.shapes[i], tensor->mutable_dimensions());
   }
   for (size_t i = 0; i < model.transactions.size(); ++i) {
@@ -425,9 +439,12 @@ llvm::Error decodeModelData(llvm::StringRef bytes, ModelData &model) {
                                                   : RuntimeBackend::Software;
   decoded.numInputs = artifact.inputs_size();
   for (const auto *tensors : {&artifact.inputs(), &artifact.outputs()})
-    for (const auto &tensor : *tensors)
+    for (const auto &tensor : *tensors) {
       decoded.shapes.emplace_back(tensor.dimensions().begin(),
                                   tensor.dimensions().end());
+      decoded.types.push_back(
+          static_cast<BoundaryDataType>(tensor.data_type()));
+    }
   for (const auto &kernel : artifact.kernels()) {
     decoded.kernelNames.push_back(kernel.kernel_name());
     decoded.transactions.push_back(decodeTransaction(kernel.transaction()));

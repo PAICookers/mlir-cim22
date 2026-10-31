@@ -20,7 +20,7 @@ def BindCIMParameters : Pass<"bind-cim-parameters", "::mlir::ModuleOp"> {
 }
 
 def NormalizeCIMConv : Pass<"normalize-cim-conv", "::mlir::ModuleOp"> {
-  let summary = "Normalize marked INT8 Conv and static BF16 2D convolution families";
+  let summary = "Normalize static INT8/i32 Conv and BF16 2D convolution families";
   let description = [{
     BF16 ordinary, grouped and depthwise 2D named convolutions are normalized
     to independent weight-first MatMuls per group. Static batch/spatial axes
@@ -28,8 +28,10 @@ def NormalizeCIMConv : Pass<"normalize-cim-conv", "::mlir::ModuleOp"> {
     Weights must be constant and the accumulator must start at positive zero.
     The explicit allow-bias-epilogue opt-in additionally moves FP32 NCHW
     channel-broadcast initializers to a Host epilogue for BF16 preparation.
-    Padding remains an explicit tensor.pad on the Host. The marked INT8
-    ConvInteger profile retains its batch-one, unit-dilation restrictions.
+    Padding remains an explicit tensor.pad on the Host. INT8 requires signed
+    i8 inputs and constant weights, zero i32 init/result, batch one, unit
+    dilation and a proven signed i21 range for every K tile. Unmarked legal
+    contractions use cim.int8; ONNX markers remain diagnostic importer contracts.
   }];
   let options = [Option<"allowF32", "allow-f32", "bool", "false",
                         "Also normalize FP32 geometry without changing precision">,
@@ -41,12 +43,15 @@ def NormalizeCIMConv : Pass<"normalize-cim-conv", "::mlir::ModuleOp"> {
 }
 
 def NormalizeCIMLinear : Pass<"normalize-cim-linear", "::mlir::ModuleOp"> {
-  let summary = "Normalize BF16 Linear and shared-weight batch_matmul for CIM lowering";
+  let summary = "Normalize INT8/i32 and BF16 Linear and BF16 shared-weight batch_matmul";
   let description = [{
     Static batch_matmul with a broadcast immutable 2D RHS is collapsed to
     ordinary Linear and its output shape is restored. Batch-dependent weights,
     nonzero accumulators and modified contraction bodies remain on the Host.
-    FP32 resource-backed constants and constant 2D transposes are recognized.
+    FP32 and i8 resource-backed constants and constant 2D transposes are
+    recognized. INT8 Linear requires signed i8 inputs and static weights,
+    zero i32 init/result, canonical contraction semantics and a proven signed
+    i21 range for every K tile. Legal unmarked contractions use cim.int8.
   }];
   let options = [Option<"allowF32", "allow-f32", "bool", "false",
                         "Also normalize FP32 Linear without changing precision">];
@@ -62,7 +67,7 @@ def PrepareCIMBF16 : Pass<"prepare-cim-bf16", "::mlir::ModuleOp"> {
 }
 
 def OutlineCIMBF16 : Pass<"outline-cim-bf16", "::mlir::ModuleOp"> {
-  let summary = "Split constant-weight BF16 kernels and Host code using standard Func calls";
+  let summary = "Split constant-weight BF16 and legal INT8/i32 kernels from Host code";
   let options = [Option<"maxKernelColumns", "max-kernel-columns", "int64_t", "32",
                         "Stream larger matrices through one-column kernels on Host">];
   let dependentDialects = ["::mlir::arith::ArithDialect",

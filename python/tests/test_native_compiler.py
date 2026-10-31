@@ -1,7 +1,9 @@
-"""Native object publication must propagate open, write and rename failures."""
+"""Native model publication, typed boundaries and software execution."""
 
+import os
 import subprocess
 import sys
+from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -118,6 +120,137 @@ def test_runtime_entry_preserves_input(packet: Path, visibility: str) -> None:
     with Session(packet) as session:
         np.testing.assert_array_equal(session(value)[0], np.full_like(value, 2))
     np.testing.assert_array_equal(value, np.ones_like(value))
+
+
+@pytest.mark.parametrize("dtype", [np.int8, np.int32])
+def test_integer_host_boundary(
+    packet: Path, dtype: type[np.signedinteger]
+) -> None:
+    """Native JIT boundaries preserve storage width without casting."""
+    element_type = "i8" if dtype == np.int8 else "i32"
+    packet.write_text(
+        packet.read_text().replace("f32", element_type).replace("addf", "addi")
+    )
+    value = np.array([[-128, -1, 0], [1, 63, 127]], dtype=dtype)
+    with Session(packet) as session:
+        assert session.input_dtypes == (np.dtype(dtype),)
+        assert session.output_dtypes == (np.dtype(dtype),)
+        np.testing.assert_array_equal(session(value)[0], value + value)
+        with pytest.raises(TypeError, match=np.dtype(dtype).name):
+            session(value.astype(np.float32))
+
+
+@pytest.mark.usefixtures("native_toolchain")
+@pytest.mark.parametrize("artifact_format", ["packet", "shared"])
+def test_int8_conv_execution(
+    tmp_path: Path, native_runtime: Path, artifact_format: str
+) -> None:
+    """Native INT8 Conv preserves exact values through JIT and shared models."""
+    weights = (np.arange(17 * 2 * 6 * 6).reshape(17, 2, 6, 6) % 15 - 7).astype(
+        np.int8
+    )
+    source = tmp_path / "conv.linalg.mlir"
+    source.write_text(
+        f"""
+func.func @main(%input: tensor<1x2x8x8xi8>) -> tensor<1x17x3x3xi32> {{
+  %weight = arith.constant dense<{weights.tolist()}> : tensor<17x2x6x6xi8>
+  %zero = arith.constant dense<0> : tensor<1x17x3x3xi32>
+  %result = linalg.conv_2d_nchw_fchw
+      ins(%input, %weight : tensor<1x2x8x8xi8>, tensor<17x2x6x6xi8>)
+      outs(%zero : tensor<1x17x3x3xi32>) -> tensor<1x17x3x3xi32>
+  return %result : tensor<1x17x3x3xi32>
+}}
+""",
+        encoding="utf-8",
+    )
+    packet = tmp_path / "conv.packet.mlir"
+    subprocess.run(
+        [
+            os.environ.get("CIM22_OPT")
+            or str(
+                files("cim22")
+                / "bin"
+                / (
+                    "mlir-cim22-opt.exe"
+                    if os.name == "nt"
+                    else "mlir-cim22-opt"
+                )
+            ),
+            str(source),
+            "--cim-bf16-pipeline=stage=packet max-kernel-columns=1",
+            "-o",
+            str(packet),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    artifact = packet
+    if artifact_format == "shared":
+        object_file = tmp_path / ("conv.obj" if os.name == "nt" else "conv.o")
+        artifact = tmp_path / f"conv{MODEL_SUFFIX}"
+        _emit_object(packet, object_file, native_runtime, "software")
+        subprocess.run(
+            [
+                os.environ.get("CIM22_CC", "cl"),
+                "/nologo",
+                "/LD",
+                "/MD",
+                str(object_file),
+                str(native_runtime.with_suffix(".lib")),
+                "/link",
+                f"/OUT:{artifact}",
+                "/EXPORT:cim22_model_v1",
+                f"/IMPLIB:{tmp_path / 'conv.lib'}",
+                "msvcrt.lib",
+            ]
+            if os.name == "nt"
+            else [
+                os.environ.get("CIM22_CC", "cc"),
+                "-shared",
+                "-Wl,-z,defs",
+                "-Wl,-Bsymbolic-functions",
+                "-Wl,-rpath,$ORIGIN",
+                str(object_file),
+                str(native_runtime),
+                "-lm",
+                "-o",
+                str(artifact),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    value = (np.arange(128).reshape(1, 2, 8, 8) * 13 % 256 - 128).astype(
+        np.int8
+    )
+    inputs = [value, np.flip(value, axis=3).copy(), value]
+    outputs = []
+    with Session(artifact, library=native_runtime) as session:
+        assert session.input_shapes == ((1, 2, 8, 8),)
+        assert session.output_shapes == ((1, 17, 3, 3),)
+        assert session.input_dtypes == (np.dtype(np.int8),)
+        assert session.output_dtypes == (np.dtype(np.int32),)
+        assert session.num_transactions > 0
+        for current in inputs:
+            original = current.copy()
+            # An int64 spatial oracle is independent of compiler im2col/tiling.
+            patches = np.lib.stride_tricks.sliding_window_view(
+                current.astype(np.int64), (6, 6), axis=(2, 3)
+            )
+            expected = np.einsum(
+                "nchwkl,fckl->nfhw", patches, weights.astype(np.int64)
+            ).astype(np.int32)
+            (actual,) = session(current)
+            assert session.dispatch_count > 0
+            assert actual.dtype == np.int32
+            np.testing.assert_array_equal(actual, expected)
+            np.testing.assert_array_equal(current, original)
+            assert not np.shares_memory(actual, current)
+            for previous in outputs:
+                assert not np.shares_memory(actual, previous)
+            outputs.append(actual)
+    np.testing.assert_array_equal(outputs[0], outputs[2])
 
 
 def test_packet_parser_rejects_invalid_return(packet: Path) -> None:

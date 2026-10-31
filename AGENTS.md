@@ -47,6 +47,9 @@ keep file ownership disjoint.
 
 ### Code Documentation
 
+- Follow the [shared completion and documentation rules](.codex/project-rules.md#task-completion-and-documentation)
+  for acceptance scope, evidence levels, stash selection and documentation
+  placement; keep the detailed policy in that shared source.
 - Add concise, language-appropriate comments or docstrings for key code
   sections, functions, objects, types, and modules when they explain the main
   function, non-obvious behavior, important constraints, or notable risks.

@@ -127,7 +127,7 @@ def test_atomic_publication(
     ("inputs", "error", "message"),
     [
         ((), ValueError, "Input count"),
-        ((np.zeros((2, 3, 65), dtype=np.float64),), TypeError, "FP32"),
+        ((np.zeros((2, 3, 65), dtype=np.float64),), TypeError, "float32"),
         ((np.zeros((2, 3, 64), dtype=np.float32),), ValueError, "shape"),
         (
             (np.zeros((2, 3, 130), dtype=np.float32)[..., ::2],),
