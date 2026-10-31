@@ -1,4 +1,4 @@
-# CIM22 PyTorch Backend
+# CIM22 Python 接口
 
 本 Python 项目将 `cim22` 注册为 `torch.compile` 后端。模型经 torch-mlir 导入后，由原生编译器完成 CPU/CIM 划分、编译和链接，再由运行时执行。
 
@@ -90,7 +90,70 @@ uv pip install --python .venv/Scripts/python.exe ./downloads/torch_mlir-20260923
 
 Windows 临时模型 DLL 保留到 Session 关闭或编译缓存释放；加载期间不能删除该 DLL。USB 使用 Cypress CyUSB3 驱动，软件推理不要求连接板卡。当前验证覆盖软件推理及 USB 接口契约，不代表已完成真实板卡或完整 DVS 测试集验收。Web UI 仍依赖 Linux 的 `fcntl`，尚未移植到 Windows。
 
-## 最小模型
+## TensorFlow 推理验收
+
+可选 `tensorflow` extra 提供 `cim22.tensorflow.compile`。实际路径为
+**TensorFlow/Keras → tf2onnx → ONNX → 已发布的 torch-mlir → Linalg → CIM/LLVM → 原生动态库**。
+无需转换为 PyTorch 模型，也不引入 torch-mlir 源码。算子转换和编译失败会直接报错，
+不会回退调用 TensorFlow。CIM 支持的 FP32 收缩计算允许转换为 BF16，再返回 FP32；
+其他受支持的计算走 LLVM CPU。
+
+先按上文安装匹配平台的本项目和 torch-mlir wheel，再安装 extra：
+
+```sh
+uv pip install --python .venv/bin/python 'mlir-cim22[tensorflow]==1.0.0'
+.venv/bin/python python/examples/tensorflow_compile.py
+```
+
+安装 extra 时本项目 wheel 必须已经安装；也可在安装项目 wheel 时直接使用
+`'./downloads/<实际项目wheel文件名>.whl[tensorflow]'`。Windows 将解释器路径替换为
+`.venv/Scripts/python.exe`，并在 MSVC x64 开发者终端执行。
+开发环境使用 `uv sync --project python --extra tensorflow`（需要原生构建环境）。
+当前验证组合为 Python 3.12、TensorFlow 2.20.0、tf2onnx 1.17.0、ONNX 1.21.0。
+
+```python
+from pathlib import Path
+
+import numpy as np
+import tensorflow as tf
+
+from cim22.runtime import MODEL_SUFFIX
+from cim22.tensorflow import compile
+
+layer = tf.keras.layers.Dense(16, activation="relu")
+layer.build((2, 64))
+
+@tf.function(input_signature=[tf.TensorSpec([2, 64], tf.float32)])
+def infer(x):
+    return layer(x, training=False)
+
+with compile(infer, artifact_path=Path(f"model{MODEL_SUFFIX}"),
+             runtime="software") as session:
+    result, = session(np.ones((2, 64), dtype=np.float32))
+```
+
+限定为无状态推理：输入签名是平坦的 TensorSpec 列表，形状固定且各维大于零；
+输入、输出支持 FP32、INT8 和 INT32。捕获的权重被冻结，修改后需重新编译。
+Session 接收连续 NumPy 数组，dtype 必须匹配 `input_dtypes`，不会隐式转换；
+输出 dtype 见 `output_dtypes`，返回按导出顺序排列的平坦 tuple，不恢复嵌套结构。
+关闭后可以用 `Session(Path("model.dll"))`（Linux 为 `.so`）重新加载产物；
+运行时不读取 JSON，也不再调用 TensorFlow。已有产物不会被覆盖。
+
+验收示例采用自建整数 Linear：`[2,65] INT8 × [65,17] INT8 → INT32`，加 INT32 bias。
+通过 `tf.raw_ops.BatchMatMulV3(..., Tout=tf.int32)` 明确整数运算，经 tf2onnx 导出
+`MatMulInteger`，仍由 torch-mlir 转 Linalg。没有添加其他 TF 降级路径。
+示例检查实际 CIM 调用、跨 K/N tile 与补零、TensorFlow/NumPy/CIM 逐元素完全一致、
+保存/重新加载一致；成功时最大绝对误差为 0。这里的模型是验收用小模型，不是训练模型精度测试。
+
+本 TensorFlow 导入适配验证的 INT8 offload 限定静态二维矩阵乘法、不可变有符号 INT8 权重、零零点，且必须满足
+既有 i21 分块结果范围和 i32 累加范围；不能证明安全的形式保留在 CPU。
+本 TF 路径尚未验证 UINT8、非零零点、一般量化 Conv 或任意整数算子进入 CIM；
+主编译器已有的显式 INT8 Linear/Conv 支持保持不变。
+测试另保留 FP32 Dense、NHWC Conv2D、ReLU 和 CPU 运算覆盖；
+**FP32/BF16 路径的供应方软件规则仍存在大幅数值偏差，本次未修改该规则。**
+不宣称支持任意 TensorFlow 模型、训练、真实 USB 板卡或 TensorFlow 状态更新。
+
+## PyTorch 最小模型
 
 将下面的代码保存为 `example.py`：
 
