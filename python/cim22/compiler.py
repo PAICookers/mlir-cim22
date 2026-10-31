@@ -75,6 +75,30 @@ def _compile(
     The loaded Session owns the code and any files needed until it closes.
     Optional artifact/debug paths retain diagnostics for this specialization.
     """
+    with dynamo_timed("cim22.torch_mlir"):
+        module = fx.export_and_import(
+            graph,
+            *example_inputs,
+            output_type=OutputType.LINALG_ON_TENSORS,
+            # AOTAutograd already applied the torch-mlir decompositions.
+            decomposition_table={},
+        )
+    return _compile_linalg(
+        str(module),
+        artifact_path=artifact_path,
+        debug_dir=debug_dir,
+        runtime=runtime,
+    )
+
+
+def _compile_linalg(
+    linalg_ir: str,
+    *,
+    artifact_path: Path | None = None,
+    debug_dir: Path | None = None,
+    runtime: RuntimeBackend = "usb",
+) -> Session:
+    """Share native lowering, linking and artifact ownership across frontends."""
     library = runtime_library()
     executable = os.environ.get("CIM22_OPT") or str(
         files("cim22")
@@ -111,16 +135,8 @@ def _compile(
         packet = folder / "model.packet.mlir"
         object_file = folder / ("model.obj" if os.name == "nt" else "model.o")
         shared = folder / f"model{MODEL_SUFFIX}"
-        with dynamo_timed("cim22.torch_mlir"):
-            module = fx.export_and_import(
-                graph,
-                *example_inputs,
-                output_type=OutputType.LINALG_ON_TENSORS,
-                # AOTAutograd already applied the torch-mlir decompositions.
-                decomposition_table={},
-            )
         with dynamo_timed("cim22.serialize"):
-            linalg.write_text(str(module), encoding="utf-8")
+            linalg.write_text(linalg_ir, encoding="utf-8")
         with dynamo_timed("cim22.lowering"):
             _run(
                 [
