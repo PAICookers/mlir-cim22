@@ -42,7 +42,25 @@ Schema 不保存活动张量、设备句柄、USB 配置、线程/锁或会话�
 | `schema_version = 1` | 整份模型 schema 的唯一持久化版本号，覆盖签名与所有 transaction 数据。开发期写出 `1`；当前 reader **不检查**其值，缺失或其他值也可能通过，尚无严格版本协商 |
 | `inputs = 2` / `outputs = 3` | 有序边界 `TensorSignature`；按 Host 参数/结果顺序保存。它们不同于 transaction 内部的输入与回读绑定 |
 | `kernels = 4` | 有序 `Kernel`；列表位置就是编译进 Host 代码的 native dispatch index，不能独立排序或重排。纯 Host 模型可为空 |
-| `backend = 5` | `SOFTWARE = 0`、`USB = 1`；字段缺失时按 proto 默认值成为软件模式，未知枚举值被拒绝。编译器会显式选择；编译选项当前默认 USB，和字段缺失时的默认值不同 |
+| `backend = 5` | `SOFTWARE = 0`、`USB = 1`；字段缺失按软件模式，未知枚举拒绝。编译选项当前默认 USB |
+
+不保存全局 BF16 policy。默认 BF16 Pass 生成非负输入/权重分支及 Host 合并，
+Host 代码直接调用 `cim22_dispatch_sign_split`；该入口完成逐64项归一化、
+量化支持集判零和尺度恢复。legacy 调用 `cim22_dispatch_legacy`，仅旧尺度补偿；
+none 调用 `cim22_dispatch`，保留未补偿位级结果。INT8 调用
+自己的入口。加载器无需再次决定计算语义，也不从执行后端猜测数值算法。
+
+编译时根 module 的 StringAttr `cim.bf16_compensation` 保存 sign-split/legacy/none，
+用于选择调用入口；同一模块中的 CIM BF16 采用统一语义。该属性
+不写入 ModelArtifact。字段号、schema_version=1 和描述符 ABI 布局不变；
+缺少相应符号的旧 runtime 会加载失败，旧制品也不会自动换成新算法。
+旧开发版 cim.bf16_corrected 属性明确拒绝，模型需重新编译。
+USB 与 simulator 共享补偿预后处理；生成调用把 mode 传给各自 runner，Session
+不保存策略。补偿 USB 仅在线上 Weight_EXP 发0，原 Ew 和权重元数据保留作恢复；
+none 与原始 capture 保持未补偿语义。设备未配置则拒绝，不回退 simulator。
+公开后端为 simulator/usb，其中 simulator 对应持久化值 SOFTWARE=0；
+reference 执行原 PyTorch CPU 算子，忽略 bf16_compensation，不生成 ModelArtifact
+或调用原生 Session。公开 bf16_compensation 编译选项不增加 Protobuf 字段。
 
 `TensorSignature.dimensions = 1` 是静态维度列表：空列表表示 rank-0 标量，
 不是未知 shape。各维必须大于 0，元素总数不能溢出 `int64_t`。
@@ -209,7 +227,7 @@ Python 仓库副本只用于测试，位于
 由目标复制更新，不手改。Python 测试依赖见
 [`python/pyproject.toml`](../python/pyproject.toml)。
 
-以下命令在仓库根执行，示例沿用 [BUILDING.md](../BUILDING.md#测试与开发)
+以下命令在仓库根执行，示例沿用 [BUILDING.md](../docs/BUILDING.md#测试与开发)
 已配置的原生测试构建 `build/test`。使用其他构建目录时替换路径，
 保留原有工具链、构建类型和 USB/ONNX 等选项。
 

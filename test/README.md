@@ -17,4 +17,4 @@ USB 协议和 PLL 参数/手动时钟测试共用源码。Linux 执行 libusb �
 
 PLL 测试将生产实现与测试链接进同一可执行文件，避免 Windows 下 LLVM 错误对象跨 DLL。`MLIRCIM22_INCLUDE_TESTS=ON` 需要同时启用 ONNX；默认发布构建关闭这两个选项。
 
-环境准备与运行命令见 [BUILDING](../BUILDING.md#测试与开发)。
+环境准备与运行命令见 [BUILDING](../docs/BUILDING.md#测试与开发)。

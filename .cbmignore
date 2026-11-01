@@ -3,7 +3,10 @@
 /*
 !/CMakeLists.txt
 !/README.md
-!/BUILDING.md
+!/docs/
+/docs/*
+!/docs/BUILDING.md
+!/docs/BF16.md
 !/cmake/
 !/cmake/**
 !/include/
