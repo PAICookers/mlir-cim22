@@ -3,6 +3,7 @@
 #ifndef CIM22_EXECUTION_CIMRUNNER_H
 #define CIM22_EXECUTION_CIMRUNNER_H
 
+#include "CIM22/Execution/BF16Compensation.h"
 #include "CIM22/Execution/CIMExecutable.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -74,9 +75,17 @@ public:
 
 class CIMSoftwareRunner final : public CIMRunner {
 public:
+  // SignSplit requires nonnegative branches; Legacy relocates only scale.
+  // None retains original bit-level results, including exceptional patterns.
+  explicit CIMSoftwareRunner(BF16Compensation mode = BF16Compensation::None)
+      : bf16Mode(mode) {}
+
   llvm::Error run(const CIMTransaction &executable, const CIMRunInputs &inputs,
                   CIMRunOutputs &outputs,
                   CIMTraceSink *trace = nullptr) override;
+
+private:
+  BF16Compensation bf16Mode;
 };
 
 } // namespace cim22::execution

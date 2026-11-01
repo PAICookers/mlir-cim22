@@ -31,6 +31,12 @@ public:
                   execution::CIMRunOutputs &outputs,
                   execution::CIMTraceSink *trace = nullptr) override;
 
+  llvm::Error run(const execution::CIMTransaction &executable,
+                  const execution::CIMRunInputs &inputs,
+                  execution::CIMRunOutputs &outputs,
+                  execution::BF16Compensation compensation,
+                  execution::CIMTraceSink *trace = nullptr);
+
   // Capture validated response headers and six raw body flits per readback.
   llvm::Expected<CIMDeviceResponse>
   capture(const execution::CIMTransaction &executable,
@@ -41,7 +47,8 @@ private:
   llvm::Expected<CIMDeviceResponse>
   captureImpl(const execution::CIMTransaction &executable,
               const execution::CIMRunInputs &inputs,
-              execution::CIMTraceSink *trace, uint64_t &sequence);
+              execution::CIMTraceSink *trace, uint64_t &sequence,
+              bool zeroWeightExponent = false);
 
   CIMDevice &device_;
   CIMBoardRunPolicy policy_;

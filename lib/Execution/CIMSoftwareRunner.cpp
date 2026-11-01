@@ -11,6 +11,7 @@
 #include <array>
 #include <cstddef>
 #include <numeric>
+#include <optional>
 
 namespace cim22::execution {
 namespace {
@@ -26,7 +27,7 @@ llvm::Error runnerError(const llvm::Twine &message) {
 struct MacroState {
   std::array<int8_t, kCIMInputElements> input{};
   std::array<int8_t, kCIMWeightElements> weight{};
-  uint8_t inputExponent = 0;
+  BF16InputPreparation bf16;
   std::array<uint8_t, kCIMOutputElements> weightExponents{};
   // Store the final lane payload: signed INT21 or zero-extended BF16 bits.
   std::array<std::array<int32_t, kCIMOutputElements>, kCIMCacheRows>
@@ -192,7 +193,10 @@ llvm::Error CIMSoftwareRunner::run(const CIMTransaction &executable,
     return error;
   }
 
-  std::array<MacroState, kCIMCoreCount * kCIMMacroCount> macros{};
+  // Most transactions use few Macro slots. Initialize a slot's Cache only
+  // when configured, then retain it across groups for the existing readback
+  // semantics. Empty slots do not initialize their large payload arrays.
+  std::array<std::optional<MacroState>, kCIMCoreCount * kCIMMacroCount> macros;
   emitTrace(trace, sequence, CIMTraceEventKind::BeginRun);
 
   std::vector<size_t> groupOrder(executable.getGroups().size());
@@ -231,7 +235,10 @@ llvm::Error CIMSoftwareRunner::run(const CIMTransaction &executable,
       if (input->dataType != weight->dataType ||
           readback->dataType != input->dataType)
         return fail("CIM work has inconsistent data mode");
-      MacroState &macro = macros[macroIndex(work.coreSlot, work.macroSlot)];
+      auto &slot = macros[macroIndex(work.coreSlot, work.macroSlot)];
+      if (!slot)
+        slot.emplace();
+      MacroState &macro = *slot;
       size_t inputPosition = 0;
       bool foundInput = false;
       for (auto [index, candidate] :
@@ -245,18 +252,14 @@ llvm::Error CIMSoftwareRunner::run(const CIMTransaction &executable,
       if (!foundInput)
         return fail("CIM work input binding is not addressable");
       if (input->dataType == CIMDataType::BF16) {
-        std::array<uint16_t, kCIMInputElements> bf16Input{};
-        std::copy(inputs.values[inputPosition].bf16Values.begin(),
-                  inputs.values[inputPosition].bf16Values.end(),
-                  bf16Input.begin());
-        if (llvm::any_of(bf16Input, [](uint16_t value) {
-              return ((value >> 7) & 0xff) == 0xff;
-            }))
-          return fail("CIM BF16 input does not support NaN or infinity");
-        const mlir::cim22::BF16PrealignedVector prealigned =
-            mlir::cim22::prealignBF16Vector(bf16Input);
-        macro.input = prealigned.mantissas;
-        macro.inputExponent = prealigned.exponent;
+        auto prepared =
+            prepareBF16Input(inputs.values[inputPosition].bf16Values, bf16Mode);
+        if (!prepared)
+          return fail(llvm::toString(prepared.takeError()));
+        if (auto error = validateBF16Group(*weight, *prepared, bf16Mode))
+          return fail(llvm::toString(std::move(error)));
+        macro.bf16 = std::move(*prepared);
+        macro.input = macro.bf16.aligned.mantissas;
       } else {
         std::copy(inputs.values[inputPosition].values.begin(),
                   inputs.values[inputPosition].values.end(),
@@ -274,18 +277,35 @@ llvm::Error CIMSoftwareRunner::run(const CIMTransaction &executable,
                 work.workId, work.macroSlot);
       std::array<int32_t, kCIMOutputElements> result{};
       for (size_t row = 0; row < kCIMOutputElements; ++row) {
+        auto laneWeight =
+            llvm::ArrayRef(macro.weight)
+                .slice(row * kCIMInputElements, kCIMInputElements);
+        const bool hasSupport = input->dataType != CIMDataType::BF16 ||
+                                bf16Mode != BF16Compensation::SignSplit ||
+                                hasBF16Support(laneWeight, macro.bf16.support);
+        if (!hasSupport)
+          continue;
         int32_t sum = 0;
         for (size_t k = 0; k < kCIMInputElements; ++k)
-          sum +=
-              static_cast<int32_t>(macro.weight[row * kCIMInputElements + k]) *
-              static_cast<int32_t>(macro.input[k]);
+          sum += static_cast<int32_t>(laneWeight[k]) *
+                 static_cast<int32_t>(macro.input[k]);
         if (sum < kCIMI21Min || sum >= kCIMI21MaxExclusive)
           return fail("CIM software result exceeds signed i21 range");
-        result[row] =
-            input->dataType == CIMDataType::BF16
-                ? mlir::cim22::int21ToBF16(sum, macro.weightExponents[row],
-                                           macro.inputExponent)
-                : sum;
+        if (input->dataType == CIMDataType::BF16) {
+          const uint8_t chipExponent = bf16Mode == BF16Compensation::None
+                                           ? macro.weightExponents[row]
+                                           : 0;
+          const uint16_t chipBits = mlir::cim22::int21ToBF16(
+              sum, chipExponent, macro.bf16.aligned.exponent);
+          auto restored =
+              restoreBF16Output(chipBits, macro.weightExponents[row],
+                                hasSupport, macro.bf16, bf16Mode);
+          if (!restored)
+            return fail(llvm::toString(restored.takeError()));
+          result[row] = *restored;
+        } else {
+          result[row] = sum;
+        }
       }
       macro.outputCache[readback->outputCacheAddress] = result;
     }
@@ -301,8 +321,10 @@ llvm::Error CIMSoftwareRunner::run(const CIMTransaction &executable,
       if (!work || work->coreSlot < 0 || work->coreSlot >= kCIMCoreCount ||
           work->macroSlot != binding.macroSlot)
         return fail("CIM readback references unknown placement");
-      const MacroState &macro =
-          macros[macroIndex(work->coreSlot, work->macroSlot)];
+      const auto &slot = macros[macroIndex(work->coreSlot, work->macroSlot)];
+      if (!slot)
+        return fail("CIM readback references an unconfigured Macro");
+      const MacroState &macro = *slot;
       emitTrace(trace, sequence, CIMTraceEventKind::ConfigureReturnRoute,
                 binding.groupId, binding.workId, binding.macroSlot,
                 static_cast<int64_t>(packetIndex));
