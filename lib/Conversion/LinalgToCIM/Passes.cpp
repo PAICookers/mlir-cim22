@@ -39,6 +39,7 @@ namespace mlir::cim {
 #define GEN_PASS_DEF_MATERIALIZECIMSCHEDULE
 #define GEN_PASS_DEF_NORMALIZECIMCONV
 #define GEN_PASS_DEF_NORMALIZECIMLINEAR
+#define GEN_PASS_DEF_SPLITCIMBF16SIGNS
 #define GEN_PASS_DEF_PREPARECIMBF16
 #define GEN_PASS_DEF_OUTLINECIMBF16
 #define GEN_PASS_DEF_PARTITIONCIMPROGRAM
@@ -2229,6 +2230,190 @@ bool isStaticFloatKernel(linalg::LinalgOp op, Type elementType) {
          hasCanonicalFloatContractionBody(op->getRegion(0), elementType);
 }
 
+// MLIR's upstream range analysis covers integer SSA. Tensor floating sign
+// facts here come only from constants, value-preserving views and scalar
+// expressions whose sign is independent of rounding; unknown values split.
+bool isNonnegativeFloat(Value value, DenseMap<Value, bool> &known) {
+  if (auto found = known.find(value); found != known.end())
+    return found->second;
+  auto prove = [&](Value source) { return isNonnegativeFloat(source, known); };
+  bool result = false;
+  if (auto argument = dyn_cast<BlockArgument>(value)) {
+    if (auto parent =
+            dyn_cast<linalg::LinalgOp>(argument.getOwner()->getParentOp()))
+      if (argument.getArgNumber() < parent->getNumOperands())
+        result = prove(parent->getOperand(argument.getArgNumber()));
+  } else if (auto constant = value.getDefiningOp<arith::ConstantOp>()) {
+    if (auto scalar = dyn_cast<FloatAttr>(constant.getValue()))
+      result = !scalar.getValue().isNegative() || scalar.getValue().isZero();
+    else if (auto elements = dyn_cast<DenseFPElementsAttr>(constant.getValue()))
+      result =
+          llvm::all_of(elements.getValues<APFloat>(), [](const APFloat &v) {
+            return !v.isNegative() || v.isZero();
+          });
+  } else if (value.getDefiningOp<arith::UIToFPOp>()) {
+    result = true;
+  } else if (auto conversion = value.getDefiningOp<arith::SIToFPOp>()) {
+    result =
+        static_cast<bool>(conversion.getIn().getDefiningOp<arith::ExtUIOp>());
+  } else if (auto conversion = value.getDefiningOp<arith::ExtFOp>()) {
+    result = prove(conversion.getIn());
+  } else if (auto conversion = value.getDefiningOp<arith::TruncFOp>()) {
+    result = prove(conversion.getIn());
+  } else if (auto select = value.getDefiningOp<arith::SelectOp>()) {
+    result = prove(select.getTrueValue()) && prove(select.getFalseValue());
+  } else if (auto op = value.getDefiningOp();
+             op && isa<arith::AddFOp, arith::MulFOp>(op)) {
+    result = prove(op->getOperand(0)) && prove(op->getOperand(1));
+  } else if (auto maximum = value.getDefiningOp<arith::MaximumFOp>()) {
+    // maximum propagates NaN, whereas maxnum can discard a NaN sign witness
+    // and return a negative finite operand. Keep maxnum conservative.
+    result = prove(maximum.getLhs()) || prove(maximum.getRhs());
+  } else if (auto view = value.getDefiningOp<tensor::CollapseShapeOp>()) {
+    result = prove(view.getSrc());
+  } else if (auto view = value.getDefiningOp<tensor::ExpandShapeOp>()) {
+    result = prove(view.getSrc());
+  } else if (auto view = value.getDefiningOp<tensor::ExtractSliceOp>()) {
+    result = prove(view.getSource());
+  } else if (auto view = value.getDefiningOp<linalg::TransposeOp>()) {
+    result = prove(view.getInput());
+  } else if (auto pad = value.getDefiningOp<tensor::PadOp>()) {
+    Value padding = pad.getConstantPaddingValue();
+    result = padding && prove(pad.getSource()) && prove(padding);
+  } else if (auto concat = value.getDefiningOp<tensor::ConcatOp>()) {
+    result = llvm::all_of(concat.getInputs(), prove);
+  } else if (auto generic = value.getDefiningOp<linalg::GenericOp>()) {
+    unsigned resultNumber = cast<OpResult>(value).getResultNumber();
+    if (generic.hasPureTensorSemantics() &&
+        generic.getNumReductionLoops() == 0 &&
+        generic.getIndexingMapsArray()[generic.getNumDpsInputs() + resultNumber]
+            .isIdentity()) {
+      auto yield = cast<linalg::YieldOp>(generic.getBody()->getTerminator());
+      result = prove(yield.getValues()[resultNumber]);
+    }
+  }
+  known[value] = result;
+  return result;
+}
+
+class SplitCIMBF16Signs final
+    : public impl::SplitCIMBF16SignsBase<SplitCIMBF16Signs> {
+public:
+  using Base::Base;
+
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    if (compensation != "sign-split" && compensation != "legacy" &&
+        compensation != "none") {
+      module.emitError("BF16 compensation must be sign-split, legacy or none");
+      return signalPassFailure();
+    }
+    if (module->hasAttr("cim.bf16_corrected")) {
+      module.emitError(
+          "obsolete cim.bf16_corrected marker; recompile the model");
+      return signalPassFailure();
+    }
+    if (Attribute attr = module->getAttr("cim.bf16_compensation")) {
+      auto selected = dyn_cast<StringAttr>(attr);
+      if (!selected || selected.getValue() != compensation) {
+        module.emitError("conflicting BF16 compensation mode; recompile from "
+                         "the original IR");
+        return signalPassFailure();
+      }
+    }
+    SmallVector<linalg::LinalgOp> candidates;
+    module.walk([&](linalg::LinalgOp op) {
+      if (op->getNumResults() != 1)
+        return;
+      Type element = getElementTypeOrSelf(op->getResult(0).getType());
+      if (!op->hasAttr("cim.bf16_branch") &&
+          (element.isF32() || element.isBF16()) &&
+          isStaticFloatKernel(op, element))
+        candidates.push_back(op);
+    });
+    IRRewriter rewriter(&getContext());
+    if (!candidates.empty())
+      module->setAttr("cim.bf16_compensation",
+                      rewriter.getStringAttr(compensation));
+    if (compensation != "sign-split")
+      return;
+    for (linalg::LinalgOp op : candidates) {
+      DenseElementsAttr weights = *evaluateDenseTensor(op.getDpsInputs()[0]);
+      if (llvm::any_of(weights.getValues<APFloat>(),
+                       [](const APFloat &v) { return !v.isFinite(); })) {
+        op.emitError("BF16 correction requires finite fixed weights");
+        return signalPassFailure();
+      }
+      rewriter.setInsertionPoint(op);
+      Location loc = op.getLoc();
+      Value input = op.getDpsInputs()[1];
+      auto inputType = cast<RankedTensorType>(input.getType());
+      auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
+      Type element = inputType.getElementType();
+      // W*x = Wp*xp - Wn*xp - Wp*xn + Wn*xn; bias stays outside.
+      // This real-algebra identity can change floating-point rounding.
+      auto positiveWeight = weights.mapValues(element, [](const APFloat &v) {
+        return v.isNegative() || v.isZero()
+                   ? APFloat::getZero(v.getSemantics()).bitcastToAPInt()
+                   : v.bitcastToAPInt();
+      });
+      auto negativeWeight = weights.mapValues(element, [](const APFloat &v) {
+        if (!v.isNegative() || v.isZero())
+          return APFloat::getZero(v.getSemantics()).bitcastToAPInt();
+        APFloat magnitude = v;
+        magnitude.changeSign();
+        return magnitude.bitcastToAPInt();
+      });
+      Value wp = arith::ConstantOp::create(rewriter, loc, positiveWeight);
+      Value wn = arith::ConstantOp::create(rewriter, loc, negativeWeight);
+      Value inputZero = arith::ConstantOp::create(
+          rewriter, loc,
+          DenseElementsAttr::get(inputType, rewriter.getZeroAttr(element)));
+      Value isZero = arith::CmpFOp::create(
+          rewriter, loc, arith::CmpFPredicate::OEQ, input, inputZero);
+      DenseMap<Value, bool> known;
+      // Only a proof of x>=0 permits dropping the two xn branches.
+      bool nonnegative = isNonnegativeFloat(input, known);
+      Value xp = input;
+      Value xn;
+      if (!nonnegative) {
+        Value negative = arith::CmpFOp::create(
+            rewriter, loc, arith::CmpFPredicate::OLT, input, inputZero);
+        // The unordered NaN case reaches xp and the native rejection boundary.
+        xp = arith::SelectOp::create(rewriter, loc, negative, inputZero, input);
+        Value negated = arith::NegFOp::create(rewriter, loc, input);
+        xn = arith::SelectOp::create(rewriter, loc, negative, negated,
+                                     inputZero);
+      }
+      xp = arith::SelectOp::create(rewriter, loc, isZero, inputZero, xp);
+      auto branch = [&](Value weight, Value activation) -> Value {
+        Operation *clone = rewriter.clone(*op);
+        clone->setOperand(0, weight);
+        clone->setOperand(1, activation);
+        clone->setAttr("cim.bf16_branch", rewriter.getUnitAttr());
+        Value output = clone->getResult(0);
+        if (element.isBF16())
+          output = arith::ExtFOp::create(
+              rewriter, loc, resultType.clone(rewriter.getF32Type()), output);
+        return output;
+      };
+      Value positivePositive = branch(wp, xp);
+      Value positiveNegative = branch(wn, xp);
+      Value result = arith::SubFOp::create(rewriter, loc, positivePositive,
+                                           positiveNegative);
+      if (!nonnegative) {
+        Value negativePositive = branch(wp, xn);
+        Value negativeNegative = branch(wn, xn);
+        result = arith::SubFOp::create(rewriter, loc, result, negativePositive);
+        result = arith::AddFOp::create(rewriter, loc, result, negativeNegative);
+      }
+      if (element.isBF16())
+        result = arith::TruncFOp::create(rewriter, loc, resultType, result);
+      rewriter.replaceOp(op, result);
+    }
+  }
+};
+
 class PrepareCIMBF16 final : public impl::PrepareCIMBF16Base<PrepareCIMBF16> {
 public:
   using Base::Base;
@@ -2272,6 +2457,9 @@ public:
                      rewriter, loc, TypeRange{bf16ResultType},
                      ValueRange{weight, activation}, ValueRange{zero})
                      .getResult(0);
+      if (op->hasAttr("cim.bf16_branch"))
+        result.getDefiningOp()->setAttr("cim.bf16_branch",
+                                        rewriter.getUnitAttr());
       // Keep FP32 bias, residuals and shared activation users in their original
       // precision. Invoking this pass explicitly opts the contraction into
       // BF16.

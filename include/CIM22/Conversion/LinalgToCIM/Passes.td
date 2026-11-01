@@ -60,6 +60,27 @@ def NormalizeCIMLinear : Pass<"normalize-cim-linear", "::mlir::ModuleOp"> {
                            "::mlir::tensor::TensorDialect"];
 }
 
+def SplitCIMBF16Signs : Pass<"split-cim-bf16-signs", "::mlir::ModuleOp"> {
+  let summary =
+      "Split fixed-weight floating contractions into nonnegative CIM branches";
+  let description = [{
+    Normalize signed weights and activations before BF16 preparation. The
+    generated nonnegative contractions keep the existing BF16 tile boundaries;
+    their results are combined in FP32 before the original bias consumers.
+    A proven nonnegative activation needs two branches; all other activations
+    use four. Runtime normalization and support-set zero handling remain in
+    the fixed CIM numerical algorithm. Only existing offloadable static tensor
+    contractions are rewritten, and INT8 and dynamic weights remain unchanged.
+    Legacy and none retain signed contractions for baseline comparisons;
+    only sign-split, the default, changes their decomposition. This is target
+    numerical lowering, not an IEEE-equivalent canonicalization.
+  }];
+  let options = [Option<"compensation", "bf16-compensation", "std::string",
+                        "\"sign-split\"", "sign-split, legacy or none">];
+  let dependentDialects = ["::mlir::arith::ArithDialect",
+                           "::mlir::linalg::LinalgDialect"];
+}
+
 def PrepareCIMBF16 : Pass<"prepare-cim-bf16", "::mlir::ModuleOp"> {
   let summary = "Convert eligible constant-weight FP32 contractions to BF16 with Host casts";
   let dependentDialects = ["::mlir::arith::ArithDialect",

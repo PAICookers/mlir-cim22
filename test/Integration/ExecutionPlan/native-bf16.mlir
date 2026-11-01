@@ -1,4 +1,4 @@
-// RUN: mlir-cim22-opt %s --cim-bf16-pipeline='stage=packet max-kernel-columns=1' -o %t.packet
+// RUN: mlir-cim22-opt %s --cim-bf16-pipeline='bf16-compensation=none stage=packet max-kernel-columns=1' -o %t.packet
 // RUN: %python %S/../../python/CIM22/verify_native_runtime.py %t.packet %cim22_runtime
 
 // Supplier model: the helper uses small normal inputs so raw-exponent BF16

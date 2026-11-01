@@ -196,7 +196,8 @@ def main():
         [
             args.opt,
             str(source),
-            f"--cim-bf16-pipeline=stage=split max-kernel-columns={args.stream_columns}",
+            "--cim-bf16-pipeline=stage=split bf16-compensation=none "
+            f"max-kernel-columns={args.stream_columns}",
         ]
     )
     assert "scf.for" in split and "tensor.insert_slice" in split
@@ -229,7 +230,8 @@ def main():
         [
             args.opt,
             str(source),
-            f"--cim-bf16-pipeline=max-kernel-columns={args.stream_columns}",
+            "--cim-bf16-pipeline=bf16-compensation=none "
+            f"max-kernel-columns={args.stream_columns}",
         ]
     )
     transaction_reference = args.work_dir / "transaction-reference.mlir"
