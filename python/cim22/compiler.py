@@ -23,25 +23,40 @@ from .runtime import (
     runtime_library,
 )
 
-type RuntimeBackend = Literal["software", "usb"]
+type RuntimeBackend = Literal["simulator", "usb"]
+type BF16Compensation = Literal["sign-split", "legacy", "none"]
 
 
 class BackendOptions(TypedDict, total=False):
     """Application options shared by the PyTorch and TensorFlow frontends."""
 
-    runtime: RuntimeBackend
+    runtime: RuntimeBackend | Literal["reference"]
+    bf16_compensation: BF16Compensation
     usb_config: UsbConfig
     artifact_dir: str | Path
     debug_dir: str | Path
 
 
-def _validate_options(options: BackendOptions) -> None:
+def _validate_options(
+    options: BackendOptions, *, allow_reference: bool = False
+) -> None:
     """Reject unsupported runtime choices before capture or compilation."""
     runtime = options.get("runtime", "usb")
-    if runtime not in ("software", "usb"):
-        raise ValueError("CIM22 runtime must be 'software' or 'usb'")
+    allowed = (
+        ("reference", "simulator", "usb")
+        if allow_reference
+        else ("simulator", "usb")
+    )
+    if runtime not in allowed:
+        raise ValueError(f"CIM22 runtime must be one of {allowed}")
     if options.get("usb_config") is not None and runtime != "usb":
         raise ValueError("CIM22 usb_config requires runtime='usb'")
+    if runtime != "reference" and options.get(
+        "bf16_compensation", "sign-split"
+    ) not in ("sign-split", "legacy", "none"):
+        raise ValueError(
+            "CIM22 bf16_compensation must be 'sign-split', 'legacy' or 'none'"
+        )
 
 
 def _emit_object(
@@ -87,6 +102,7 @@ def _compile(
     artifact_path: Path | None = None,
     debug_dir: Path | None = None,
     runtime: RuntimeBackend = "usb",
+    bf16_compensation: BF16Compensation = "sign-split",
 ) -> Session:
     """Compile a functional ATen graph; return its internal flat runtime.
 
@@ -122,6 +138,7 @@ def _compile(
         artifact_path=artifact_path,
         debug_dir=debug_dir,
         runtime=runtime,
+        bf16_compensation=bf16_compensation,
     )
 
 
@@ -131,6 +148,7 @@ def _compile_linalg(
     artifact_path: Path | None = None,
     debug_dir: Path | None = None,
     runtime: RuntimeBackend = "usb",
+    bf16_compensation: BF16Compensation = "sign-split",
 ) -> Session:
     """Share native lowering, linking and artifact ownership across frontends."""
     library = runtime_library()
@@ -176,7 +194,8 @@ def _compile_linalg(
                 [
                     executable,
                     str(linalg),
-                    "--cim-bf16-pipeline=stage=packet max-kernel-columns=1",
+                    "--cim-bf16-pipeline=stage=packet max-kernel-columns=1 "
+                    f"bf16-compensation={bf16_compensation}",
                     "-o",
                     str(packet),
                 ],

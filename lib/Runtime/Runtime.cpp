@@ -75,8 +75,6 @@ extern "C" void *cim22_session_load_shared(const char *path, char *error,
                               capacity);
     return nullptr;
   }
-  if (session->model.backend == cim22::runtime::RuntimeBackend::Software)
-    session->runner = std::make_unique<::cim22::execution::CIMSoftwareRunner>();
   session->invoke = model->invoke;
   return session.release();
 }
@@ -85,7 +83,9 @@ namespace {
 // Share descriptor validation and error propagation across the two tile ABIs.
 template <typename Input, typename Output>
 void dispatch(int64_t id, StridedMemRefType<Input, 2> *input,
-              StridedMemRefType<Output, 2> *output) {
+              StridedMemRefType<Output, 2> *output,
+              ::cim22::execution::BF16Compensation mode =
+                  ::cim22::execution::BF16Compensation::None) {
   if (!activeSession)
     return;
   Session &session = *activeSession;
@@ -136,16 +136,20 @@ void dispatch(int64_t id, StridedMemRefType<Input, 2> *input,
     else
       outputs.push_back({{}, row});
   }
-  if (!session.runner) {
-    session.error =
-        session.model.backend == cim22::runtime::RuntimeBackend::USB
-            ? "USB runtime is not configured; call configure_usb first"
-            : "runtime backend is unavailable";
+  const bool usb = session.model.backend == cim22::runtime::RuntimeBackend::USB;
+  if (usb && !session.runner) {
+    session.error = "USB runtime is not configured; call configure_usb first";
     return;
   }
   ::cim22::execution::CIMRunOutputs runOutputs{outputs};
   ++session.dispatches;
-  if (auto error = session.runner->run(transaction, {inputs}, runOutputs))
+  auto error = [&]() -> llvm::Error {
+    if (usb)
+      return session.runner->run(transaction, {inputs}, runOutputs, mode);
+    ::cim22::execution::CIMSoftwareRunner runner(mode);
+    return runner.run(transaction, {inputs}, runOutputs);
+  }();
+  if (error)
     session.error =
         session.model.kernelNames[id] + ": " + llvm::toString(std::move(error));
 }
@@ -155,6 +159,21 @@ extern "C" void
 _mlir_ciface_cim22_dispatch(int64_t id, StridedMemRefType<uint16_t, 2> *input,
                             StridedMemRefType<uint16_t, 2> *output) {
   dispatch(id, input, output);
+}
+
+// Numeric semantics are explicit in the generated call, not model policy data.
+extern "C" void
+_mlir_ciface_cim22_dispatch_sign_split(int64_t id,
+                                       StridedMemRefType<uint16_t, 2> *input,
+                                       StridedMemRefType<uint16_t, 2> *output) {
+  dispatch(id, input, output, ::cim22::execution::BF16Compensation::SignSplit);
+}
+
+extern "C" void
+_mlir_ciface_cim22_dispatch_legacy(int64_t id,
+                                   StridedMemRefType<uint16_t, 2> *input,
+                                   StridedMemRefType<uint16_t, 2> *output) {
+  dispatch(id, input, output, ::cim22::execution::BF16Compensation::Legacy);
 }
 
 extern "C" void

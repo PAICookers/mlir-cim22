@@ -59,10 +59,10 @@ def compiled_graph(
         backend="cim22",
         fullgraph=True,
         dynamic=False,
-        options={"runtime": "software", "artifact_dir": folder},
+        options={"runtime": "simulator", "artifact_dir": folder},
     )
     with torch.inference_mode():
-        compiled(torch.full((2, 3, 65), 2.0**-133))
+        compiled(torch.ones(2, 3, 65))
     (artifact,) = folder.glob(f"*{MODEL_SUFFIX}")
     return compiled, artifact
 
@@ -71,8 +71,8 @@ def test_inference_ownership_and_error_recovery(
     compiled_graph: CompiledGraph,
 ) -> None:
     compiled, _ = compiled_graph
-    # Raw BF16 0x0001 doubled on Host gives tile outputs 128+2, then bias 1.
-    value = torch.full((2, 3, 65), 2.0**-133)
+    # Unit input doubled on Host gives 130, then bias 1.
+    value = torch.ones(2, 3, 65)
     value[:, 1] *= 2
     value[:, 2] *= 4
     original = value.clone()
@@ -106,7 +106,7 @@ def test_atomic_publication(
         pytest.raises(FileExistsError),
     ):
         _compile(
-            graph, torch.ones(2), runtime="software", artifact_path=artifact
+            graph, torch.ones(2), runtime="simulator", artifact_path=artifact
         )
     assert hashlib.sha256(artifact.read_bytes()).digest() == original
     incomplete = tmp_path / f"incomplete{MODEL_SUFFIX}"
@@ -118,7 +118,7 @@ def test_atomic_publication(
         pytest.raises(RuntimeError, match="CIM lowering failed"),
     ):
         _compile(
-            graph, torch.ones(2), runtime="software", artifact_path=incomplete
+            graph, torch.ones(2), runtime="simulator", artifact_path=incomplete
         )
     assert not incomplete.exists()
 
@@ -202,13 +202,13 @@ def test_model_lifetime_and_unicode_path(
             torch.fx.symbolic_trace(Scale(2)),
             value,
             artifact_path=first_path,
-            runtime="software",
+            runtime="simulator",
         ) as first,
         _compile(
             torch.fx.symbolic_trace(Scale(3)),
             value,
             artifact_path=second_path,
-            runtime="software",
+            runtime="simulator",
         ) as second,
         Session(first_path) as duplicate,
     ):

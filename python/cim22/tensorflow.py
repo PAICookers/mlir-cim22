@@ -81,8 +81,8 @@ def compile(
             ``input_signature`` (FP32, INT8 or INT32). Wrap Keras calls with
             ``training=False``.
             Captured weights are frozen; subsequent updates require compilation.
-        options: Same keys as PyTorch's CIM22 backend: ``runtime`` (defaults to
-            ``usb``), optional ``usb_config``, ``artifact_dir`` and ``debug_dir``.
+        options: Native runtime (USB by default, or simulator), BF16
+            compensation, USB configuration, and artifact/debug directories.
             Directories accept strings or Paths. Each compilation writes a
             unique ``graph-<id>.so/.dll`` and matching debug subdirectory.
             USB configuration is applied to the owned Session. CIM-supported
@@ -188,6 +188,8 @@ def compile(
             str(shared),
             "--runtime",
             runtime,
+            "--bf16-compensation",
+            options.get("bf16_compensation", "sign-split"),
         ]
         if debug_dir is not None:
             command.extend(

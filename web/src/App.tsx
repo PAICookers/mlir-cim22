@@ -218,7 +218,7 @@ export default function App() {
           </div>
           <div className="flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-4 py-2 text-xs font-medium text-primary">
             <Cpu size={14} />
-            软件运行器<span className="mx-1 text-blue-200">|</span>本地单任务
+            CIM 仿真<span className="mx-1 text-blue-200">|</span>本地单任务
           </div>
         </div>
         {(!connected || error || task?.error) && (
@@ -516,7 +516,7 @@ export default function App() {
                       {side === "original" ? "原始模型" : "CIM 模型"}
                     </h3>
                     <span className="rounded-md bg-muted px-2 py-1 text-[11px] text-muted-foreground">
-                      {side === "original" ? "PyTorch · CPU" : "软件运行器"}
+                      {side === "original" ? "PyTorch · CPU" : "CIM 仿真"}
                     </span>
                   </div>
                   <div className="mt-5 grid grid-cols-2 gap-4">
@@ -671,7 +671,7 @@ export default function App() {
         </Card>
         <footer className="mt-6 flex flex-wrap justify-between gap-2 text-[11px] text-muted-foreground">
           <span>CIM22 · 本地模型工作台</span>
-          <span>固定输入 · 每次推理前复位神经元 · 软件运行</span>
+          <span>固定输入 · 每次推理前复位神经元 · CIM 仿真</span>
         </footer>
       </main>
     </div>

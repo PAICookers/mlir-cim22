@@ -21,7 +21,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("destination", type=Path)
-    parser.add_argument("--runtime", choices=("software", "usb"), required=True)
+    parser.add_argument(
+        "--runtime", choices=("simulator", "usb"), required=True
+    )
+    parser.add_argument(
+        "--bf16-compensation",
+        choices=("sign-split", "legacy", "none"),
+        default="sign-split",
+    )
     parser.add_argument("--debug-dir", type=Path)
     args = parser.parse_args()
     model = onnx.load_model(args.source)
@@ -45,6 +52,7 @@ def main() -> None:
         artifact_path=args.destination,
         debug_dir=args.debug_dir,
         runtime=args.runtime,
+        bf16_compensation=args.bf16_compensation,
     ):
         pass
 

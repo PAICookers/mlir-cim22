@@ -329,6 +329,19 @@ def test_software_session_rejects_usb(
         compiled.configure_usb(usb_config)
 
 
+class UsbInt8Matmul(torch.nn.Module):
+    """Exercise INT8 USB routing and configuration failure cleanup."""
+
+    def __init__(self, columns: int) -> None:
+        super().__init__()
+        self.weight = torch.nn.Parameter(
+            torch.ones(64, columns, dtype=torch.int8), requires_grad=False
+        )
+
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        return torch._int_mm(value, self.weight)
+
+
 @pytest.mark.integration
 @pytest.mark.usefixtures("native_toolchain")
 @pytest.mark.parametrize(
@@ -337,9 +350,9 @@ def test_software_session_rejects_usb(
 def test_compiled_usb_backend(
     tmp_path: Path, embedded_model: "EmbeddedModel", options: dict[str, str]
 ) -> None:
-    value = torch.ones(1, 64)
+    value = torch.ones(1, 64, dtype=torch.int8)
     compiled = torch.compile(
-        torch.nn.Linear(64, 48).eval(),
+        UsbInt8Matmul(48).eval(),
         backend="cim22",
         fullgraph=True,
         dynamic=False,
@@ -392,9 +405,9 @@ def test_backend_usb_configuration_failure_closes_session(
 ) -> None:
     from unittest.mock import patch
 
-    value = torch.ones(1, 64)
+    value = torch.ones(1, 64, dtype=torch.int8)
     compiled = torch.compile(
-        torch.nn.Linear(64, 16).eval(),
+        UsbInt8Matmul(16).eval(),
         backend="cim22",
         fullgraph=True,
         dynamic=False,
@@ -435,7 +448,7 @@ def test_backend_usb_configuration_failure_closes_session(
     [
         ({"runtime": "invalid"}, "runtime must be"),
         (
-            {"runtime": "software", "usb_config": UsbConfig(1, 2, 0x81, 1)},
+            {"runtime": "simulator", "usb_config": UsbConfig(1, 2, 0x81, 1)},
             "requires runtime='usb'",
         ),
     ],
