@@ -1,5 +1,6 @@
 """TensorFlow capture must execute native code, preserving its flat signature."""
 
+import runpy
 from pathlib import Path
 
 import numpy as np
@@ -195,3 +196,25 @@ def test_mixed_integer_host_outputs() -> None:
         assert session.output_dtypes == (np.dtype(np.int32), np.dtype(np.int8))
         for actual, expected in zip(session(value), model(value), strict=True):
             np.testing.assert_array_equal(actual, expected.numpy())
+
+
+def test_example_keeps_artifacts(tmp_path: Path, monkeypatch) -> None:
+    """The small example leaves a reloadable model and IR in its output folder."""
+    monkeypatch.chdir(tmp_path)
+    example = (
+        Path(__file__).resolve().parents[1] / "examples/tensorflow_compile.py"
+    )
+    runpy.run_path(str(example), run_name="__main__")
+    runs = list((tmp_path / "outputs/tensorflow").iterdir())
+    assert len(runs) == 1
+    assert (runs[0] / "compile.log").is_file()
+    assert (runs[0] / "ir/model.linalg.mlir").is_file()
+    rng = np.random.default_rng(42)
+    w1 = rng.integers(-3, 4, (8, 8), dtype=np.int8)
+    w2 = rng.integers(-3, 4, (8, 4), dtype=np.int8)
+    value = rng.integers(-4, 5, (1, 8), dtype=np.int8)
+    hidden = np.clip(value.astype(np.int32) @ w1.astype(np.int32), 0, 127)
+    expected = hidden @ w2.astype(np.int32)
+    with Session(runs[0] / f"model{MODEL_SUFFIX}") as loaded:
+        np.testing.assert_array_equal(loaded(value)[0], expected)
+        assert loaded.dispatch_count >= 2

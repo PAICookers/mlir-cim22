@@ -1,60 +1,70 @@
-"""Accept TF signed-INT8 import, CIM execution and native artifact reload.
+"""Compile a tiny, reproducible INT8 network and compare its outputs.
 
-Install the tensorflow extra and run with a native C linker available. This is
-a deterministic small-model test, not a trained-model or hardware benchmark.
+Run with the tensorflow extra and a native C linker. Model and IR files remain
+in outputs/tensorflow/<run timestamp>/ relative to the working directory.
 """
 
-import tempfile
+import os
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-import tensorflow as tf
-
-from cim22 import Session
-from cim22.runtime import MODEL_SUFFIX
-from cim22.tensorflow import compile
 
 
-def main() -> None:
-    """Exercise signed inputs, padding, multiple tiles and a Host bias add."""
-    weights = ((np.arange(65 * 17).reshape(65, 17) % 7) - 3).astype(np.int8)
-    bias = np.arange(17, dtype=np.int32) - 8
+def main(output: Path) -> None:
+    """Run Linear(8, 8) -> clipped ReLU -> Linear(8, 4) in software."""
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+    import tensorflow as tf
 
-    @tf.function(input_signature=[tf.TensorSpec([2, 65], tf.int8)])
+    from cim22.runtime import MODEL_SUFFIX
+    from cim22.tensorflow import compile
+
+    tf.get_logger().setLevel("ERROR")
+    rng = np.random.default_rng(42)
+    w1 = rng.integers(-3, 4, (8, 8), dtype=np.int8)
+    w2 = rng.integers(-3, 4, (8, 4), dtype=np.int8)
+
+    @tf.function(input_signature=[tf.TensorSpec([1, 8], tf.int8)])
     def model(x: tf.Tensor) -> tf.Tensor:
-        # Tout makes the computation explicitly i8 x i8 -> i32. Merely storing
-        # an FP32 layer's checkpoint in INT8 would not exercise this path.
+        # Each Linear computes i8 x i8 -> i32. Clip before casting the hidden
+        # activation back to i8, so the second layer also uses integer VMM.
+        hidden = tf.raw_ops.BatchMatMulV3(x=x, y=tf.constant(w1), Tout=tf.int32)
+        hidden = tf.cast(tf.clip_by_value(hidden, 0, 127), tf.int8)
         return tf.raw_ops.BatchMatMulV3(
-            x=x, y=tf.constant(weights), Tout=tf.int32
-        ) + tf.constant(bias)
+            x=hidden, y=tf.constant(w2), Tout=tf.int32
+        )
 
-    value = ((np.arange(130).reshape(2, 65) % 256) - 128).astype(np.int8)
-    value[1] = 127
+    value = rng.integers(-4, 5, (1, 8), dtype=np.int8)
     reference = model(value).numpy()
-    np.testing.assert_array_equal(
-        reference, value.astype(np.int32) @ weights.astype(np.int32) + bias
+    print("Compiling: INT8 Linear(8,8) -> clipped ReLU -> Linear(8,4); seed=42")
+    with compile(
+        model,
+        artifact_path=output / f"model{MODEL_SUFFIX}",
+        debug_dir=output / "ir",
+        runtime="software",
+    ) as session:
+        (actual,) = session(value)
+        print(f"CIM software calls: {session.dispatch_count}")
+    print(f"TensorFlow: {reference.tolist()}")
+    print(f"CIM:        {actual.tolist()}")
+    print(
+        f"Max absolute error: {np.max(np.abs(actual.astype(np.int64) - reference))}"
     )
-    with tempfile.TemporaryDirectory(prefix="cim22-tensorflow-") as folder:
-        artifact = Path(folder) / f"model{MODEL_SUFFIX}"
-        with compile(
-            model, artifact_path=artifact, runtime="software"
-        ) as session:
-            (actual,) = session(value)
-            assert session.num_transactions > 0
-            assert session.dispatch_count > 0
-            np.testing.assert_array_equal(actual, reference)
-            dispatches = session.dispatch_count
-        with Session(artifact) as restored:
-            np.testing.assert_array_equal(restored(value)[0], actual)
-        print(f"TensorFlow INT8 -> native {MODEL_SUFFIX} -> CIM software: PASS")
-        print(f"Saved artifact reload: PASS; CIM dispatches: {dispatches}")
-
-    error = np.max(np.abs(actual.astype(np.int64) - reference))
-    print(f"TensorFlow INT32, first lane: {reference[:, 0].tolist()}")
-    print(f"CIM software, first lane:   {actual[:, 0].tolist()}")
-    print(f"Maximum absolute error: {error}")
-    print("Exact TensorFlow / NumPy / CIM agreement: PASS")
+    print(f"Model, debug IR and compile.log: {output.resolve()}")
 
 
 if __name__ == "__main__":
-    main()
+    output = Path("outputs/tensorflow") / datetime.now().strftime(
+        "%Y%m%d-%H%M%S-%f"
+    )
+    output.mkdir(parents=True)
+    # Capture native TensorFlow stderr as well as Python diagnostics, while
+    # leaving the concise results on stdout. Restore stderr even on failure.
+    with (output / "compile.log").open("w", encoding="utf-8") as log:
+        saved_stderr = os.dup(2)
+        try:
+            os.dup2(log.fileno(), 2)
+            main(output)
+        finally:
+            os.dup2(saved_stderr, 2)
+            os.close(saved_stderr)
