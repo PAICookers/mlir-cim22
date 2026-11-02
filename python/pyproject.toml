@@ -10,6 +10,7 @@ dependencies = ["numpy>=1.26,<3", "torch>=2.14,<3", "torch-mlir"]
 
 [project.optional-dependencies]
 web = ["fastapi>=0.115,<1", "spikingjelly>=0.0.0.0.12,<1", "uvicorn>=0.34,<1"]
+tensorflow = ["tensorflow==2.20.0", "tf2onnx==1.17.0", "onnx>=1.21.0,<2"]
 
 [project.scripts]
 cim22-web = "cim22.web.__main__:main"

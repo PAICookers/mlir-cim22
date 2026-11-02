@@ -347,15 +347,15 @@ bool isEvaluatedZeroSplat(Value value) {
          (*elements).getSplatValue<APInt>().isZero();
 }
 
-bool hasCanonicalInt8ContractionBody(Region &region,
-                                     unsigned accumulatorWidth) {
+bool hasCanonicalInt8ContractionBody(Region &region, unsigned accumulatorWidth,
+                                     unsigned operandWidth = 8) {
   if (!region.hasOneBlock())
     return false;
 
   Block &block = region.front();
   if (block.getNumArguments() != 3 ||
-      !block.getArgument(0).getType().isInteger(8) ||
-      !block.getArgument(1).getType().isInteger(8) ||
+      !block.getArgument(0).getType().isInteger(operandWidth) ||
+      !block.getArgument(1).getType().isInteger(operandWidth) ||
       !block.getArgument(2).getType().isInteger(accumulatorWidth) ||
       block.getOperations().size() != 5)
     return false;
@@ -1137,12 +1137,16 @@ std::optional<BF16ConvInfo> getBF16ConvInfo(linalg::LinalgOp op,
     supportedBiasLayout = true;
   }
   auto bias = biasValue.getDefiningOp<linalg::BroadcastOp>();
+  // Frontends may fold a frozen bias broadcast into a dense initializer.
+  auto constant = op.getDpsInits()[0].getDefiningOp<arith::ConstantOp>();
+  bool constantBias = constant && isa<DenseFPElementsAttr>(constant.getValue());
+  bool channelBias = bias && supportedBiasLayout &&
+                     bias.getDimensions() == ArrayRef<int64_t>({0, 2, 3});
   auto function = op->getParentOfType<func::FuncOp>();
-  bool biasInit = allowBiasEpilogue && elementType.isF32() && bias &&
-                  function && function.getBody().hasOneBlock() &&
+  bool biasInit = allowBiasEpilogue && elementType.isF32() && function &&
+                  function.getBody().hasOneBlock() &&
                   op->getBlock() == &function.getBody().front() &&
-                  supportedBiasLayout &&
-                  bias.getDimensions() == ArrayRef<int64_t>({0, 2, 3});
+                  (constantBias || channelBias);
   if ((!zeroInit && !biasInit) ||
       !hasCanonicalFloatContractionBody(op->getRegion(0), elementType))
     return std::nullopt;
@@ -1368,7 +1372,7 @@ void normalizeBF16Conv(linalg::LinalgOp op, const BF16ConvInfo &info,
       });
   Value result = restored.getResult(0);
   if (!isPositiveFloatZeroSplat(op.getDpsInits()[0], bf16)) {
-    // Explicit BF16 opt-in only: preserve the original FP32 broadcast value
+    // Explicit BF16 opt-in only: preserve the original FP32 initializer
     // (including shared users), adding it after the zero-init contraction.
     result = arith::AddFOp::create(rewriter, loc, result, op.getDpsInits()[0]);
   }
@@ -2035,6 +2039,116 @@ public:
   }
 };
 
+// Recover only lossless signed-i8 extensions and zero-point-zero subtraction
+// emitted by torch-mlir's ONNX MatMulInteger decomposition. Do not reinterpret
+// arbitrary i32 inputs or asymmetric/unsigned quantization as signed INT8.
+Value getSignedInt8Source(Value value) {
+  if (getElementTypeOrSelf(value.getType()).isSignlessInteger(8))
+    return value;
+  auto generic = value.getDefiningOp<linalg::GenericOp>();
+  if (!generic || !generic.hasPureTensorSemantics() ||
+      generic.getNumResults() != 1 || generic.getNumDpsInits() != 1 ||
+      generic.getNumParallelLoops() != generic.getNumLoops())
+    return {};
+  auto maps = generic.getIndexingMapsArray();
+  if (!maps.front().isIdentity() || !maps.back().isIdentity())
+    return {};
+  Block &body = generic.getRegion().front();
+  auto yield = cast<linalg::YieldOp>(body.getTerminator());
+  if (generic.getNumDpsInputs() == 1 && body.getOperations().size() == 2) {
+    auto ext = dyn_cast<arith::ExtSIOp>(body.front());
+    if (ext && ext.getIn() == body.getArgument(0) &&
+        ext.getIn().getType().isInteger(8) &&
+        yield.getValues()[0] == ext.getOut())
+      return generic.getDpsInputs()[0];
+  }
+  if (generic.getNumDpsInputs() == 2 && body.getOperations().size() == 3 &&
+      isa<IntegerType>(
+          getElementTypeOrSelf(generic.getDpsInputs()[1].getType())) &&
+      isEvaluatedZeroSplat(generic.getDpsInputs()[1])) {
+    auto ext = dyn_cast<arith::ExtSIOp>(body.front());
+    auto sub = dyn_cast<arith::SubIOp>(*std::next(body.begin()));
+    if (ext && sub && ext.getIn() == body.getArgument(1) &&
+        sub.getLhs() == body.getArgument(0) && sub.getRhs() == ext.getOut() &&
+        sub.getOverflowFlags() == arith::IntegerOverflowFlags::none &&
+        yield.getValues()[0] == sub.getResult())
+      return getSignedInt8Source(generic.getDpsInputs()[0]);
+  }
+  return {};
+}
+
+LogicalResult normalizeImportedInt8Linear(linalg::MatmulOp op,
+                                          PatternRewriter &rewriter) {
+  if (!op.hasPureTensorSemantics() || op->getNumResults() != 1 ||
+      hasMatMulIntegerMarker(op) || !hasCanonicalMatmulIndexingMaps(op) ||
+      !isEvaluatedZeroSplat(op.getDpsInits()[0]) ||
+      op.getCast() != linalg::TypeFn::cast_signed)
+    return failure();
+  auto resultType = cast<RankedTensorType>(op.getResult(0).getType());
+  auto inputType = cast<RankedTensorType>(op.getDpsInputs()[0].getType());
+  auto rhsType = cast<RankedTensorType>(op.getDpsInputs()[1].getType());
+  for (auto type : {resultType, inputType, rhsType})
+    if (!type.hasStaticShape() || type.getEncoding() ||
+        llvm::any_of(type.getShape(), [](int64_t d) { return d <= 0; }))
+      return failure();
+  // Bound the mathematical sum before narrowing an i64 accumulator to i32.
+  int64_t k = inputType.getDimSize(1), m = inputType.getDimSize(0);
+  int64_t n = resultType.getDimSize(1);
+  // Native i8/i32 contractions already have a normalizer. This adapter only
+  // recovers the widened ONNX form before entering the shared INT8 pipeline.
+  if (k > INT32_MAX / (128 * 128) ||
+      !resultType.getElementType().isInteger(64) ||
+      !hasCanonicalInt8ContractionBody(op.getRegion(), 64, 32))
+    return failure();
+  Value input = getSignedInt8Source(op.getDpsInputs()[0]);
+  Value originalWeight = getSignedInt8Source(op.getDpsInputs()[1]);
+  auto source = evaluateDenseTensor(originalWeight ? originalWeight
+                                                   : op.getDpsInputs()[1]);
+  if (!input || failed(source))
+    return failure();
+  SmallVector<APInt> values;
+  for (APInt value : source->getValues<APInt>()) {
+    if (!value.isSignedIntN(8))
+      return failure();
+    values.push_back(value.sextOrTrunc(8));
+  }
+  SmallVector<APInt> transposed;
+  for (int64_t row = 0; row < n; ++row)
+    for (int64_t column = 0; column < k; ++column)
+      transposed.push_back(values[column * n + row]);
+  auto weightType = RankedTensorType::get({n, k}, rewriter.getIntegerType(8));
+  auto weights = DenseElementsAttr::get(weightType, transposed);
+  if (proveMatMulIntegerRanges(weights,
+                               SmallVector<IntegerRange>(k, {-128, 127})) !=
+      MatMulIntegerStatus::valid)
+    return failure();
+  Location loc = op.getLoc();
+  Value weight = arith::ConstantOp::create(rewriter, loc, weights);
+  auto empty = tensor::EmptyOp::create(rewriter, loc, ArrayRef<int64_t>{k, m},
+                                       rewriter.getIntegerType(8));
+  Value activation =
+      linalg::TransposeOp::create(rewriter, loc, input, empty.getResult(),
+                                  ArrayRef<int64_t>{1, 0})
+          .getResult()[0];
+  auto normalizedType = RankedTensorType::get({n, m}, rewriter.getI32Type());
+  Value zero = arith::ConstantOp::create(
+      rewriter, loc,
+      DenseElementsAttr::get(normalizedType, rewriter.getI32IntegerAttr(0)));
+  auto matmul = linalg::MatmulOp::create(
+      rewriter, loc, TypeRange{normalizedType}, ValueRange{weight, activation},
+      ValueRange{zero});
+  matmul->setAttr(CIMDialect::getCIMInt8AttrName(), rewriter.getUnitAttr());
+  auto restored = tensor::EmptyOp::create(
+      rewriter, loc, ArrayRef<int64_t>{m, n}, rewriter.getI32Type());
+  Value result =
+      linalg::TransposeOp::create(rewriter, loc, matmul.getResult(0),
+                                  restored.getResult(), ArrayRef<int64_t>{1, 0})
+          .getResult()[0];
+  result = arith::ExtSIOp::create(rewriter, loc, resultType, result);
+  rewriter.replaceOp(op, result);
+  return success();
+}
+
 class NormalizeCIMLinear final
     : public impl::NormalizeCIMLinearBase<NormalizeCIMLinear> {
 public:
@@ -2042,6 +2156,15 @@ public:
 
   void runOnOperation() override {
     PatternRewriter rewriter(&getContext());
+    SmallVector<linalg::MatmulOp> integers;
+    getOperation()->walk([&](linalg::MatmulOp op) {
+      if (isa<IntegerType>(getElementTypeOrSelf(op.getResult(0).getType())))
+        integers.push_back(op);
+    });
+    for (auto op : integers) {
+      rewriter.setInsertionPoint(op);
+      (void)normalizeImportedInt8Linear(op, rewriter);
+    }
     SmallVector<linalg::BatchMatmulOp> batched;
     getOperation()->walk(
         [&](linalg::BatchMatmulOp op) { batched.push_back(op); });

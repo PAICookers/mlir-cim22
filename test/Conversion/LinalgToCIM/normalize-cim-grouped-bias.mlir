@@ -1,6 +1,24 @@
 // RUN: mlir-cim22-opt %s --normalize-cim-conv='allow-f32=true allow-bias-epilogue=true' | FileCheck %s
 // RUN: mlir-cim22-opt %s --normalize-cim-conv='allow-f32=true' | FileCheck %s --check-prefix=NOEPILOGUE --implicit-check-not=linalg.matmul
 
+// TensorFlow/ONNX import folds a constant channel bias into the full init.
+// CHECK-LABEL: func.func @constant_bias(
+// CHECK: %[[INIT:.*]] = arith.constant dense<2.000000e+00> : tensor<1x16x1x2xf32>
+// CHECK: linalg.matmul
+// CHECK: %[[RESULT:.*]] = arith.addf %{{.*}}, %[[INIT]]
+// CHECK: return %[[RESULT]], %[[INIT]]
+// NOEPILOGUE-LABEL: func.func @constant_bias(
+// NOEPILOGUE: linalg.conv_2d_nchw_fchw
+func.func @constant_bias(%input: tensor<1x64x1x2xf32>)
+    -> (tensor<1x16x1x2xf32>, tensor<1x16x1x2xf32>) {
+  %weight = arith.constant dense<0.01> : tensor<16x64x1x1xf32>
+  %init = arith.constant dense<2.0> : tensor<1x16x1x2xf32>
+  %result = linalg.conv_2d_nchw_fchw
+      ins(%input, %weight : tensor<1x64x1x2xf32>, tensor<16x64x1x1xf32>)
+      outs(%init : tensor<1x16x1x2xf32>) -> tensor<1x16x1x2xf32>
+  return %result, %init : tensor<1x16x1x2xf32>, tensor<1x16x1x2xf32>
+}
+
 // The wheel reshapes an NCHW channel broadcast into grouped output axes.
 // Keep that complete initializer as an FP32 epilogue, including shared users.
 // CHECK-LABEL: func.func @grouped_channel_bias(
