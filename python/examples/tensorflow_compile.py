@@ -16,7 +16,6 @@ def main(output: Path) -> None:
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
     import tensorflow as tf
 
-    from cim22.runtime import MODEL_SUFFIX
     from cim22.tensorflow import compile
 
     tf.get_logger().setLevel("ERROR")
@@ -35,16 +34,19 @@ def main(output: Path) -> None:
         )
 
     value = rng.integers(-4, 5, (1, 8), dtype=np.int8)
-    reference = model(value).numpy()
+    inputs = tf.constant(value)
+    reference = model(inputs).numpy()
     print("Compiling: INT8 Linear(8,8) -> clipped ReLU -> Linear(8,4); seed=42")
     with compile(
         model,
-        artifact_path=output / f"model{MODEL_SUFFIX}",
-        debug_dir=output / "ir",
-        runtime="software",
-    ) as session:
-        (actual,) = session(value)
-        print(f"CIM software calls: {session.dispatch_count}")
+        options={
+            "runtime": "software",
+            "artifact_dir": output,
+            "debug_dir": output / "ir",
+        },
+    ) as compiled:
+        actual = compiled(inputs).numpy()
+        print(f"CIM software calls: {compiled.session.dispatch_count}")
     print(f"TensorFlow: {reference.tolist()}")
     print(f"CIM:        {actual.tolist()}")
     print(

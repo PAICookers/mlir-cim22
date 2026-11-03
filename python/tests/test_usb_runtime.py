@@ -3,6 +3,7 @@
 import ctypes
 import os
 import threading
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +16,13 @@ import torch
 from torch._dynamo.exc import BackendCompilerFailed
 
 from cim22 import PLLConfig, Session, UsbConfig
-from cim22.runtime import MODEL_SUFFIX, _PLLConfig, _UsbConfig
+from cim22.runtime import (
+    MODEL_SUFFIX,
+    _initialize_session,
+    _PLLConfig,
+    _release_session,
+    _UsbConfig,
+)
 
 from ._generated import cim22_model_pb2 as proto
 
@@ -117,6 +124,71 @@ def mock_usb_session() -> tuple[Session, Mock, Mock]:
         cim22_session_configure_usb_with_pll=with_pll,
     )
     return session, legacy, with_pll
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_shared_session_initialization_owns_cleanup(
+    usb_config: UsbConfig,
+    mock_usb_session: tuple[Session, Mock, Mock],
+    monkeypatch: pytest.MonkeyPatch,
+    failure: bool,
+) -> None:
+    """Session destruction must precede cleanup of its loaded model files."""
+    session, _, _ = mock_usb_session
+    events: list[str] = []
+    session._resources = ExitStack()
+    owned = ExitStack()
+    owned.callback(events.append, "cleanup")
+
+    def release() -> None:
+        events.append("destroy")
+        session._resources.close()
+
+    def configure(config: UsbConfig) -> None:
+        assert config is usb_config
+        events.append("configure")
+        if failure:
+            raise RuntimeError("device unavailable")
+
+    session._finalizer = release
+    monkeypatch.setattr(session, "configure_usb", configure)
+    if failure:
+        with pytest.raises(RuntimeError, match="device unavailable"):
+            _initialize_session(session, usb_config, owned)
+    else:
+        assert _initialize_session(session, usb_config, owned) is session
+        assert events == ["configure"]
+        session.close()
+    assert session._handle is None
+    assert events == ["configure", "destroy", "cleanup"]
+    session.close()
+    assert events == ["configure", "destroy", "cleanup"]
+
+
+def test_cleanup_failure_leaves_session_closed(
+    mock_usb_session: tuple[Session, Mock, Mock],
+) -> None:
+    """A failed file cleanup must not permit reuse of a destroyed native handle."""
+    session, _, _ = mock_usb_session
+    destroy = Mock()
+    session._library.cim22_session_destroy = destroy
+    session._resources = ExitStack()
+
+    def fail() -> None:
+        raise RuntimeError("cleanup failed")
+
+    session._resources.callback(fail)
+    session._finalizer = lambda: _release_session(
+        session._library, 123, session._resources
+    )
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        session.close()
+    destroy.assert_called_once_with(123)
+    assert session._handle is None
+    with pytest.raises(RuntimeError, match="closed"):
+        session(np.ones(2, dtype=np.float32))
+    session.close()
+    destroy.assert_called_once_with(123)
 
 
 def test_manual_clock_uses_legacy_usb_entry(
@@ -362,13 +434,12 @@ def test_backend_usb_configuration_failure_closes_session(
     ("options", "message"),
     [
         ({"runtime": "invalid"}, "runtime must be"),
-        ({"unknown": True}, "Unknown CIM22"),
         (
             {"runtime": "software", "usb_config": UsbConfig(1, 2, 0x81, 1)},
             "requires runtime='usb'",
         ),
     ],
-    ids=["runtime", "unknown-option", "software-usb-config"],
+    ids=["runtime", "software-usb-config"],
 )
 def test_backend_rejects_invalid_options(
     options: dict[str, object], message: str

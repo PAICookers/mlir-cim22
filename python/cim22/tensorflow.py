@@ -1,30 +1,79 @@
 """Static TensorFlow inference through released ONNX and torch-mlir frontends."""
 
+import sys
+import tempfile
+from contextlib import ExitStack
 from pathlib import Path
+from types import TracebackType
+from typing import Self
+from uuid import uuid4
 
+import numpy as np
 import onnx
 import tensorflow as tf
 import tf2onnx
-from torch_mlir.compiler_utils import (
-    OutputType,
-    lower_mlir_module,
-    run_pipeline_with_repro_report,
-)
-from torch_mlir.dialects import torch as torch_dialect
-from torch_mlir.extras import onnx_importer
-from torch_mlir.ir import Context
 
-from .compiler import RuntimeBackend, _compile_linalg
-from .runtime import Session
+from .compiler import BackendOptions, _run, _validate_options
+from .runtime import MODEL_SUFFIX, Session, _initialize_session
+
+type TensorOutputs = (
+    tf.Tensor
+    | tuple[TensorOutputs, ...]
+    | list[TensorOutputs]
+    | dict[str, TensorOutputs]
+)
+
+
+class CompiledModel:
+    """Owned eager TensorFlow callable backed by a native inference Session.
+
+    ``session`` exposes the low-level NumPy interface and runtime diagnostics.
+    Use a context manager or close explicitly to release native resources.
+    """
+
+    def __init__(self, session: Session, output_specs: object) -> None:
+        """Store the Session and an already validated TensorSpec output tree."""
+        self.session = session
+        self._outputs = output_specs
+
+    def __call__(self, *inputs: tf.Tensor | tf.Variable) -> TensorOutputs:
+        """Infer from eager TF tensors without dtype conversion or gradients."""
+        if not tf.executing_eagerly():
+            raise ValueError(
+                "CIM22 TensorFlow inference requires eager tensors"
+            )
+        if any(
+            not isinstance(value, (tf.Tensor, tf.Variable)) for value in inputs
+        ):
+            raise TypeError(
+                "CIM22 TensorFlow inputs must be dense tf.Tensor or tf.Variable objects"
+            )
+        outputs = self.session(*(np.asarray(value.numpy()) for value in inputs))
+        tensors = [tf.convert_to_tensor(value) for value in outputs]
+        return tf.nest.pack_sequence_as(self._outputs, tensors)
+
+    def close(self) -> None:
+        """Close the native Session; previously returned tensors remain valid."""
+        self.session.close()
+
+    def __enter__(self) -> Self:
+        self.session.__enter__()
+        return self
+
+    def __exit__(
+        self,
+        kind: type[BaseException] | None,
+        value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
 
 
 def compile(
     function: tf.types.experimental.PolymorphicFunction,
     *,
-    artifact_path: Path | None = None,
-    debug_dir: Path | None = None,
-    runtime: RuntimeBackend = "usb",
-) -> Session:
+    options: BackendOptions | None = None,
+) -> CompiledModel:
     """Freeze stateless inference and compile static FP32 or signed integer IR.
 
     Args:
@@ -32,23 +81,30 @@ def compile(
             ``input_signature`` (FP32, INT8 or INT32). Wrap Keras calls with
             ``training=False``.
             Captured weights are frozen; subsequent updates require compilation.
-        artifact_path: Optional native model library (.dll on Windows, .so on
-            Linux). Existing files are never overwritten.
-        debug_dir: Optional Linalg/packet IR and object-file diagnostics.
-        runtime: ``software`` for the existing CIM reference, ``usb`` for the
-            board runtime. CIM-supported FP32 contractions use BF16 internally.
+        options: Same keys as PyTorch's CIM22 backend: ``runtime`` (defaults to
+            ``usb``), optional ``usb_config``, ``artifact_dir`` and ``debug_dir``.
+            Directories accept strings or Paths. Each compilation writes a
+            unique ``graph-<id>.so/.dll`` and matching debug subdirectory.
+            USB configuration is applied to the owned Session. CIM-supported
+            FP32 contractions use BF16 internally.
 
     Returns:
-        An owned Session accepting contiguous NumPy arrays of the declared
-        dtype in signature order, returning a flat tuple in exported output
-        order. Use a context manager or close it explicitly. Stateful updates
-        and training are excluded.
+        An owned eager callable accepting positional TF tensors in signature
+        order and returning TF tensors in the function's output structure.
+        Use a context manager or close explicitly. Stateful updates, training,
+        gradients and calls inside tf.function are excluded.
 
     Raises:
         TypeError: The input is not a tf.function.
-        ValueError: The signature is not flat and static, or its input/output
-            dtypes are outside FP32, INT8 and INT32.
+        ValueError: Invalid options, or the signature is not flat and static
+            with FP32, INT8 and INT32 boundary types.
     """
+    options = options or {}
+    _validate_options(options)
+    runtime = options.get("runtime", "usb")
+    usb_config = options.get("usb_config")
+    artifact_dir = options.get("artifact_dir")
+    debug_dir = options.get("debug_dir")
     if not isinstance(function, tf.types.experimental.PolymorphicFunction):
         raise TypeError("Wrap inference in tf.function with input_signature")
     signature = function.input_signature
@@ -63,10 +119,24 @@ def compile(
             "TensorFlow inputs require flat, static positive FP32/INT8/INT32 shapes"
         )
 
+    outputs = function.get_concrete_function(*signature).structured_outputs
+    flat_outputs = tf.nest.flatten(outputs)
+    if not flat_outputs or any(
+        not isinstance(value, tf.Tensor) for value in flat_outputs
+    ):
+        raise ValueError("TensorFlow outputs must be dense tensors")
+    output_specs = tf.nest.map_structure(tf.type_spec_from_value, outputs)
+
+    # Export in tf.nest order, including nested dicts that tf2onnx cannot name
+    # directly. The callable restores the original structure after execution.
+    @tf.function(input_signature=signature)
+    def flattened(*inputs: tf.Tensor) -> list[tf.Tensor]:
+        return tf.nest.flatten(function(*inputs))
+
     # Freeze resource variables and delegate TF operator conversion to tf2onnx.
     # No PyTorch model is constructed or executed in this path.
     model, _ = tf2onnx.convert.from_function(
-        function,
+        flattened,
         input_signature=signature,
         opset=18,
     )
@@ -94,24 +164,39 @@ def compile(
                 "TensorFlow outputs require static positive FP32/INT8/INT32 shapes"
             )
 
-    with Context() as context:
-        torch_dialect.register_dialect(context)
-        info = onnx_importer.ModelInfo(model)
-        module = info.create_module(context=context)
-        importer = onnx_importer.NodeImporter.define_function(
-            info.main_graph, module.operation
+    graph_name = f"graph-{uuid4().hex}"
+    # Keep TensorFlow and the wheel's LLVM in separate processes. The child
+    # publishes a native library; only the execution runtime is loaded here.
+    with ExitStack() as cleanup:
+        folder = Path(
+            cleanup.enter_context(
+                tempfile.TemporaryDirectory(prefix=".cim22-tensorflow-")
+            )
         )
-        importer.import_all()
-        run_pipeline_with_repro_report(
-            module,
-            "builtin.module(torch-onnx-to-torch-backend-pipeline)",
-            "Importing TensorFlow ONNX into Torch backend IR",
+        source = folder / "model.onnx"
+        shared = (
+            (Path(artifact_dir) / f"{graph_name}{MODEL_SUFFIX}").absolute()
+            if artifact_dir is not None
+            else folder / f"model{MODEL_SUFFIX}"
         )
-        lower_mlir_module(False, OutputType.LINALG_ON_TENSORS, module)
-        linalg_ir = str(module)
-    return _compile_linalg(
-        linalg_ir,
-        artifact_path=artifact_path,
-        debug_dir=debug_dir,
-        runtime=runtime,
-    )
+        onnx.save_model(model, source)
+        command = [
+            sys.executable,
+            "-m",
+            "cim22._tensorflow_compile",
+            str(source),
+            str(shared),
+            "--runtime",
+            runtime,
+        ]
+        if debug_dir is not None:
+            command.extend(
+                ["--debug-dir", str((Path(debug_dir) / graph_name).absolute())]
+            )
+        _run(command, "TensorFlow compilation")
+        session = _initialize_session(
+            Session(shared),
+            usb_config,
+            cleanup.pop_all() if artifact_dir is None else None,
+        )
+        return CompiledModel(session, output_specs)

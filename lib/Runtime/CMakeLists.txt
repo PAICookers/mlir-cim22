@@ -111,6 +111,17 @@ set_target_properties(cim22_runtime cim22_compiler PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${LLVM_LIBRARY_OUTPUT_INTDIR}"
   WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # LLVM/MLIR internals must not interpose TensorFlow or other compiler wheels.
+  foreach(_cim22_library IN ITEMS cim22_runtime cim22_compiler)
+    target_link_options(${_cim22_library} PRIVATE
+      "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cim22.exports")
+    set_property(TARGET ${_cim22_library} APPEND PROPERTY LINK_DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/cim22.exports")
+  endforeach()
+  unset(_cim22_library)
+endif()
+
 # Keep the compiler adapter's runtime dependency local to the wheel.
 if(SKBUILD)
   set_target_properties(cim22_runtime cim22_compiler PROPERTIES

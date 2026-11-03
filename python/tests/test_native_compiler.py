@@ -12,7 +12,7 @@ import pytest
 import torch
 
 from cim22.compiler import _emit_object
-from cim22.runtime import MODEL_SUFFIX, Session
+from cim22.runtime import MODEL_SUFFIX, Session, compiler_library
 
 from ._generated import cim22_model_pb2 as proto
 
@@ -23,6 +23,32 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.usefixtures("native_runtime"),
 ]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="ELF export policy")
+def test_native_export_boundary(native_runtime: Path) -> None:
+    """Only the three shared error tags may escape the native LLVM copies."""
+    allowed = {
+        "llvm::ErrorInfoBase::ID",
+        "llvm::ErrorList::ID",
+        "llvm::StringError::ID",
+    }
+    for library in (native_runtime, compiler_library(native_runtime)):
+        output = subprocess.run(
+            ["nm", "-D", "-C", "--defined-only", str(library)],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        symbols = {line.split(maxsplit=2)[2] for line in output.splitlines()}
+        assert {s for s in symbols if s.startswith("llvm::")} == allowed
+        assert not any(
+            s.startswith(("google::protobuf::", "absl::", "mlir::cl::"))
+            for s in symbols
+        )
+        assert "cim22_compile_object" in symbols or (
+            "cim22_session_load_shared" in symbols
+        )
 
 
 @pytest.fixture

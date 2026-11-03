@@ -313,7 +313,7 @@ uv build --python 3.12 python --wheel --out-dir python/dist `
   -C "cmake.define.CYAPI_ROOT=$PWD/third_party/cyapi"
 ```
 
-Windows wheel 包含 `mlir-cim22-opt.exe`、`cim22_compiler.dll`、`cim22_runtime.dll` 和模型链接所需的 `.lib`。Python 后端使用 MSVC 将 COFF `.obj` 链接为模型 `.dll`，通过与 Linux 相同的模型 ABI 加载。`torch.compile` 软件推理和 DLL 重新加载的用法见 [Windows 安装说明](python/README.md#windows-x64)。
+Windows wheel 包含 `mlir-cim22-opt.exe`、`cim22_compiler.dll`、`cim22_runtime.dll` 和模型链接所需的 `.lib`。Python 后端使用 MSVC 将 COFF `.obj` 链接为模型 `.dll`，通过与 Linux 相同的模型 ABI 加载。安装及 DLL 重新加载见 [Python 安装](python/README.md#安装)和 [Session 与产物](python/README.md#session-与产物)。
 
 开发环境的 `pyproject.toml` / `uv.lock` 按平台选择 torch-mlir：Linux 保留主分支的 `20261001` release wheel，Windows 从官方 release 安装 `20260923.595-cp312-abi3-win_amd64.whl`。不引入 torch-mlir 源码。在配置好 MSVC x64、`MLIR_DIR` 和 SDK 后，可执行：
 

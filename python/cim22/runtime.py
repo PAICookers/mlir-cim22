@@ -34,7 +34,9 @@ def _load_library(path: Path) -> ctypes.CDLL:
         if os.name == "nt"
         else nullcontext()
     ):
-        return ctypes.CDLL(str(path))
+        # Publish the declared project ABI so dependent native components share
+        # Error type tags; the Linux export map hides LLVM registries/functions.
+        return ctypes.CDLL(str(path), mode=ctypes.RTLD_GLOBAL)
 
 
 def _release_session(
@@ -428,8 +430,9 @@ class Session:
         """Release native code/resources; existing output buffers remain valid."""
         with self._lock:
             if self._handle is not None:
-                self._finalizer()
+                # Cleanup can raise after native destruction; never reuse it.
                 self._handle = None
+                self._finalizer()
 
     def __enter__(self) -> "Session":
         self._require_open()
@@ -442,6 +445,23 @@ class Session:
         traceback: TracebackType | None,
     ) -> None:
         self.close()
+
+
+def _initialize_session(
+    session: Session,
+    usb_config: UsbConfig | None = None,
+    resources: ExitStack | None = None,
+) -> Session:
+    """Adopt owned resources and configure a loaded Session; close on failure."""
+    try:
+        if resources is not None:
+            session._resources.callback(resources.close)
+        if usb_config is not None:
+            session.configure_usb(usb_config)
+    except BaseException:
+        session.close()
+        raise
+    return session
 
 
 class _UsbConfig(ctypes.Structure):

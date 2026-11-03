@@ -1,331 +1,202 @@
-# CIM22 Python 接口
+# CIM22 Python 开发指南
 
-本 Python 项目将 `cim22` 注册为 `torch.compile` 后端。模型经 torch-mlir 导入后，由原生编译器完成 CPU/CIM 划分、编译和链接，再由运行时执行。
+`mlir-cim22` 通过 Python entry point 注册 `torch.compile` 后端 `cim22`。PyTorch 是主要接入路径，TensorFlow 通过可选的 `tensorflow` extra 提供。两个前端共用 Linalg 之后的原生编译和 Session 运行时。
 
-固定 DVS 模型的本地浏览器界面见 [DVS 工作台](../web/README.md)，支持导入、编译、对比测试、取消、续跑和 CSV 结果。安装时增加 `web` extra；构建后的前端随 wheel 分发，用户不需要 Node.js。
+## PyTorch backend
 
-发行包 `mlir-cim22` 已包含 Python 模块、`mlir-cim22-opt` 和两个原生库，并声明 torch-mlir 为基础依赖。
+### 最小示例
 
-## 安装
-
-以下安装命令可在任意工作目录执行；示例脚本路径相对仓库根目录。项目安装会解析 torch-mlir 基础依赖。
-
-### 使用预编译 wheel
-
-准备 Linux x86-64、Python 3.12 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。首次模型编译还需要系统 `cc`、链接器和 C 开发文件。普通 `linux_x86_64` wheel 直接链接系统 libusb，即使选择软件运行时也需要该动态库。例如 Ubuntu：
-
-```sh
-sudo apt-get install build-essential libusb-1.0-0
-```
-
-Linux 无需安装 Cypress `cyusb_linux` SDK；Linux 运行时直接使用 libusb。连接板卡时，还需为当前用户配置 USB 设备访问权限，并确保 FX3 已运行板卡配套固件。主机库安装不会下载或更新设备固件。
-
-发行流程经 `auditwheel repair` 生成的 `manylinux` wheel 会携带可打包的 libusb 等动态依赖，通常不需要再安装系统 libusb；设备权限仍需单独配置。源码构建需要 libusb 开发文件，见 [环境与依赖](../BUILDING.md#环境与依赖)。可选 PLL 串口使用 POSIX 接口，无需 PyUSB 或 pyserial。
-
-预编译用户不需要 LLVM/MLIR、CMake 或 protoc；其他系统动态库要求以所用 wheel 的构建环境说明为准。
-
-将从 [Actions 预编译流程](../BUILDING.md#github-actions-预编译-wheel) 下载的 `mlir_cim22-*.whl`，以及从 [torch-mlir releases](https://github.com/llvm/torch-mlir/releases) 下载与当前后端兼容的 `torch_mlir-*.whl` 放入 `downloads/`。目录中每种 wheel 只保留一个版本，然后执行：
-
-```sh
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python \
-  --index-url https://download.pytorch.org/whl/cpu 'torch>=2.14,<3'
-uv pip install --python .venv/bin/python \
-  ./downloads/torch_mlir-*.whl ./downloads/mlir_cim22-*.whl
-```
-
-当前发布和验证环境为 Python 3.12.15、CPU PyTorch 2.14.1 和 torch-mlir 20261001。
-
-使用 Web 工作台时，将上述安装命令中的项目 wheel 路径改为 `'./downloads/mlir_cim22-<version>-<tags>.whl[web]'`（替换为实际文件名），即可安装 Web 依赖；然后按 [Web 启动说明](../web/README.md#使用已安装的-wheel) 运行 `cim22-web`。不需要构建前端。没有源码时，可直接运行下文的最小模型。
-
-### 从源码构建并安装 wheel
-
-源码构建需要先按 [源码构建指南](../BUILDING.md#环境与依赖) 准备 LLVM/MLIR、CMake、Ninja 和本项目的 CMake 依赖。构建 wheel 本身不需要安装 PyTorch 或 torch-mlir：
-
-若要提供 Web 界面，需先按 [Web 构建说明](../web/README.md#从源码构建) 生成前端静态页面，再在仓库根目录执行以下命令。将 `MLIR_DIR` 替换为实际工具链中包含 `MLIRConfig.cmake` 的目录；本体的 `build/` 缓存不会传给 Python 打包的 `python/build/`。
-
-```sh
-export MLIR_DIR="/path/to/llvm-build/lib/cmake/mlir"
-CMAKE_BUILD_PARALLEL_LEVEL=4 uv build --python 3.12 python \
-  --wheel --out-dir python/dist -Ccmake.define.MLIR_DIR="$MLIR_DIR"
-```
-
-然后创建一个自己的 Python 3.12 虚拟环境并安装刚构建的本项目 wheel：
-
-```sh
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python \
-  --index-url https://download.pytorch.org/whl/cpu 'torch>=2.14,<3'
-uv pip install --python .venv/bin/python \
-  ./downloads/torch_mlir-*.whl ./python/dist/mlir_cim22-*.whl
-```
-
-如果已有自己的虚拟环境，将命令中的 `.venv/bin/python` 替换为该环境的 Python 路径即可。安装完成后，用该环境运行应用或本目录的自检脚本：
-
-```sh
-.venv/bin/python python/examples/torch_compile.py
-```
-
-预编译安装和源码构建安装都要求 `mlir-cim22`、torch-mlir 和应用使用同一个虚拟环境。预编译 wheel 支持 Linux x86-64 和 Windows x64；上文命令面向 Linux，Windows 安装见下节。
-
-### Windows x64
-
-Windows 使用对应版本的 `mlir_cim22-<version>-py3-none-win_amd64.whl` 和
-[torch_mlir-20260923.595-cp312-abi3-win_amd64.whl](https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260923.595-cp312-abi3-win_amd64.whl)。
-不能安装 Linux 的 torch-mlir wheel。已验证 Python 3.12、CPU PyTorch 2.14.1；前端使用现成 wheel，无需下载 torch-mlir 源码。
-
-下面以正式版 `1.0.0` 为例；安装其他正式版或开发快照时，将项目 wheel 文件名替换为实际下载的文件名。
-
-首次编译模型需要 Visual Studio 2022 Build Tools 的 MSVC x64 和 Windows SDK。
-从 **x64 Native Tools Command Prompt** 启动 PowerShell，确保 `cl` 和 `link` 可用，再执行：
-
-```powershell
-uv venv --python 3.12 .venv
-uv pip install --python .venv/Scripts/python.exe --index-url https://download.pytorch.org/whl/cpu torch==2.14.1
-uv pip install --python .venv/Scripts/python.exe ./downloads/torch_mlir-20260923.595-cp312-abi3-win_amd64.whl ./downloads/mlir_cim22-1.0.0-py3-none-win_amd64.whl
-.venv/Scripts/python.exe python/examples/torch_compile.py
-```
-
-应用中的 `torch.compile` 调用相同。Windows 生成、加载 `.dll`，Linux 使用 `.so`；两者不能跨平台加载。已保存的模型可由 `Session(Path("model.dll"))` 加载，不再需要 C 链接器或 torch-mlir，仍需匹配的 CIM22 runtime 和 MSVC x64 运行库。`Session` 接收内部扁平 NumPy 输入，形状和 dtype 分别通过 `input_shapes`、`input_dtypes` 查看，不能代替 PyTorch 包装层处理原始模型的状态和嵌套返回值。
-
-Windows 临时模型 DLL 保留到 Session 关闭或编译缓存释放；加载期间不能删除该 DLL。USB 使用 Cypress CyUSB3 驱动，软件推理不要求连接板卡。当前验证覆盖软件推理及 USB 接口契约，不代表已完成真实板卡或完整 DVS 测试集验收。Web UI 仍依赖 Linux 的 `fcntl`，尚未移植到 Windows。
-
-## TensorFlow 推理验收
-
-可选 `tensorflow` extra 提供 `cim22.tensorflow.compile`。实际路径为
-**TensorFlow/Keras → tf2onnx → ONNX → 已发布的 torch-mlir → Linalg → CIM/LLVM → 原生动态库**。
-无需转换为 PyTorch 模型，也不引入 torch-mlir 源码。算子转换和编译失败会直接报错，
-不会回退调用 TensorFlow。CIM 支持的 FP32 收缩计算允许转换为 BF16，再返回 FP32；
-其他受支持的计算走 LLVM CPU。
-
-先按上文安装匹配平台的本项目和 torch-mlir wheel，再安装 extra：
-
-```sh
-uv pip install --python .venv/bin/python 'mlir-cim22[tensorflow]==1.0.0'
-.venv/bin/python python/examples/tensorflow_compile.py
-```
-
-安装 extra 时本项目 wheel 必须已经安装；也可在安装项目 wheel 时直接使用
-`'./downloads/<实际项目wheel文件名>.whl[tensorflow]'`。Windows 将解释器路径替换为
-`.venv/Scripts/python.exe`，并在 MSVC x64 开发者终端执行。
-开发环境使用 `uv sync --project python --extra tensorflow`（需要原生构建环境）。
-当前验证组合为 Python 3.12、TensorFlow 2.20.0、tf2onnx 1.17.0、ONNX 1.21.0。
-
-```python
-from pathlib import Path
-
-import numpy as np
-import tensorflow as tf
-
-from cim22.runtime import MODEL_SUFFIX
-from cim22.tensorflow import compile
-
-layer = tf.keras.layers.Dense(16, activation="relu")
-layer.build((2, 64))
-
-@tf.function(input_signature=[tf.TensorSpec([2, 64], tf.float32)])
-def infer(x):
-    return layer(x, training=False)
-
-with compile(infer, artifact_path=Path(f"model{MODEL_SUFFIX}"),
-             runtime="software") as session:
-    result, = session(np.ones((2, 64), dtype=np.float32))
-```
-
-限定为无状态推理：输入签名是平坦的 TensorSpec 列表，形状固定且各维大于零；
-输入、输出支持 FP32、INT8 和 INT32。捕获的权重被冻结，修改后需重新编译。
-Session 接收连续 NumPy 数组，dtype 必须匹配 `input_dtypes`，不会隐式转换；
-输出 dtype 见 `output_dtypes`，返回按导出顺序排列的平坦 tuple，不恢复嵌套结构。
-关闭后可以用 `Session(Path("model.dll"))`（Linux 为 `.so`）重新加载产物；
-运行时不读取 JSON，也不再调用 TensorFlow。已有产物不会被覆盖。
-
-示例是三层小网络：`Linear(8,8) → clipped ReLU → Linear(8,4)`。
-随机种子固定为 `42`，两层权重随机生成且为 INT8；输入为 `[1,8] INT8`，输出为 `[1,4] INT32`。
-中间激活截断至 `[0,127]` 后转换回 INT8，避免直接窄化产生回绕。
-通过 `tf.raw_ops.BatchMatMulV3(..., Tout=tf.int32)` 明确整数运算，经 tf2onnx 导出
-`MatMulInteger`，仍由 torch-mlir 转 Linalg。
-
-控制台仅打印模型配置、CIM software 调用次数、TensorFlow/CIM 输出、最大绝对误差和保存位置。
-TensorFlow 的初始化日志写入 `compile.log`。每次运行将该日志、模型 `.dll`/`.so`
-及 `ir/` 调试文件保存到当前工作目录下
-`outputs/tensorflow/<时间戳>/`，退出后保留；重复运行创建新目录。
-示例不再包含重载和分块边界检查，这些由测试覆盖。这里是自建小模型的功能演示，不是训练模型精度测试。
-
-本 TensorFlow 导入适配验证的 INT8 offload 限定静态二维矩阵乘法、不可变有符号 INT8 权重、零零点，且必须满足
-既有 i21 分块结果范围和 i32 累加范围；不能证明安全的形式保留在 CPU。
-本 TF 路径尚未验证 UINT8、非零零点、一般量化 Conv 或任意整数算子进入 CIM；
-主编译器已有的显式 INT8 Linear/Conv 支持保持不变。
-测试另保留 FP32 Dense、NHWC Conv2D、ReLU 和 CPU 运算覆盖；
-**FP32/BF16 路径的供应方软件规则仍存在大幅数值偏差，本次未修改该规则。**
-不宣称支持任意 TensorFlow 模型、训练、真实 USB 板卡或 TensorFlow 状态更新。
-
-## PyTorch 最小模型
-
-将下面的代码保存为 `example.py`：
+显式 INT8 矩阵乘使用只读权重，输入为 `torch.int8`，输出为 `torch.int32`。软件模式下可直接校验结果。
 
 ```python
 import torch
-from torch import nn
 
 
-class SimpleModel(nn.Module):
+class Int8Linear(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.linear = nn.Linear(64, 16)
-        self.relu = nn.ReLU()
+        self.weight = torch.nn.Parameter(
+            torch.ones((64, 16), dtype=torch.int8), requires_grad=False
+        )
 
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        return self.relu(self.linear(inputs))
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch._int_mm(x, self.weight)
 
-
-model = SimpleModel().cpu().eval()
-with torch.no_grad():
-    model.linear.weight.fill_(1)
-    model.linear.bias.fill_(1)
 
 with torch.inference_mode():
     compiled = torch.compile(
-        model,
+        Int8Linear().eval(),
         backend="cim22",
         fullgraph=True,
         dynamic=False,
         options={"runtime": "software"},
     )
-    output = compiled(torch.ones(1, 64))
-    torch.testing.assert_close(output, torch.full((1, 16), 65.0))
-    print(output.shape)
+    x = torch.ones((1, 64), dtype=torch.int8)
+    y = compiled(x)
+    torch.testing.assert_close(y, torch.full((1, 16), 64, dtype=torch.int32))
 ```
 
-运行：
+### 接口契约
 
-```sh
-.venv/bin/python example.py
-```
+- 首次模型调用触发 Dynamo/AOTAutograd 捕获、torch-mlir 降低和原生编译。用 `fullgraph=True, dynamic=False` 检查整图静态捕获，稳态计时从预热后开始。
+- 在 `torch.inference_mode()` 或 `torch.no_grad()` 下传入连续 CPU Tensor。输入按编译签名传递，支持 FP32、INT8、INT32。改变形状、布局或推理上下文可能触发重新特化。
+- 只读且无输出别名的模块参数可冻结为 CIM 权重。更改冻结参数后调用 `torch.compiler.reset()` 并重新编译。运行时权重走 Host。
+- 支持的状态写回与输入别名由 AOTAutograd 管理。带状态模型在独立序列前使用模型自身的重置接口，并保持输入存储重叠关系一致。
 
-输出：
+INT8 CIM 降低要求显式 `i8 × i8 → i32`、冻结权重和可证明的有符号 INT21 分块结果范围。FP32 收缩可走 CIM BF16，数值验证应使用对应的软件参考。Host 保留与 CIM dispatch 分别验证。
 
-```text
-torch.Size([1, 16])
-```
+### 编译选项
 
-完整的自检脚本见 [examples/torch_compile.py](examples/torch_compile.py)。它采用可精确表示的固定权重；一般模型的 CIM BF16 软件计算存在近似误差。
+两个前端接收同一份 `options` 字典。
 
-## 使用约定
+| 键               | 行为                                                                                                              |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `runtime`      | 默认 `"usb"`。本地编译和软件回归显式使用 `"software"`。                                                       |
+| `usb_config`   | 可选 `cim22.UsbConfig`，仅用于 USB 模式。由公共 Session 初始化流程应用。                                        |
+| `artifact_dir` | 可选 `str` 或 `Path`。保存每次编译的 `graph-<id>.so` 或 `graph-<id>.dll`。                                |
+| `debug_dir`    | 可选 `str` 或 `Path`。在同名 `graph-<id>/` 下保存 `model.linalg.mlir`、`model.packet.mlir` 和目标文件。 |
 
-- 使用 `torch.inference_mode()` 或 `torch.no_grad()`，输入为连续 CPU Tensor，按编译签名使用 FP32、INT8 或 INT32，保持形状、布局及推理上下文一致。同一模型按顺序执行。
-- 只读且无输出别名的参数会冻结为 CIM 权重。修改这些权重后须调用 `torch.compiler.reset()` 并重新编译；运行时权重保留在 CPU 路径。
-- AOTAutograd 负责支持的原地更新和状态写回。带状态模型在每个独立序列前应按模型自身 API 重置；不会自动清零。保持各次调用的输入存储重叠关系一致。
-- `fullgraph=True` 禁止图断裂，`dynamic=False` 使用静态特化；输入形状变化可能触发重新编译。算子支持仍受 torch-mlir 和原生 lowering 覆盖范围限制。
-- 输入 identity/view 别名由 PyTorch 包装层处理；不同计算输出之间的共享存储不保证保留。不同 Tensor 共享底层存储的部分更新目前仍可能被上游拒绝。
+## TensorFlow 接口
 
-使用 SpikingJelly 时，用 `functional.reset_net(model)` 在独立序列前重置神经元状态。
-
-## 后端选项与排查
-
-通过 `torch.compile(..., options={...})` 传入：
-
-| 选项                            | 用途                                             |
-| ------------------------------- | ------------------------------------------------ |
-| `runtime="software"`          | 不连接设备，执行候选 BF16 软件模型               |
-| `runtime="usb"`               | 默认值，Linux 用 libusb、Windows 用 CyAPI；BF16 回包按位模式解包 |
-| `usb_config=UsbConfig(...)`   | USB 设备参数，只能与 USB 运行时同时使用          |
-| `artifact_dir="build/models"` | 保存每次特化的内部模型，Linux `.so` / Windows `.dll` |
-| `debug_dir="build/ir"`        | 保存 Linalg、packet MLIR 和目标文件              |
-
-首次调用包含编译、链接和加载；稳态性能应在预热后单独测量。`TORCH_LOGS=dynamo` 查看编译阶段耗时，`TORCH_LOGS=recompiles` 排查重复编译。特化缓存在进程内，保存模型动态库不会提供跨进程自动缓存或稳定部署接口。
-
-| 问题                       | 检查项                                                         |
-| -------------------------- | -------------------------------------------------------------- |
-| `Invalid backend: cim22` | 当前解释器是否安装了本项目 wheel，而非仅安装 Torch             |
-| 找不到 torch-mlir          | 是否将匹配的 wheel 安装到同一虚拟环境                          |
-| 缺少 `cc` / `cl` 或链接失败 | Linux 安装 C 开发环境；Windows 在 MSVC x64 开发者终端运行，并安装 Windows SDK |
-| USB 报错或要求配置设备     | 无硬件时显式选择 `runtime="software"`                        |
-| 编译失败或数值偏差         | 先运行自检脚本，再保存 `debug_dir`；检查输入约束和 BF16 误差 |
-
-USB 原始诊断可通过 `cim22.Session`、`UsbConfig` 和 `capture_usb` 使用，具体数组与生命周期契约见 [runtime.py](cim22/runtime.py)。停止接收会保留成功收到的尾数据并检查真实接收错误；正常主动取消不计失败。故障后重新配置会先报告旧事务失败并关闭设备，随后允许显式重试 `configure_usb`。重新打开 Host 句柄不会复位硬件，也不会续跑失败的事务。
-
-当前 CIM 芯片经供应方确认存在权重读电路缺陷。诊断测试可保留 type6 权重读取及协议、地址完整性检查，但跳过权重数值比较，明确标为 `SKIPPED`。生产推理与 `capture_usb` 只读取所需的 type5 计算结果，不需要额外读取权重。
-
-## USB 与 PLL 配置
-
-以下自动串口控制和设备权限示例用于 Linux。Windows 使用 CyAPI USB，支持同一频率表查询，但当前不支持 PLL 串口控制：省略 `pll` 和 `pll_port` 并手动设置时钟。Windows 上显式请求串口（包括不存在的端口）会返回不支持错误。
-
-板卡须已上电并运行配套的 FPGA/FX3 固件。项目不自动安装厂商 SDK、修改系统权限或下载固件。
-
-先为实际板卡的 VID/PID 配置 USB 访问权限。下例适用于已验证的 `04b4:00f1`；其他板卡应使用其实际标识。在 Ubuntu 上创建专用设备组和规则：
-
-```sh
-sudo groupadd -f cim22
-sudo usermod -aG cim22 "$USER"
-sudo tee /etc/udev/rules.d/70-cim22.rules >/dev/null <<'RULE'
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="04b4", ATTR{idProduct}=="00f1", GROUP="cim22", MODE="0660"
-RULE
-sudo udevadm control --reload-rules
-```
-
-重新登录以取得组成员身份，然后重新连接 FX3 USB。设备重新枚举后，旧 `/dev/bus/usb/<bus>/<address>` 路径可能改变；不将旧地址或一次性 ACL 当作持久配置。
-
-串口是可选的。需要程序配置 PLL 时，使用 `/dev/serial/by-id/` 中的稳定路径，避免依赖可能变化的 `ttyUSB0` 编号。Ubuntu 的串口通常属于 `dialout` 组，可执行 `sudo usermod -aG dialout "$USER"` 后重新登录；其他发行版以串口实际所属组为准，例如 Arch 常用 `uucp`。使用前应关闭其他占用该串口的程序。
+在 editable 环境的安装命令上加 `--extra tensorflow`。安装 wheel 时使用同一版本的项目 wheel 并指定 `[tensorflow]` extra。两套最小示例分别在新 Python 进程中运行。
 
 ```python
-import torch
+import tensorflow as tf
 
+from cim22.tensorflow import compile as compile_tf
+
+
+@tf.function(input_signature=[tf.TensorSpec((1, 64), tf.int8)])
+def infer(x):
+    weight = tf.ones((64, 16), dtype=tf.int8)
+    return tf.raw_ops.BatchMatMulV3(x=x, y=weight, Tout=tf.int32)
+
+
+with compile_tf(infer, options={"runtime": "software"}) as compiled:
+    y = compiled(tf.ones((1, 64), dtype=tf.int8))
+    tf.debugging.assert_equal(y, tf.fill((1, 16), 64))
+    assert compiled.session.dispatch_count > 0
+```
+
+- `compile_tf` 接收带平坦静态 `input_signature` 的无状态 `tf.function`，在返回前冻结权重并完成编译。Keras 调用放在 `tf.function` 内，并传入 `training=False`。
+- `compiled(*inputs)` 接收 eager TF 张量，返回保持原容器结构的 TF 张量。使用 `with` 或 `close()` 释放 Session。底层 NumPy 接口和 dispatch 计数通过 `compiled.session` 获取。
+- TF 主进程经 tf2onnx 导出 ONNX。编译 worker 使用安装的 torch-mlir wheel 将 ONNX 降低到 Linalg，再调用公共原生编译。应用进程加载模型产物并初始化 Session。
+- `MLIRCIM22_ENABLE_ONNX` 控制原生 ONNX 诊断工具的构建。TF 编译入口使用上面的 worker 路径。
+- 当前接口面向 eager 推理。在另一个 `tf.function` 中嵌入调用及训练不在此接口范围内。Linux 已加载 TensorFlow 时，CIM22 会拒绝首次在同一进程加载 PyTorch 路径的 torch-mlir FX 绑定。
+
+完整的 [TF INT8 示例](examples/tensorflow_compile.py) 使用两层 Linear 和截断 ReLU。每次运行将 `compile.log`、`graph-<id>.so/.dll` 和 `ir/graph-<id>/` 调试文件保存在当前工作目录的 `outputs/tensorflow/<时间戳>/`，并打印 CIM 调用次数和输出误差。
+
+## Session 与产物
+
+用 `cim22.Session(Path(...))` 重新加载已保存的同平台模型动态库。按 `input_shapes` 和 `input_dtypes` 顺序传入连续、对齐的 NumPy 数组，结果为平坦 tuple。框架输出结构由各自的适配层恢复。模型所需的原生运行库应与产物配套。
+
+未设置 `artifact_dir` 时，临时模型随 Session 生命周期清理。PyTorch 编译后的 callable 持有 Session，TF callable 可显式关闭。Windows 上应在 Session 关闭后清理其加载的 DLL。
+
+`num_transactions` 表示模型产物包含的 CIM transaction 数量，`dispatch_count` 表示最近一次调用实际发生的 dispatch 数量。使用 `debug_dir` 检查分区和降低结果，用实际 dispatch 验证执行路径。
+
+### USB 与 PLL 配置
+
+前端通过 `options={"runtime": "usb", "usb_config": config}` 交给公共运行时。直接加载 USB 模型动态库时，在首次 CIM dispatch 前调用 `session.configure_usb(config)`。
+
+```python
 from cim22 import UsbConfig
 
-usb = UsbConfig(
+config = UsbConfig(
     vendor_id=0x04B4,
     product_id=0x00F1,
     bulk_in_endpoint=0x81,
     bulk_out_endpoint=0x01,
-    clock_frequency_mhz=24,
-    pll_port="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
-)
-compiled = torch.compile(
-    model,
-    backend="cim22",
-    fullgraph=True,
-    dynamic=False,
-    options={"usb_config": usb},
 )
 ```
 
-`clock_frequency_mhz` 按仓库内置的 [PLL 频率表](cim22/pll.py)查询**目标频率**。表中有 199 项目标 MHz、实际 MHz、串口 HEX 和可用性状态，不在运行时求解 PLL 参数。表外目标（例如 26 MHz）直接报错；这只表示未收录该目标，不表示 PLL 无法生成。
+按实际 FPGA/FX3 固件设置 VID/PID、端点和接口。Linux 为对应设备配置 USB 访问权限，Windows 使用 CyAPI 与 CyUSB3 驱动。上述配置使用手动时钟。Linux 如需自动配置，传入 `clock_frequency_mhz` 与实际 `pll_port`，或使用 `PLLConfig` 指定三个阶段的命令。频率选择和设备字段校验见 [pll.py](cim22/pll.py) 和 [runtime.py](cim22/runtime.py)。
 
-按约定的使用策略，`可用`（`available`）不发警告，`可能可用`（`maybe available`）发出 `RuntimeWarning`，提示硬件运行可能不稳定，并列出目标、实际频率和串口数据。例如 24 MHz 对应 `2828A4`，无警告；目标 284 MHz 对应表中实际 283.2 MHz、`E813A4`，发出警告。这些状态是表内预设标签，不代表本次运行已完成硬件稳定性验证。
+## 安装
 
-通过 `usb.clock_setting` 查看选中行的 `target_frequency_mhz`、`actual_frequency_mhz`、`serial_hex` 和 `status`。发送字节始终取表中原值，包括 20 MHz 的 `88B624`，不根据公式重新选择分频参数。
+Linux 和 Windows 共用 Python 3.12 与 uv 安装流程。按平台选择项目和 torch-mlir wheel，匹配版本见 [pyproject.toml](pyproject.toml)。
 
-频率选项将该行的同一配置用于 Config、Work、Readback 三阶段，以 9600/8N1、高字节优先发送并检查匹配回显。需要三个阶段分别配置时，仍可使用 `pll=PLLConfig(port, config_hex, work_hex, readback_hex)`；原始 `pll` 与 `clock_frequency_mhz` 不能同时指定。
+| 平台         | 项目 wheel 平台标签                           | 虚拟环境解释器               | 模型编译工具                                            |
+| ------------ | --------------------------------------------- | ---------------------------- | ------------------------------------------------------- |
+| Linux x86-64 | `linux_x86_64` 或 `manylinux_2_28_x86_64` | `.venv/bin/python`         | `cc` 和 C 链接工具                                    |
+| Windows x64  | `win_amd64`                                 | `.venv/Scripts/python.exe` | MSVC x64 开发者终端中的 `cl`、`link` 和 Windows SDK |
 
-Python 配置检查六位 HEX 格式、数值范围和选项冲突；原生层在打开 USB 前统一检查原始 PLL 命令的 VCO 下限。频率入口按表查找，未匹配到表项时抛出 `ValueError`。
+### 预编译 wheel
 
-顶层导出 `Session`、`UsbConfig` 和 `PLLConfig`。常规推理使用 `torch.compile`；`Session` 用于原始回包等诊断。三阶段原始 HEX 配置需先从 `cim22` 导入 `PLLConfig`，并使用已确认适合板卡的参数。
+将项目与 torch-mlir 的 wheel 放入 `downloads/`，并将命令中的占位符替换为实际文件名。`--python .venv` 指向虚拟环境目录，两平台的安装命令相同。
 
-省略串口选项时，两平台均使用用户手动设置的时钟；Linux 上指定串口设备不存在时也使用手动时钟。`clock_setting` 只表示选中表项，不证明时钟已发送、已生效或回显已通过。用户需在运行前手动完成所需时钟设置。Linux 串口存在但权限不足、通信失败或回显不匹配时仍返回错误。省略全部 PLL/频率选项保持原有手动时钟路径。
+```sh
+uv venv --python 3.12 .venv
+uv pip install --python .venv --index-url https://download.pytorch.org/whl/cpu "torch>=2.14,<3"
+uv pip install --python .venv "downloads/<torch-mlir-wheel>.whl" "downloads/<cim22-wheel>.whl"
+```
 
-已验证板卡默认发送控制字为 `0x03`（link 0/channel 3）、每次 OUT 最多 512 字节，接收请求为 32768 字节。每个 Session 持有 USB 设备以服务顺序推理；传输故障中止当前事务，首次重新配置会报告旧故障并释放设备，随后可显式重试配置。重新打开句柄不表示硬件已复位，也不保证物理链路恢复。Linux 驱动只在当前接口设置不符时重新选择，避免重复选择触发的重开故障；当前修复仍需按实际板卡和用例验收，不能由主机测试推断长期稳定性。
+本机构建的 Linux wheel 依赖系统 libusb。发行包和平台依赖见 [wheel 构建说明](../BUILDING.md#github-actions-预编译-wheel)。
 
-## 开发与测试
+### Editable 开发环境
 
-完整步骤见 [BUILDING](../BUILDING.md#pytorch-编译后端)：准备 LLVM/MLIR 后，可生成 wheel 或构建 editable 安装。Python 源码修改立即可见；C++、TableGen、schema 或 CMake 修改需要显式重建。
+按 [BUILDING](../BUILDING.md) 准备原生工具链。在仓库根目录执行，将 `<MLIR_DIR>` 替换为包含 `MLIRConfig.cmake` 的实际目录。Windows USB 构建追加 `"-Ccmake.define.CYAPI_ROOT=<仓库根目录>/third_party/cyapi"`。
 
-[开发与测试](../BUILDING.md#测试与开发)给出重建、pytest、lit 和 Protobuf 更新命令。应用特有的依赖应安装在自己的环境中；Python ONNX、Protobuf 和 pytest 是开发依赖，预编译 wheel 的普通运行无需安装这些包。
+```sh
+uv sync --project python --python 3.12 --locked "-Ccmake.define.MLIR_DIR=<MLIR_DIR>"
+```
 
-## 显式 INT8
+## 构建 wheel
 
-`torch.compile` 对显式 `i8 × i8 → i32` 的静态整数 contraction 使用
-INT8 降级（例如 `torch._int_mm`），权重必须是不可变常量。普通
-`torch.matmul` 的 INT8 输出不等于 INT32 累加契约；FP32 输入也不会按数值范围
-自动量化。超出单 tile 有符号 21 位范围或不满足布局/类型约束的算子留在 Host。
+在各自的目标平台从仓库根目录执行。准备 Python 3.12、CMake、Ninja 和本平台的 LLVM/MLIR 工具链。当前验证的 LLVM/MLIR 版本为 22.1.8，`MLIR_DIR` 指向含 `MLIRConfig.cmake` 的目录。两条命令使用独立的 CMake 缓存并将 wheel 写入 `python/dist/`。TensorFlow 依赖通过同一 wheel 的 `[tensorflow]` extra 在安装时选择。
 
-单 Macro 按 K=64、N=16 分块，每个有符号 INT21 部分结果须在
-`[-1048576, 1048575]` 内，尾块补零。Host 将部分结果符号扩展为 INT32 后
-沿 K 归约、沿 N 拼接，保留源程序的 INT32 算术语义。
+### Linux x86-64
 
-USB 模式使用相同的 INT8 输入/INT32 输出签名。通过后端选项
-`runtime="usb"`、`usb_config=UsbConfig(...)` 配置后，模型调用经生产 USB
-运行时收发；功能与接口实现、软件测试、实板验证分别记录。
+按 [Linux 构建依赖](../BUILDING.md#环境与依赖) 准备 C/C++ 工具链及 libusb 开发库。
 
-内部 Session 按编译签名接收 NumPy `int8`、`float32` 或 `int32`，结果按签名
-分配；不做隐式 dtype 转换。INT8 Conv 的原生 Linalg 路径支持 batch=1、
-NCHW/FCHW 和 dilation=1；这不代表普通 PyTorch Conv 自动导出该整数形式。
+```sh
+export MLIR_DIR="/path/to/llvm-build/lib/cmake/mlir"
+export CMAKE_GENERATOR=Ninja
+uv build --python 3.12 python --wheel --out-dir python/dist \
+  "-Cbuild-dir=$PWD/build/wheel-linux" \
+  "-Ccmake.build-type=Release" \
+  "-Ccmake.define.MLIR_DIR=$MLIR_DIR"
+```
+
+本机构建产物为 `mlir_cim22-<version>-py3-none-linux_x86_64.whl`。发行用的 `manylinux_2_28_x86_64` wheel 由 [wheel 工作流](../BUILDING.md#github-actions-预编译-wheel) 在对应容器中构建并经 `auditwheel repair` 处理。
+
+### Windows x64
+
+启动 PowerShell，按 [Windows 原生构建说明](../BUILDING.md#windows-x64-原生编译器与-usb-runtime) 准备匹配的 LLVM/MLIR。USB 构建使用仓库的 x64 CyAPI。PowerShell 中将每个完整的 `-C...` 参数括在引号内。
+
+```powershell
+$env:MLIR_DIR = "C:/path/to/llvm-build-windows/lib/cmake/mlir"
+$env:CMAKE_GENERATOR = "Ninja"
+$cyapiRoot = (Resolve-Path "third_party/cyapi").Path
+uv build --python 3.12 python --wheel --out-dir python/dist `
+  "-Cbuild-dir=$PWD/build/wheel-windows" `
+  '-Ccmake.build-type=Release' `
+  "-Ccmake.define.MLIR_DIR=$env:MLIR_DIR" `
+  "-Ccmake.define.CYAPI_ROOT=$cyapiRoot"
+```
+
+本机构建产物为 `mlir_cim22-<version>-py3-none-win_amd64.whl`。平台工具、编译器库、运行库及模型链接所需的导入库随包安装。
+
+在各平台用干净的 Python 环境安装生成的 wheel 和匹配的 torch-mlir wheel，从源码目录之外运行本文的 PyTorch 最小示例。验证 TF extra 时也运行 TF 片段。发行构建和源码包验收见 [BUILDING](../BUILDING.md#源码包与离线构建)。
+
+## 开发与验证
+
+| 改动                            | 从哪里检查                                                                                                                                  |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| PyTorch 捕获、冻结与 AOT 边界   | [backend.py](cim22/backend.py) 和 [test_backend.py](tests/test_backend.py)                                                                    |
+| TF 签名、输出结构与编译进程隔离 | [tensorflow.py](cim22/tensorflow.py)、[_tensorflow_compile.py](cim22/_tensorflow_compile.py) 和 [test_tensorflow.py](tests/test_tensorflow.py) |
+| 原生编译、链接及模型发布        | [compiler.py](cim22/compiler.py)、[test_native_compiler.py](tests/test_native_compiler.py) 和 [test_artifacts.py](tests/test_artifacts.py)     |
+| Session 所有权、USB 与 PLL      | [runtime.py](cim22/runtime.py) 和 [test_usb_runtime.py](tests/test_usb_runtime.py)                                                            |
+
+从仓库根目录运行，TF 用例需要安装 extra。
+
+```sh
+cd python
+.venv/bin/python -m pytest tests/test_backend.py tests/test_usb_runtime.py
+.venv/bin/python -m pytest tests/test_tensorflow.py
+```
+
+排查重复编译时使用 `TORCH_LOGS=recompiles`。定位 lowering 或链接问题时，先用 `debug_dir` 保留 IR 和目标文件，再检查安装包加载的原生组件。独立 CMake 构建可用 `CIM22_OPT`、`CIM22_RUNTIME_LIBRARY`、`CIM22_COMPILER_LIBRARY` 指向同一构建的产物，`CIM22_CC` 可指定模型链接工具。
+
+修改 C++、TableGen、schema 或 CMake 后，复用原构建目录和配置，通过 `uv sync --reinstall-package mlir-cim22` 重装 editable 包。完整命令、Ruff、原生 lit 和 wheel 验收见 [BUILDING 的测试与开发](../BUILDING.md#测试与开发)。软件执行、模拟 USB 配置及实板结果分开记录。
+
+Web 工作台开发见 [web/README.md](../web/README.md)。

@@ -1,0 +1,18 @@
+{
+  global:
+    cim22_*;
+    _mlir_ciface_cim22_*;
+    extern "C++" {
+      cim22::*;
+      mlir::cim22::*;
+      /* Address-only tags for the locked runtime/compiler C++ error ABI.
+         Registry state and LLVM functions remain private. */
+      llvm::ErrorInfoBase::ID;
+      llvm::ErrorList::ID;
+      llvm::StringError::ID;
+    };
+    _ZTVN5cim22*;
+    _ZTIN5cim22*;
+    _ZTSN5cim22*;
+  local: *;
+};

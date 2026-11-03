@@ -7,7 +7,6 @@ it does not classify CIM operators. MLIR owns that decision.
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import TypedDict
 from uuid import uuid4
 
 import torch
@@ -20,19 +19,10 @@ from torch._guards import TracingContext, tracing
 from torch.utils._python_dispatch import _disable_current_modes
 from torch_mlir.extras.fx_decomp_util import get_decomposition_table
 
-from .compiler import RuntimeBackend, _compile
-from .runtime import MODEL_SUFFIX, UsbConfig
+from .compiler import BackendOptions, _compile, _validate_options
+from .runtime import MODEL_SUFFIX, _initialize_session
 
 type TensorCallable = Callable[..., Sequence[torch.Tensor]]
-
-
-class BackendOptions(TypedDict, total=False):
-    """Options accepted by torch.compile(..., backend="cim22")."""
-
-    runtime: RuntimeBackend
-    usb_config: UsbConfig
-    artifact_dir: str | Path
-    debug_dir: str | Path
 
 
 def _is_module_input(node: torch.fx.Node) -> bool:
@@ -56,20 +46,9 @@ def backend(
     cloned into constants and must remain fixed for this specialization.
     """
     options = options or {}
-    unknown = options.keys() - {
-        "artifact_dir",
-        "debug_dir",
-        "runtime",
-        "usb_config",
-    }
-    if unknown:
-        raise ValueError(f"Unknown CIM22 backend options: {sorted(unknown)}")
+    _validate_options(options)
     runtime = options.get("runtime", "usb")
-    if runtime not in ("software", "usb"):
-        raise ValueError("CIM22 runtime must be 'software' or 'usb'")
     usb_config = options.get("usb_config")
-    if usb_config is not None and runtime != "usb":
-        raise ValueError("CIM22 usb_config requires runtime='usb'")
     if torch.is_grad_enabled():
         raise ValueError(
             "Use torch.no_grad() or torch.inference_mode() with CIM22"
@@ -127,12 +106,7 @@ def backend(
                 else None,
                 runtime=runtime,
             )
-        try:
-            if usb_config is not None:
-                session.configure_usb(usb_config)
-        except BaseException:
-            session.close()
-            raise
+        session = _initialize_session(session, usb_config)
 
         def run(*values: torch.Tensor) -> tuple[torch.Tensor, ...]:
             return tuple(
