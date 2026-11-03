@@ -139,11 +139,17 @@ Session 接收连续 NumPy 数组，dtype 必须匹配 `input_dtypes`，不会�
 关闭后可以用 `Session(Path("model.dll"))`（Linux 为 `.so`）重新加载产物；
 运行时不读取 JSON，也不再调用 TensorFlow。已有产物不会被覆盖。
 
-验收示例采用自建整数 Linear：`[2,65] INT8 × [65,17] INT8 → INT32`，加 INT32 bias。
+示例是三层小网络：`Linear(8,8) → clipped ReLU → Linear(8,4)`。
+随机种子固定为 `42`，两层权重随机生成且为 INT8；输入为 `[1,8] INT8`，输出为 `[1,4] INT32`。
+中间激活截断至 `[0,127]` 后转换回 INT8，避免直接窄化产生回绕。
 通过 `tf.raw_ops.BatchMatMulV3(..., Tout=tf.int32)` 明确整数运算，经 tf2onnx 导出
-`MatMulInteger`，仍由 torch-mlir 转 Linalg。没有添加其他 TF 降级路径。
-示例检查实际 CIM 调用、跨 K/N tile 与补零、TensorFlow/NumPy/CIM 逐元素完全一致、
-保存/重新加载一致；成功时最大绝对误差为 0。这里的模型是验收用小模型，不是训练模型精度测试。
+`MatMulInteger`，仍由 torch-mlir 转 Linalg。
+
+控制台仅打印模型配置、CIM software 调用次数、TensorFlow/CIM 输出、最大绝对误差和保存位置。
+TensorFlow 的初始化日志写入 `compile.log`。每次运行将该日志、模型 `.dll`/`.so`
+及 `ir/` 调试文件保存到当前工作目录下
+`outputs/tensorflow/<时间戳>/`，退出后保留；重复运行创建新目录。
+示例不再包含重载和分块边界检查，这些由测试覆盖。这里是自建小模型的功能演示，不是训练模型精度测试。
 
 本 TensorFlow 导入适配验证的 INT8 offload 限定静态二维矩阵乘法、不可变有符号 INT8 权重、零零点，且必须满足
 既有 i21 分块结果范围和 i32 累加范围；不能证明安全的形式保留在 CPU。
