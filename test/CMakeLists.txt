@@ -116,7 +116,8 @@ if(CIM22_ENABLE_USB)
   llvm_update_compile_flags(mlir-cim22-usb-runtime-test)
   target_include_directories(mlir-cim22-usb-runtime-test PRIVATE
     "${PROJECT_SOURCE_DIR}/lib/Runtime")
-  target_link_libraries(mlir-cim22-usb-runtime-test PRIVATE cim22_runtime)
+  target_link_libraries(mlir-cim22-usb-runtime-test PRIVATE
+    cim22_runtime LLVMSupport)
   if(NOT WIN32)
     target_link_libraries(mlir-cim22-usb-runtime-test PRIVATE util)
   endif()
@@ -128,7 +129,6 @@ if(CIM22_ENABLE_USB)
       "${PROJECT_SOURCE_DIR}/lib/Runtime/UsbCIMDevice.cpp"
       "${PROJECT_SOURCE_DIR}/lib/Runtime/UsbRecordCodec.cpp"
       "${PROJECT_SOURCE_DIR}/lib/Runtime/PLLSerial.cpp")
-    target_link_libraries(mlir-cim22-usb-runtime-test PRIVATE LLVMSupport)
   endif()
   if(MSVC)
     target_compile_options(mlir-cim22-usb-runtime-test PRIVATE /GR-)

@@ -34,7 +34,9 @@ def _load_library(path: Path) -> ctypes.CDLL:
         if os.name == "nt"
         else nullcontext()
     ):
-        return ctypes.CDLL(str(path))
+        # Publish the declared project ABI so dependent native components share
+        # Error type tags; the Linux export map hides LLVM registries/functions.
+        return ctypes.CDLL(str(path), mode=ctypes.RTLD_GLOBAL)
 
 
 def _release_session(
