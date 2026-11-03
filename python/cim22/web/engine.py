@@ -127,7 +127,7 @@ class DvsEngine:
                 backend="cim22",
                 fullgraph=True,
                 dynamic=False,
-                options={"runtime": "software", "artifact_dir": artifact_dir},
+                options={"runtime": "simulator", "artifact_dir": artifact_dir},
             )
             # Actual capture/lowering/first execution is entirely separate
             # from measured samples, not just the lazy torch.compile wrapper.

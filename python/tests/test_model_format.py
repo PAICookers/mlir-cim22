@@ -256,6 +256,7 @@ def test_physical_macro_placement(
         (99, proto.USB, 7, True),
         (99, proto.USB, None, False),
         (1, 99, 0, False),
+        (1, 2, 0, False),
         (1, proto.USB, 8, False),
     ],
 )

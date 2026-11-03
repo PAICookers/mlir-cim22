@@ -38,7 +38,7 @@ void *cim22_session_load_shared(const char *model_file, char *error,
                                 size_t error_capacity);
 void *cim22_session_load_packet(const char *packet_file, const char *entry,
                                 char *error, size_t error_capacity);
-// backend must be non-null and name either "software" or "usb".
+// Native backend is "simulator" or "usb". BF16 semantics come from the IR.
 int cim22_compile_object(const char *packet_file, const char *object_file,
                          const char *backend, char *error,
                          size_t error_capacity);

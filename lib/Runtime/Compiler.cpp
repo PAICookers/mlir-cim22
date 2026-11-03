@@ -191,6 +191,18 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
   auto module = parseSourceFile<ModuleOp>(path, &context);
   if (!module)
     return failure();
+  if ((*module)->hasAttr("cim.bf16_corrected"))
+    return module->emitError(
+        "obsolete cim.bf16_corrected marker; recompile the model");
+  StringRef compensation = "none";
+  if (Attribute attr = (*module)->getAttr("cim.bf16_compensation")) {
+    auto mode = dyn_cast<StringAttr>(attr);
+    if (!mode || (mode.getValue() != "sign-split" &&
+                  mode.getValue() != "legacy" && mode.getValue() != "none"))
+      return module->emitError(
+          "BF16 compensation must be sign-split, legacy or none");
+    compensation = mode.getValue();
+  }
   auto parts = getCIMSplitParts(*module);
   if (failed(parts))
     return failure();
@@ -221,10 +233,15 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
   OpBuilder builder(&context);
   builder.setInsertionPointToEnd(host.getBody());
   if (host.lookupSymbol("cim22_dispatch") ||
-      host.lookupSymbol("cim22_dispatch_int8"))
+      host.lookupSymbol("cim22_dispatch_int8") ||
+      host.lookupSymbol("cim22_dispatch_legacy") ||
+      host.lookupSymbol("cim22_dispatch_sign_split"))
     return host.emitError("reserved runtime dispatch symbol already exists");
   auto dispatchFunc = func::FuncOp::create(
-      builder, host.getLoc(), "cim22_dispatch",
+      builder, host.getLoc(),
+      compensation == "sign-split" ? "cim22_dispatch_sign_split"
+      : compensation == "legacy"   ? "cim22_dispatch_legacy"
+                                   : "cim22_dispatch",
       builder.getFunctionType(
           {builder.getI64Type(),
            MemRefType::get({ShapedType::kDynamic, 64}, builder.getBF16Type()),
@@ -382,6 +399,15 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
          llvm::orc::ExecutorSymbolDef(
              llvm::orc::ExecutorAddr::fromPtr(&_mlir_ciface_cim22_dispatch),
              llvm::JITSymbolFlags::Exported)},
+        {mangle("_mlir_ciface_cim22_dispatch_sign_split"),
+         llvm::orc::ExecutorSymbolDef(
+             llvm::orc::ExecutorAddr::fromPtr(
+                 &_mlir_ciface_cim22_dispatch_sign_split),
+             llvm::JITSymbolFlags::Exported)},
+        {mangle("_mlir_ciface_cim22_dispatch_legacy"),
+         llvm::orc::ExecutorSymbolDef(llvm::orc::ExecutorAddr::fromPtr(
+                                          &_mlir_ciface_cim22_dispatch_legacy),
+                                      llvm::JITSymbolFlags::Exported)},
         {mangle("_mlir_ciface_cim22_dispatch_int8"),
          llvm::orc::ExecutorSymbolDef(llvm::orc::ExecutorAddr::fromPtr(
                                           &_mlir_ciface_cim22_dispatch_int8),
@@ -407,7 +433,6 @@ extern "C" void *cim22_session_load_packet(const char *path, const char *entry,
     ::cim22::runtime::copyError(session->error, error, capacity);
     return nullptr;
   }
-  session->runner = std::make_unique<::cim22::execution::CIMSoftwareRunner>();
   return session.release();
 }
 
@@ -415,7 +440,7 @@ extern "C" int cim22_compile_object(const char *path, const char *objectPath,
                                     const char *backend, char *error,
                                     size_t capacity) {
   Session session;
-  if (backend && llvm::StringRef(backend) == "software")
+  if (backend && llvm::StringRef(backend) == "simulator")
     session.model.backend = ::cim22::runtime::RuntimeBackend::Software;
   else if (backend && llvm::StringRef(backend) == "usb")
     session.model.backend = ::cim22::runtime::RuntimeBackend::USB;

@@ -40,7 +40,7 @@ def main(output: Path) -> None:
     with compile(
         model,
         options={
-            "runtime": "software",
+            "runtime": "simulator",
             "artifact_dir": output,
             "debug_dir": output / "ir",
         },

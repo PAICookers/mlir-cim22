@@ -29,7 +29,7 @@ with torch.inference_mode():
         backend="cim22",
         fullgraph=True,
         dynamic=False,
-        options={"runtime": "software"},
+        options={"runtime": "simulator"},
     )
     x = torch.ones((1, 64), dtype=torch.int8)
     y = compiled(x)
@@ -51,10 +51,13 @@ INT8 CIM 降低要求显式 `i8 × i8 → i32`、冻结权重和可证明的有�
 
 | 键               | 行为                                                                                                              |
 | ---------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `runtime`      | 默认 `"usb"`。本地编译和软件回归显式使用 `"software"`。                                                       |
+| `runtime` | 默认 `"usb"`，使用 USB 连接 CIM 板卡。`"simulator"` 在 CPU 上模拟 CIM 计算。PyTorch 也支持 `"reference"`，直接执行 CPU PyTorch 算子。 |
+| `bf16_compensation` | 默认 `"sign-split"`，可选 `"legacy"` 或 `"none"` 建立对照。详见 [BF16 补偿](../docs/BF16.md)。 |
 | `usb_config`   | 可选 `cim22.UsbConfig`，仅用于 USB 模式。由公共 Session 初始化流程应用。                                        |
 | `artifact_dir` | 可选 `str` 或 `Path`。保存每次编译的 `graph-<id>.so` 或 `graph-<id>.dll`。                                |
 | `debug_dir`    | 可选 `str` 或 `Path`。在同名 `graph-<id>/` 下保存 `model.linalg.mlir`、`model.packet.mlir` 和目标文件。 |
+
+PyTorch 的 `reference` 忽略 BF16 补偿策略，且不生成原生制品。TensorFlow 可直接调用原 `tf.function` 取得参考结果。
 
 ## TensorFlow 接口
 
@@ -72,7 +75,7 @@ def infer(x):
     return tf.raw_ops.BatchMatMulV3(x=x, y=weight, Tout=tf.int32)
 
 
-with compile_tf(infer, options={"runtime": "software"}) as compiled:
+with compile_tf(infer, options={"runtime": "simulator"}) as compiled:
     y = compiled(tf.ones((1, 64), dtype=tf.int8))
     tf.debugging.assert_equal(y, tf.fill((1, 16), 64))
     assert compiled.session.dispatch_count > 0
@@ -130,11 +133,11 @@ uv pip install --python .venv --index-url https://download.pytorch.org/whl/cpu "
 uv pip install --python .venv "downloads/<torch-mlir-wheel>.whl" "downloads/<cim22-wheel>.whl"
 ```
 
-本机构建的 Linux wheel 依赖系统 libusb。发行包和平台依赖见 [wheel 构建说明](../BUILDING.md#github-actions-预编译-wheel)。
+本机构建的 Linux wheel 依赖系统 libusb。发行包和平台依赖见 [wheel 构建说明](../docs/BUILDING.md#github-actions-预编译-wheel)。
 
 ### Editable 开发环境
 
-按 [BUILDING](../BUILDING.md) 准备原生工具链。在仓库根目录执行，将 `<MLIR_DIR>` 替换为包含 `MLIRConfig.cmake` 的实际目录。Windows USB 构建追加 `"-Ccmake.define.CYAPI_ROOT=<仓库根目录>/third_party/cyapi"`。
+按 [BUILDING](../docs/BUILDING.md) 准备原生工具链。在仓库根目录执行，将 `<MLIR_DIR>` 替换为包含 `MLIRConfig.cmake` 的实际目录。Windows USB 构建追加 `"-Ccmake.define.CYAPI_ROOT=<仓库根目录>/third_party/cyapi"`。
 
 ```sh
 uv sync --project python --python 3.12 --locked "-Ccmake.define.MLIR_DIR=<MLIR_DIR>"
@@ -146,7 +149,7 @@ uv sync --project python --python 3.12 --locked "-Ccmake.define.MLIR_DIR=<MLIR_D
 
 ### Linux x86-64
 
-按 [Linux 构建依赖](../BUILDING.md#环境与依赖) 准备 C/C++ 工具链及 libusb 开发库。
+按 [Linux 构建依赖](../docs/BUILDING.md#环境与依赖) 准备 C/C++ 工具链及 libusb 开发库。
 
 ```sh
 export MLIR_DIR="/path/to/llvm-build/lib/cmake/mlir"
@@ -157,11 +160,11 @@ uv build --python 3.12 python --wheel --out-dir python/dist \
   "-Ccmake.define.MLIR_DIR=$MLIR_DIR"
 ```
 
-本机构建产物为 `mlir_cim22-<version>-py3-none-linux_x86_64.whl`。发行用的 `manylinux_2_28_x86_64` wheel 由 [wheel 工作流](../BUILDING.md#github-actions-预编译-wheel) 在对应容器中构建并经 `auditwheel repair` 处理。
+本机构建产物为 `mlir_cim22-<version>-py3-none-linux_x86_64.whl`。发行用的 `manylinux_2_28_x86_64` wheel 由 [wheel 工作流](../docs/BUILDING.md#github-actions-预编译-wheel) 在对应容器中构建并经 `auditwheel repair` 处理。
 
 ### Windows x64
 
-启动 PowerShell，按 [Windows 原生构建说明](../BUILDING.md#windows-x64-原生编译器与-usb-runtime) 准备匹配的 LLVM/MLIR。USB 构建使用仓库的 x64 CyAPI。PowerShell 中将每个完整的 `-C...` 参数括在引号内。
+启动 PowerShell，按 [Windows 原生构建说明](../docs/BUILDING.md#windows-x64-原生编译器与-usb-runtime) 准备匹配的 LLVM/MLIR。USB 构建使用仓库的 x64 CyAPI。PowerShell 中将每个完整的 `-C...` 参数括在引号内。
 
 ```powershell
 $env:MLIR_DIR = "C:/path/to/llvm-build-windows/lib/cmake/mlir"
@@ -176,7 +179,7 @@ uv build --python 3.12 python --wheel --out-dir python/dist `
 
 本机构建产物为 `mlir_cim22-<version>-py3-none-win_amd64.whl`。平台工具、编译器库、运行库及模型链接所需的导入库随包安装。
 
-在各平台用干净的 Python 环境安装生成的 wheel 和匹配的 torch-mlir wheel，从源码目录之外运行本文的 PyTorch 最小示例。验证 TF extra 时也运行 TF 片段。发行构建和源码包验收见 [BUILDING](../BUILDING.md#源码包与离线构建)。
+在各平台用干净的 Python 环境安装生成的 wheel 和匹配的 torch-mlir wheel，从源码目录之外运行本文的 PyTorch 最小示例。验证 TF extra 时也运行 TF 片段。发行构建和源码包验收见 [BUILDING](../docs/BUILDING.md#源码包与离线构建)。
 
 ## 开发与验证
 
@@ -197,6 +200,6 @@ cd python
 
 排查重复编译时使用 `TORCH_LOGS=recompiles`。定位 lowering 或链接问题时，先用 `debug_dir` 保留 IR 和目标文件，再检查安装包加载的原生组件。独立 CMake 构建可用 `CIM22_OPT`、`CIM22_RUNTIME_LIBRARY`、`CIM22_COMPILER_LIBRARY` 指向同一构建的产物，`CIM22_CC` 可指定模型链接工具。
 
-修改 C++、TableGen、schema 或 CMake 后，复用原构建目录和配置，通过 `uv sync --reinstall-package mlir-cim22` 重装 editable 包。完整命令、Ruff、原生 lit 和 wheel 验收见 [BUILDING 的测试与开发](../BUILDING.md#测试与开发)。软件执行、模拟 USB 配置及实板结果分开记录。
+修改 C++、TableGen、schema 或 CMake 后，复用原构建目录和配置，通过 `uv sync --reinstall-package mlir-cim22` 重装 editable 包。完整命令、Ruff、原生 lit 和 wheel 验收见 [BUILDING 的测试与开发](../docs/BUILDING.md#测试与开发)。软件执行、模拟 USB 配置及实板结果分开记录。
 
 Web 工作台开发见 [web/README.md](../web/README.md)。

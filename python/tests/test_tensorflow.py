@@ -46,7 +46,7 @@ import tensorflow as tf
 assert "torch_mlir.fx" not in sys.modules
 model = torch.compile(
     lambda x: x + 1, backend="cim22", fullgraph=True, dynamic=False,
-    options={"runtime": "software"},
+    options={"runtime": "simulator"},
 )
 with torch.inference_mode():
     try:
@@ -65,7 +65,7 @@ from cim22.tensorflow import compile
 @tf.function(input_signature=[tf.TensorSpec([2], tf.float32)])
 def host(x):
     return x + 1
-with compile(host, options={"runtime": "software"}) as compiled:
+with compile(host, options={"runtime": "simulator"}) as compiled:
     np.testing.assert_array_equal(compiled(tf.ones(2)), [2, 2])
 assert "torch_mlir.fx" not in sys.modules
 print("safe rejection and TensorFlow recovery: PASS")
@@ -95,7 +95,7 @@ def test_compile_in_fresh_process(first: str) -> None:
 import torch
 model = torch.compile(
     lambda x: x + 1, backend="cim22", fullgraph=True, dynamic=False,
-    options={"runtime": "software"},
+    options={"runtime": "simulator"},
 )
 with torch.inference_mode():
     torch.testing.assert_close(model(torch.ones(2)), torch.full((2,), 2.0))
@@ -149,7 +149,7 @@ value[1] = 127
 expected = value.astype(np.int32) @ weights.astype(np.int32) + bias
 np.testing.assert_array_equal(infer(value).numpy(), expected)
 with tempfile.TemporaryDirectory() as folder:
-    with compile(infer, options={"runtime": "software", "artifact_dir": folder}) as compiled:
+    with compile(infer, options={"runtime": "simulator", "artifact_dir": folder}) as compiled:
         actual = compiled(tf.constant(value))
         assert isinstance(actual, tf.Tensor)
         np.testing.assert_array_equal(actual.numpy(), expected)
@@ -168,7 +168,7 @@ assert getattr(sys, "getdlopenflags", lambda: 0)() == flags
         script += """
 model_after_tensorflow = torch.compile(
     lambda x: x * 2, backend="cim22", fullgraph=True, dynamic=False,
-    options={"runtime": "software"},
+    options={"runtime": "simulator"},
 )
 with torch.inference_mode():
     torch.testing.assert_close(
@@ -189,14 +189,18 @@ with torch.inference_mode():
 
 
 @pytest.mark.parametrize(
-    "options",
+    ("options", "message"),
     [
-        {"runtime": "invalid"},
-        {"runtime": "software", "usb_config": UsbConfig(1, 2, 0x81, 1)},
+        ({"runtime": "invalid"}, "runtime must be"),
+        ({"bf16_compensation": "invalid"}, "bf16_compensation must be"),
+        (
+            {"runtime": "simulator", "usb_config": UsbConfig(1, 2, 0x81, 1)},
+            "usb_config requires runtime='usb'",
+        ),
     ],
 )
 def test_options_rejected_like_pytorch(
-    options: dict[str, object], monkeypatch: pytest.MonkeyPatch
+    options: dict[str, object], message: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Both frontends reject the same options before any model conversion."""
     import torch
@@ -212,11 +216,10 @@ def test_options_rejected_like_pytorch(
         raise AssertionError("invalid options reached TensorFlow export")
 
     monkeypatch.setattr("tf2onnx.convert.from_function", unexpected_export)
-    with torch.inference_mode(), pytest.raises(ValueError) as pytorch:
+    with torch.inference_mode(), pytest.raises(ValueError, match=message):
         backend(None, [], options=options)
-    with pytest.raises(ValueError) as tensorflow:
+    with pytest.raises(ValueError, match=message):
         compile(model, options=options)
-    assert str(tensorflow.value) == str(pytorch.value)
 
 
 @pytest.mark.parametrize("keyword", ["runtime", "artifact_path", "debug_dir"])
@@ -295,7 +298,7 @@ def test_host_outputs_match_tensorflow() -> None:
     value = np.arange(-3, 3, dtype=np.float32).reshape(2, 3)
     expected = model(value)
     with compile(
-        model, options={"runtime": "software", "unused": True}
+        model, options={"runtime": "simulator", "unused": True}
     ) as compiled:
         actual = compiled(tf.constant(value))
         assert isinstance(actual, tuple)
@@ -323,7 +326,7 @@ def test_callable_preserves_nested_outputs_and_tensor_boundaries() -> None:
     value = tf.constant([1, 2], dtype=tf.int32)
     offset = tf.constant(3, dtype=tf.int32)
     expected = model(value, offset)
-    with compile(model, options={"runtime": "software"}) as compiled:
+    with compile(model, options={"runtime": "simulator"}) as compiled:
         first = compiled(value, offset)
         tf.nest.assert_same_structure(first, expected)
         for actual, reference in zip(
@@ -361,12 +364,16 @@ def test_rejects_missing_tensor_outputs(output: object) -> None:
         return output
 
     with pytest.raises(ValueError, match="outputs must be dense tensors"):
-        compile(model, options={"runtime": "software"})
+        compile(model, options={"runtime": "simulator"})
 
 
-@pytest.mark.parametrize("convolution", [False, True], ids=["dense", "conv2d"])
+@pytest.mark.parametrize(
+    ("convolution", "uncompensated"),
+    [(False, False), (True, False), (False, True)],
+    ids=["dense", "conv2d", "dense-uncompensated"],
+)
 def test_frozen_weights_dispatch_and_reload(
-    tmp_path: Path, convolution: bool
+    tmp_path: Path, convolution: bool, uncompensated: bool
 ) -> None:
     from cim22.tensorflow import compile
 
@@ -377,7 +384,9 @@ def test_frozen_weights_dispatch_and_reload(
     layer = layer_type(
         16,
         **({"kernel_size": 1} if convolution else {}),
-        kernel_initializer=tf.keras.initializers.Constant(0.01),
+        kernel_initializer=tf.keras.initializers.Constant(
+            0.01 if uncompensated else 0.5
+        ),
         bias_initializer="ones",
         activation="relu",
     )
@@ -389,29 +398,29 @@ def test_frozen_weights_dispatch_and_reload(
 
     artifacts = tmp_path / "models"
     debug = tmp_path / "ir"
-    value = np.full(shape, 0.01, dtype=np.float32)
+    value = np.full(shape, 0.01 if uncompensated else 1.0, dtype=np.float32)
     value.reshape(2, 64)[1] *= -1
-    reference = model(value).numpy()
-    # Supplier-model goldens, independent of the TensorFlow adapter. These are
-    # deliberately not FP32 matmul expectations (see the acceptance example).
-    expected = np.broadcast_to(
-        np.array([0x7E520000, 0], dtype=np.uint32).view(np.float32)[:, None],
-        (2, 16),
-    ).reshape(*shape[:-1], 16)
-    with compile(
-        model,
-        options={
-            "artifact_dir": artifacts,
-            "debug_dir": debug,
-            "runtime": "software",
-        },
-    ) as compiled:
+    from cim22.compiler import BackendOptions
+
+    options: BackendOptions = {
+        "artifact_dir": artifacts,
+        "debug_dir": debug,
+        "runtime": "simulator",
+    }
+    if uncompensated:
+        options["bf16_compensation"] = "none"
+        # Raw supplier-model golden retained for the uncompensated baseline.
+        rows = np.array([0x7E520000, 0], dtype=np.uint32).view(np.float32)
+    else:
+        # ReLU(64 * (+/-1) * 0.5 + 1) is exactly representable.
+        rows = np.array([33, 0], dtype=np.float32)
+    expected = np.broadcast_to(rows[:, None], (2, 16)).reshape(*shape[:-1], 16)
+    with compile(model, options=options) as compiled:
         assert compiled.session.input_shapes == (shape,)
         assert compiled.session.num_transactions > 0
         actual = compiled(tf.constant(value)).numpy()
         assert compiled.session.dispatch_count > 0
         np.testing.assert_array_equal(actual, expected)
-        assert np.max(np.abs(actual.astype(np.float64) - reference)) > 1
         # Export freezes the weights; the native model cannot call TensorFlow.
         layer.kernel.assign(tf.zeros_like(layer.kernel))
         np.testing.assert_array_equal(compiled(tf.constant(value)), expected)
@@ -438,7 +447,7 @@ def test_rejects_nonstatic_fp32_signature(
         return x + x
 
     with pytest.raises(ValueError, match="static.*FP32"):
-        compile(model, options={"runtime": "software"})
+        compile(model, options={"runtime": "simulator"})
 
 
 def test_requires_explicit_function_signature() -> None:
@@ -448,9 +457,9 @@ def test_requires_explicit_function_signature() -> None:
         return x + x
 
     with pytest.raises(TypeError, match="tf.function"):
-        compile(model, options={"runtime": "software"})
+        compile(model, options={"runtime": "simulator"})
     with pytest.raises(ValueError, match="static.*FP32"):
-        compile(tf.function(model), options={"runtime": "software"})
+        compile(tf.function(model), options={"runtime": "simulator"})
 
 
 def test_rejects_unsupported_output() -> None:
@@ -461,7 +470,7 @@ def test_rejects_unsupported_output() -> None:
         return tf.cast(x, tf.float64)
 
     with pytest.raises(ValueError, match="outputs.*FP32"):
-        compile(model, options={"runtime": "software"})
+        compile(model, options={"runtime": "simulator"})
 
 
 def test_int8_matmul_tiling_and_reload(tmp_path: Path) -> None:
@@ -487,7 +496,7 @@ def test_int8_matmul_tiling_and_reload(tmp_path: Path) -> None:
         options={
             "artifact_dir": artifacts,
             "debug_dir": tmp_path / "ir",
-            "runtime": "software",
+            "runtime": "simulator",
         },
     ) as compiled:
         assert compiled.session.input_dtypes == (np.dtype(np.int8),)
@@ -519,7 +528,7 @@ def test_int8_partial_overflow_stays_on_host() -> None:
         )
 
     value = np.full((1, 64), -128, dtype=np.int8)
-    with compile(model, options={"runtime": "software"}) as compiled:
+    with compile(model, options={"runtime": "simulator"}) as compiled:
         np.testing.assert_array_equal(
             compiled(tf.constant(value)), model(value).numpy()
         )
@@ -535,7 +544,7 @@ def test_mixed_integer_host_outputs() -> None:
         return x + 1, tf.cast(x, tf.int8)
 
     value = np.array([-129, 128], dtype=np.int32)
-    with compile(model, options={"runtime": "software"}) as compiled:
+    with compile(model, options={"runtime": "simulator"}) as compiled:
         assert compiled.session.output_dtypes == (
             np.dtype(np.int32),
             np.dtype(np.int8),
@@ -559,7 +568,7 @@ def test_worker_temp_lifetime_and_failure_cleanup(
     def model(x):
         return x + 1
 
-    with compile(model, options={"runtime": "software"}) as compiled:
+    with compile(model, options={"runtime": "simulator"}) as compiled:
         (folder,) = tmp_path.glob(".cim22-tensorflow-*")
         np.testing.assert_array_equal(compiled(tf.ones(2)).numpy(), [2, 2])
         assert (folder / f"model{MODEL_SUFFIX}").is_file()
@@ -568,7 +577,7 @@ def test_worker_temp_lifetime_and_failure_cleanup(
     artifacts = tmp_path / "models"
     debug = tmp_path / "ir"
     options = {
-        "runtime": "software",
+        "runtime": "simulator",
         "artifact_dir": str(artifacts),
         "debug_dir": str(debug),
     }
@@ -590,7 +599,7 @@ def test_worker_temp_lifetime_and_failure_cleanup(
 
     monkeypatch.setenv("CIM22_OPT", str(tmp_path / "missing-optimizer"))
     with pytest.raises(RuntimeError, match="TensorFlow compilation failed"):
-        compile(model, options={"runtime": "software"})
+        compile(model, options={"runtime": "simulator"})
     assert not list(tmp_path.glob(".cim22-tensorflow-*"))
 
 

@@ -1,9 +1,9 @@
 // RUN: mlir-cim22-opt %s --cim-bf16-prepare | FileCheck %s --check-prefix=PREP
-// RUN: mlir-cim22-opt %s --cim-bf16-pipeline='stage=split' | FileCheck %s --check-prefix=SPLIT
-// RUN: mlir-cim22-opt %s --cim-bf16-pipeline='stage=vmm' | FileCheck %s --check-prefix=VMM
-// RUN: mlir-cim22-opt %s --cim-bf16-pipeline | FileCheck %s --check-prefix=PACKET
-// RUN: mlir-cim22-opt %s --cim-bf16-pipeline='stage=llvm' | FileCheck %s --check-prefix=LLVM
-// RUN: not mlir-cim22-opt %s --cim-bf16-pipeline='stage=unknown' 2>&1 | FileCheck %s --check-prefix=INVALID
+// RUN: mlir-cim22-opt %s --cim-bf16-pipeline='bf16-compensation=none stage=split' | FileCheck %s --check-prefix=SPLIT
+// RUN: mlir-cim22-opt %s --cim-bf16-pipeline='bf16-compensation=none stage=vmm' | FileCheck %s --check-prefix=VMM
+// RUN: mlir-cim22-opt %s --cim-bf16-pipeline="bf16-compensation=none" | FileCheck %s --check-prefix=PACKET
+// RUN: mlir-cim22-opt %s --cim-bf16-pipeline='bf16-compensation=none stage=llvm' | FileCheck %s --check-prefix=LLVM
+// RUN: not mlir-cim22-opt %s --cim-bf16-pipeline='bf16-compensation=none stage=unknown' 2>&1 | FileCheck %s --check-prefix=INVALID
 // RUN: mlir-cim22-opt %s --normalize-cim-conv='allow-f32=true' | FileCheck %s --check-prefix=NOEPILOGUE
 
 // Conv -> Host bias -> depthwise -> Linear -> residual. Shared FP32 inputs

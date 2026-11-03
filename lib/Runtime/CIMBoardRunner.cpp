@@ -206,7 +206,7 @@ llvm::Error validateOutputs(const CIMTransaction &executable,
 llvm::Expected<CIMDeviceProgram>
 materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
                    const CIMBoardRunPolicy &policy, CIMTraceSink *trace,
-                   uint64_t &sequence) {
+                   uint64_t &sequence, bool zeroWeightExponent) {
   CIMDeviceProgram program;
 
   // The supplier board flow configures one return path per active Core before
@@ -256,8 +256,10 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
       select.flits.push_back(
           encodeCIMControlFlit(work.route, work.macroSlot, input.dataType));
       if (input.dataType == CIMDataType::BF16) {
-        const auto exponentWords =
-            mlir::cim22::packBF16WeightExponents(weight.exponents);
+        // Zero only wire Ew; retain original Ew for output restoration.
+        const std::array<uint8_t, kCIMOutputElements> zeroExponents{};
+        const auto exponentWords = mlir::cim22::packBF16WeightExponents(
+            zeroWeightExponent ? zeroExponents : weight.exponents);
         if (llvm::Error error = appendCIMWeightExponentPacket(
                 weight.route, exponentWords, select.flits))
           return std::move(error);
@@ -413,13 +415,57 @@ llvm::Error CIMBoardRunner::run(const execution::CIMTransaction &executable,
                                 const execution::CIMRunInputs &inputs,
                                 execution::CIMRunOutputs &outputs,
                                 execution::CIMTraceSink *trace) {
+  return run(executable, inputs, outputs, BF16Compensation::None, trace);
+}
+
+llvm::Error CIMBoardRunner::run(const execution::CIMTransaction &executable,
+                                const execution::CIMRunInputs &inputs,
+                                execution::CIMRunOutputs &outputs,
+                                execution::BF16Compensation compensation,
+                                execution::CIMTraceSink *trace) {
   uint64_t sequence = 0;
   emitTrace(trace, sequence, execution::CIMTraceEventKind::BeginRun);
   if (llvm::Error error = validateOutputs(executable, outputs)) {
     emitTrace(trace, sequence, execution::CIMTraceEventKind::Error);
     return error;
   }
-  auto response = captureImpl(executable, inputs, trace, sequence);
+  std::vector<BF16InputPreparation> prepared;
+  std::vector<CIMInputView> chipInputs;
+  const bool compensate = compensation != BF16Compensation::None;
+  auto fail = [&](llvm::Error error) -> llvm::Error {
+    emitTrace(trace, sequence, execution::CIMTraceEventKind::Error);
+    return error;
+  };
+  if (compensate) {
+    if (auto error = validateInputs(executable, inputs))
+      return fail(std::move(error));
+    prepared.resize(inputs.values.size());
+    chipInputs.assign(inputs.values.begin(), inputs.values.end());
+    for (auto [index, binding] : llvm::enumerate(executable.getDynamicInputs()))
+      if (binding.dataType == CIMDataType::BF16) {
+        auto value =
+            prepareBF16Input(inputs.values[index].bf16Values, compensation);
+        if (!value)
+          return fail(value.takeError());
+        prepared[index] = std::move(*value);
+        chipInputs[index].bf16Values = prepared[index].chipValues;
+      }
+    // Validate every used group before the first device operation.
+    for (const CIMGroup &group : executable.getGroups())
+      for (const CIMWork &work : group.works) {
+        auto bindings = resolveWorkBindings(executable, group, work);
+        if (!bindings)
+          return fail(bindings.takeError());
+        if (bindings->weight->dataType == CIMDataType::BF16)
+          if (auto error = validateBF16Group(*bindings->weight,
+                                             prepared[bindings->inputIndex],
+                                             compensation))
+            return fail(std::move(error));
+      }
+  }
+  auto response =
+      captureImpl(executable, compensate ? CIMRunInputs{chipInputs} : inputs,
+                  trace, sequence, compensate);
   if (!response) {
     emitTrace(trace, sequence, execution::CIMTraceEventKind::Error);
     return response.takeError();
@@ -427,6 +473,34 @@ llvm::Error CIMBoardRunner::run(const execution::CIMTransaction &executable,
   if (llvm::Error error = decodeResponse(executable, *response, outputs)) {
     emitTrace(trace, sequence, execution::CIMTraceEventKind::Error);
     return error;
+  }
+  if (compensate) {
+    for (auto [index, binding] : llvm::enumerate(executable.getReadbacks())) {
+      if (binding.dataType != CIMDataType::BF16)
+        continue;
+      size_t inputIndex = 0;
+      const auto *input =
+          findInput(executable, binding.groupId, binding.workId, inputIndex);
+      const auto *weight =
+          findWeight(executable, binding.groupId, binding.workId);
+      if (!input || !weight)
+        return fail(runnerError("CIM BF16 restoration binding is missing"));
+      auto output = outputs.values[index].bf16Values;
+      for (size_t lane = 0; lane < kCIMOutputElements; ++lane) {
+        const bool hasSupport =
+            compensation != BF16Compensation::SignSplit ||
+            hasBF16Support(
+                llvm::ArrayRef(weight->values)
+                    .slice(lane * kCIMInputElements, kCIMInputElements),
+                prepared[inputIndex].support);
+        auto restored =
+            restoreBF16Output(output[lane], weight->exponents[lane], hasSupport,
+                              prepared[inputIndex], compensation);
+        if (!restored)
+          return fail(restored.takeError());
+        output[lane] = *restored;
+      }
+    }
   }
   emitTrace(trace, sequence, execution::CIMTraceEventKind::Complete);
   return llvm::Error::success();
@@ -450,12 +524,12 @@ CIMBoardRunner::capture(const execution::CIMTransaction &executable,
 llvm::Expected<CIMDeviceResponse>
 CIMBoardRunner::captureImpl(const execution::CIMTransaction &executable,
                             const execution::CIMRunInputs &inputs,
-                            execution::CIMTraceSink *trace,
-                            uint64_t &sequence) {
+                            execution::CIMTraceSink *trace, uint64_t &sequence,
+                            bool zeroWeightExponent) {
   if (llvm::Error error = validateInputs(executable, inputs))
     return std::move(error);
-  auto program =
-      materializeProgram(executable, inputs, policy_, trace, sequence);
+  auto program = materializeProgram(executable, inputs, policy_, trace,
+                                    sequence, zeroWeightExponent);
   if (!program)
     return program.takeError();
   CIMDeviceResponse response;

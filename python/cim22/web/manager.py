@@ -117,7 +117,7 @@ class TaskManager:
                     "completed": 0,
                     "input_shape": config["input_shape"],
                     "classes": config["classes"],
-                    "runtime": "software",
+                    "runtime": "simulator",
                     "compile_seconds": None,
                     "compile_attempts": [],
                     "error": None,

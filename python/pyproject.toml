@@ -41,7 +41,8 @@ sdist.include = ["cim22/web/static"]
 [tool.scikit-build.sdist.force-include]
 "../CMakeLists.txt" = "native/CMakeLists.txt"
 "../LICENSE" = "LICENSE"
-"../BUILDING.md" = "BUILDING.md"
+"../docs/BUILDING.md" = "docs/BUILDING.md"
+"../docs/BF16.md" = "docs/BF16.md"
 "../cmake" = "native/cmake"
 "../include" = "native/include"
 "../lib" = "native/lib"

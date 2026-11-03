@@ -158,7 +158,7 @@ def make_config(model_dir: Path, weights: Path, dataset: Path) -> Document:
         "samples": entries,
         "classes": CLASSES,
         "input_shape": INPUT_SHAPE,
-        "runtime": "software",
+        "runtime": "simulator",
     }
 
 

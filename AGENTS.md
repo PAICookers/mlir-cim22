@@ -36,7 +36,7 @@ keep file ownership disjoint.
   `python/pyproject.toml` is the only Python project; scikit-build-core invokes
   the root CMake project and installs its native tools and libraries.
 - Use `torch.compile(..., backend="cim22", fullgraph=True, dynamic=False)`
-  for sequential inference. Select `runtime="software"` in backend options
+  for sequential inference. Select `runtime="simulator"` in backend options
   for simulation; the compilation default is USB. Dynamo/AOTAutograd owns
   output containers, mutation writeback and specialization caching.
 - Keep local wheels, logs and build directories out of commits. Use portable

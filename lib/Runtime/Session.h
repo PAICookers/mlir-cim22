@@ -2,6 +2,7 @@
 #ifndef CIM22_RUNTIME_SESSION_H
 #define CIM22_RUNTIME_SESSION_H
 #include "CIM22/Execution/CIMRunner.h"
+#include "CIM22/Runtime/CIMBoardRunner.h"
 #include "CIM22/Runtime/CIMDevice.h"
 #include "ModelData.h"
 #include "mlir/ExecutionEngine/CRunnerUtils.h"
@@ -15,8 +16,8 @@ struct Session {
   ModelData model;
   void (*invoke)(void **) = nullptr;
   std::unique_ptr<::cim22::runtime::CIMDevice> device;
-  // Runner borrows the device; destroy it first.
-  std::unique_ptr<::cim22::execution::CIMRunner> runner;
+  // The board runner borrows the device; destroy it first.
+  std::unique_ptr<::cim22::runtime::CIMBoardRunner> runner;
   std::string error;
   uint64_t dispatches = 0;
   std::mutex mutex;
@@ -27,6 +28,14 @@ void copyError(llvm::StringRef message, char *buffer, size_t capacity);
 extern "C" void
 _mlir_ciface_cim22_dispatch(int64_t id, StridedMemRefType<uint16_t, 2> *input,
                             StridedMemRefType<uint16_t, 2> *output);
+extern "C" void
+_mlir_ciface_cim22_dispatch_sign_split(int64_t id,
+                                       StridedMemRefType<uint16_t, 2> *input,
+                                       StridedMemRefType<uint16_t, 2> *output);
+extern "C" void
+_mlir_ciface_cim22_dispatch_legacy(int64_t id,
+                                   StridedMemRefType<uint16_t, 2> *input,
+                                   StridedMemRefType<uint16_t, 2> *output);
 extern "C" void
 _mlir_ciface_cim22_dispatch_int8(int64_t id,
                                  StridedMemRefType<int8_t, 2> *input,

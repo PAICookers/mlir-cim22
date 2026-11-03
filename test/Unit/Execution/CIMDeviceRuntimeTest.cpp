@@ -2,6 +2,7 @@
 
 #include "CIM22/Runtime/CIMBoardRunner.h"
 #include "CIM22/Runtime/CIMPacketCodec.h"
+#include "CIM22/Support/BF16Support.h"
 #include "CIM22/Support/Int8WeightLayout.h"
 
 #include "llvm/Support/Error.h"
@@ -78,7 +79,7 @@ public:
                             (static_cast<uint64_t>(coreSlot) << 18) |
                             (((outputCacheRead >> 14) & 0xf) << 14) | 6;
       readback.bodyFlits =
-          command.dataType == CIMDataType::BF16 ? kBF16Response : kResponse;
+          command.dataType == CIMDataType::BF16 ? bf16Response : kResponse;
       if (corruptResponsePadding &&
           command.outputIndex + 1 == program.readbacks.size())
         readback.bodyFlits[5] = 1;
@@ -110,6 +111,7 @@ public:
   void close() override { opened = false; }
 
   bool opened = false;
+  std::array<uint64_t, 6> bf16Response = kBF16Response;
   std::vector<int64_t> outputCoreSlots;
   CIMDeviceProgram program;
   size_t executeCount = 0;
@@ -541,6 +543,203 @@ void testBF16BoardReadbackPreservesBits() {
   device.close();
 }
 
+// Synthetic wire fixtures: lane 0 starts at bit 48 of the 384-bit body.
+// These canned converter results do not compute or simulate a dot product.
+std::array<uint64_t, 6> bf16Response(const std::array<uint16_t, 16> &values) {
+  std::array<uint64_t, 6> body{};
+  for (size_t lane = 0; lane < values.size(); ++lane)
+    for (size_t bit = 0; bit < 16; ++bit) {
+      const size_t position = 48 + 21 * lane + bit;
+      body[5 - position / 64] |= uint64_t{(values[lane] >> bit) & 1U}
+                                 << (position % 64);
+    }
+  return body;
+}
+
+StaticWeightSection compensatedWeight(int8_t mantissa, uint8_t exponent) {
+  auto weight = makeBF16Transaction().getStaticWeights().front();
+  weight.values.fill(0);
+  weight.values[0] = mantissa;
+  weight.exponents.fill(exponent);
+  std::array<uint8_t, 16 * 64> bytes{};
+  std::transform(weight.values.begin(), weight.values.end(), bytes.begin(),
+                 [](int8_t value) { return static_cast<uint8_t>(value); });
+  const auto words = mlir::cim22::mapInt8WeightTileToCIMWords(bytes);
+  weight.words.assign(words.begin(), words.end());
+  return weight;
+}
+
+CIMTransaction singleBF16(const StaticWeightSection &weight) {
+  const auto base = makeBF16Transaction();
+  return CIMTransaction("cim22-4x5-v1", 1, 1, {base.getGroups().front()},
+                        {weight}, {}, {base.getDynamicInputs().front()},
+                        {base.getReadbacks().front()}, {});
+}
+
+void testBF16BoardCompensation() {
+  struct FinalTrace : CIMTraceSink {
+    CIMTraceEventKind last = CIMTraceEventKind::Error;
+    void record(const CIMTraceEvent &event) override { last = event.kind; }
+  } trace;
+  FakeCIMDevice device;
+  expectSuccess(device.open());
+  CIMBoardRunner runner(device, {});
+  std::array<uint16_t, 64> input{};
+  input[0] = 0x7880; // 2^114.
+  std::array<uint16_t, 16> output{}, reply{};
+  std::array<CIMInputView, 1> inputViews{CIMInputView{{}, input}};
+  std::array<CIMOutputView, 1> outputViews{CIMOutputView{{}, output}};
+  CIMRunInputs inputs{inputViews};
+  CIMRunOutputs outputs{outputViews};
+  auto weight = compensatedWeight(2, 126); // One 1/64 weight in lane 0.
+  auto executable = singleBF16(weight);
+  auto checkInputPacket = [&](uint16_t first) {
+    std::array<uint16_t, 64> expected{};
+    expected[0] = first;
+    const auto words = mlir::cim22::packBF16InputCacheRow(expected);
+    const auto &flits = device.program.operations[2].flits;
+    CHECK(flits.size() == 17);
+    CHECK(std::equal(words.begin(), words.end(), flits.begin() + 1));
+  };
+  // p=128 and zero share chip bits; only lane 0 has quantized support.
+  reply.fill(0x4000); // C(128,0,127)=2; scale 2^107 gives 2^108.
+  device.bf16Response = bf16Response(reply);
+  expectSuccess(runner.run(executable, inputs, outputs,
+                           BF16Compensation::SignSplit, &trace));
+  CHECK(trace.last == CIMTraceEventKind::Complete);
+  CHECK(output[0] == 0x7580);
+  CHECK(std::all_of(output.begin() + 1, output.end(),
+                    [](uint16_t bits) { return bits == 0; }));
+  checkInputPacket(0x3f80);
+  CHECK(device.program.operations[1].flits[2] == 0);
+  CHECK(device.program.operations[1].flits[3] == 0);
+  CHECK(executable.getStaticWeights().front().exponents == weight.exponents);
+  CHECK(input[0] == 0x7880);
+
+  reply.fill(0x7880); // Legacy p128/zero at E240; restore by 2^-6.
+  device.bf16Response = bf16Response(reply);
+  expectSuccess(
+      runner.run(executable, inputs, outputs, BF16Compensation::Legacy));
+  CHECK(output[0] == 0x7580);
+  CHECK(output[1] == 0x7580); // Preserve legacy false-zero result 2^108.
+  checkInputPacket(0x7800);
+  CHECK(device.program.operations[1].flits[2] == 0);
+
+  // A compensated run must not alter subsequent raw run/capture semantics.
+  device.bf16Response = kBF16Response;
+  expectSuccess(runner.run(executable, inputs, outputs));
+  CHECK(output == kBF16Expected);
+  const auto exponents = mlir::cim22::packBF16WeightExponents(
+      executable.getStaticWeights().front().exponents);
+  CHECK(device.program.operations[1].flits[2] == exponents[0]);
+  CHECK(device.program.operations[1].flits[3] == exponents[1]);
+  auto capture = runner.capture(executable, inputs);
+  CHECK(capture && capture->readbacks.front().bodyFlits == kBF16Response);
+
+  const auto before = device.executeCount;
+  input[1] = 0xbf80;
+  auto negativeInput = runner.run(executable, inputs, outputs,
+                                  BF16Compensation::SignSplit, &trace);
+  CHECK(negativeInput);
+  CHECK(trace.last == CIMTraceEventKind::Error);
+  llvm::consumeError(std::move(negativeInput));
+  CHECK(device.executeCount == before);
+  input[1] = 0;
+  for (uint16_t bad : {uint16_t{0x7f80}, uint16_t{0x7fc1}}) {
+    input[0] = bad;
+    auto error =
+        runner.run(executable, inputs, outputs, BF16Compensation::Legacy);
+    CHECK(error);
+    llvm::consumeError(std::move(error));
+    CHECK(device.executeCount == before);
+  }
+  input.fill(0);
+  executable = singleBF16(compensatedWeight(-1, 127));
+  auto negative =
+      runner.run(executable, inputs, outputs, BF16Compensation::SignSplit);
+  CHECK(negative);
+  llvm::consumeError(std::move(negative));
+  CHECK(device.executeCount == before);
+
+  auto extremeWeight = compensatedWeight(-128, 0);
+  extremeWeight.values.fill(-128);
+  std::array<uint8_t, 16 * 64> extremeBytes{};
+  extremeBytes.fill(128);
+  const auto extremeWords =
+      mlir::cim22::mapInt8WeightTileToCIMWords(extremeBytes);
+  extremeWeight.words.assign(extremeWords.begin(), extremeWords.end());
+  for (uint16_t bits : {uint16_t{0x8000}, uint16_t{0xbfff}}) {
+    // Both negative zero and finite -1.9921875 prealign to q=-128.
+    extremeWeight.exponents.fill(bits == 0x8000 ? 0 : 127);
+    executable = singleBF16(extremeWeight);
+    input.fill(bits);
+    auto range = runner.run(executable, inputs, outputs,
+                            BF16Compensation::Legacy, &trace);
+    CHECK(range && trace.last == CIMTraceEventKind::Error);
+    llvm::consumeError(std::move(range));
+    CHECK(device.executeCount == before);
+  }
+
+  input.fill(0);
+  input[0] = 0x7f7f;
+  executable = singleBF16(compensatedWeight(127, 254));
+  reply.fill(0x4000);
+  reply[0] = 0x437c; // C(127*127,0,127)=252; true restored overflow.
+  device.bf16Response = bf16Response(reply);
+  auto overflow = runner.run(executable, inputs, outputs,
+                             BF16Compensation::SignSplit, &trace);
+  CHECK(overflow);
+  CHECK(trace.last == CIMTraceEventKind::Error);
+  llvm::consumeError(std::move(overflow));
+  CHECK(device.executeCount == before + 1);
+  device.close();
+}
+
+void testBF16CompensationWorkIsolation() {
+  FakeCIMDevice device;
+  expectSuccess(device.open());
+  device.reverseReadbacks = true;
+  CIMBoardRunner runner(device, {});
+  const auto base = makeBF16Transaction();
+  auto group = base.getGroups().front();
+  group.works.push_back({1, 3, 1, {}});
+  auto first = compensatedWeight(64, 126);
+  auto second = first;
+  second.workId = 1;
+  second.macroSlot = 1;
+  auto input0 = base.getDynamicInputs().front();
+  auto input1 = input0;
+  input1.workId = input1.macroSlot = input1.inputSlot = 1;
+  auto output0 = base.getReadbacks().front();
+  auto output1 = output0;
+  output1.workId = output1.macroSlot = 1;
+  CIMTransaction executable("cim22-4x5-v1", 1, 1, {group}, {first, second}, {},
+                            {input0, input1}, {output0, output1}, {});
+  std::array<std::array<uint16_t, 64>, 2> input{};
+  input[0][0] = 0x7880;
+  input[1][0] = 0x3f00;
+  std::array<std::array<uint16_t, 16>, 2> output{};
+  const std::array<CIMInputView, 2> inputs{CIMInputView{{}, input[0]},
+                                           CIMInputView{{}, input[1]}};
+  std::array<CIMOutputView, 2> outputs{CIMOutputView{{}, output[0]},
+                                       CIMOutputView{{}, output[1]}};
+  CIMRunInputs runInputs{inputs};
+  CIMRunOutputs runOutputs{outputs};
+  std::array<uint16_t, 16> reply{};
+  reply.fill(0x4000);
+  reply[0] = 0x4280;
+  device.bf16Response = bf16Response(reply);
+  for (bool swapped : {false, true}) {
+    expectSuccess(runner.run(executable, runInputs, runOutputs,
+                             BF16Compensation::SignSplit));
+    CHECK(output[swapped ? 1 : 0][0] == 0x7800);
+    CHECK(output[swapped ? 0 : 1][0] == 0x3e80);
+    std::swap(input[0], input[1]);
+  }
+  CHECK(device.executeCount == 2);
+  device.close();
+}
+
 void testMixedModeReadbacks() {
   for (bool corruptPadding : {false, true}) {
     FakeCIMDevice device;
@@ -656,6 +855,8 @@ int main() {
   testUnknownDataModeIsRejectedBeforeDeviceExecution();
   testInvalidPlacementAndReadbackRouteRejectBeforeIO();
   testBF16BoardReadbackPreservesBits();
+  testBF16BoardCompensation();
+  testBF16CompensationWorkIsolation();
   testMixedModeReadbacks();
   testMalformedResponseDoesNotPublishPartialOutputs();
   return 0;

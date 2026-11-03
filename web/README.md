@@ -40,7 +40,7 @@ cim22-web --model-dir /path/to/model-package
 
 ## 从源码构建
 
-普通用户无需执行本节。维护者需要先按 [源码构建说明](../BUILDING.md) 准备
+普通用户无需执行本节。维护者需要先按 [源码构建说明](../docs/BUILDING.md) 准备
 Python、uv、torch-mlir wheel 和 native 工具链，然后构建前端：
 
 ```sh

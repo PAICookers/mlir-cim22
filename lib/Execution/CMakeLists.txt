@@ -1,4 +1,5 @@
 add_mlir_library(MLIRCIM22Execution OBJECT
+  BF16Compensation.cpp
   CIMSoftwareRunner.cpp
 
   ADDITIONAL_HEADER_DIRS

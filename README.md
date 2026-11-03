@@ -29,7 +29,7 @@ Python 发行包名为 `mlir-cim22`，导入包和后端名为 `cim22`。一个 
    成功时输出：
 
    ```text
-   CIM22 torch.compile supplier-model checks passed.
+   CIM22 torch.compile sign-split BF16 checks passed.
    ```
 3. 在自己的模型上使用同一后端：
 
@@ -44,7 +44,7 @@ Python 发行包名为 `mlir-cim22`，导入包和后端名为 `cim22`。一个 
            backend="cim22",
            fullgraph=True,
            dynamic=False,
-           options={"runtime": "software"},
+           options={"runtime": "simulator"},
        )
        result = compiled(torch.ones(1, 64))
        print(result.shape)
@@ -58,13 +58,14 @@ Python 发行包名为 `mlir-cim22`，导入包和后端名为 `cim22`。一个 
 
 示例显式选择软件运行时；默认运行时是 USB。输入须为静态形状、连续的 CPU Tensor；浮点模型使用 FP32，显式 INT8 乘法配合 INT32 累加可走整数路径。首次调用完成编译和加载，相同特化的后续调用复用已加载代码。
 
-拿到源码后需要先安装或构建，克隆仓库本身不会提供预编译文件。只有源码时，请从[源码构建指南](BUILDING.md)开始。
+拿到源码后需要先安装或构建，克隆仓库本身不会提供预编译文件。只有源码时，请从[源码构建指南](docs/BUILDING.md)开始。
 
 ## 源码构建与开发
 
-- [MLIR-CIM22 编译器](BUILDING.md#mlir-cim22-编译器)：准备 LLVM/MLIR，直接构建并使用原生工具。
-- [PyTorch 编译后端](BUILDING.md#pytorch-编译后端)：构建一体化 wheel。
-- [测试与开发](BUILDING.md#测试与开发)：运行 pytest、原生 lit 测试及增量重建。
+- [MLIR-CIM22 编译器](docs/BUILDING.md#mlir-cim22-编译器)：准备 LLVM/MLIR，直接构建并使用原生工具。
+- [PyTorch 编译后端](docs/BUILDING.md#pytorch-编译后端)：构建一体化 wheel。
+- [测试与开发](docs/BUILDING.md#测试与开发)：运行 pytest、原生 lit 测试及增量重建。
 - [Python 使用说明](python/README.md)：模型示例、后端选项和常见问题。
+- [BF16 补偿原理与实现](docs/BF16.md)：sign-split 拆分、尺度恢复、代码入口与误差边界。
 
 `mlir-cim22-opt` 也可单独用于 MLIR 检查和 pass 调试。

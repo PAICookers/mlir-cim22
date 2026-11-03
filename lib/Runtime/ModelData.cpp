@@ -400,8 +400,16 @@ llvm::Expected<std::string> encodeModelData(const ModelData &model) {
     return invalid("signature/kernel counts");
   pb::ModelArtifact artifact;
   artifact.set_schema_version(1);
-  artifact.set_backend(model.backend == RuntimeBackend::Software ? pb::SOFTWARE
-                                                                 : pb::USB);
+  switch (model.backend) {
+  case RuntimeBackend::Software:
+    artifact.set_backend(pb::SOFTWARE);
+    break;
+  case RuntimeBackend::USB:
+    artifact.set_backend(pb::USB);
+    break;
+  default:
+    return invalid("unsupported runtime backend");
+  }
   for (size_t i = 0; i < model.shapes.size(); ++i) {
     auto *tensor = i < static_cast<size_t>(model.numInputs)
                        ? artifact.add_inputs()

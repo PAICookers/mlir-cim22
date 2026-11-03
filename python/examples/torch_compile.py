@@ -1,4 +1,4 @@
-"""Compile a small model and check the adopted CIM22 software reference."""
+"""Compile an original model with the default corrected CIM BF16 pipeline."""
 
 import torch
 from torch import nn
@@ -18,38 +18,34 @@ class SimpleModel(nn.Module):
 
 
 def main() -> None:
-    """Check fixed-weight results, repeated calls and signed prealignment."""
+    """Check exact normal inputs and automatic signed-input preparation."""
     model = SimpleModel().cpu().eval()
     with torch.no_grad():
-        model.linear.weight.fill_(0.01)
+        model.linear.weight.fill_(0.5)
         model.linear.bias.fill_(1)
     compiled = torch.compile(
         model,
         backend="cim22",
         fullgraph=True,
         dynamic=False,
-        options={"runtime": "software"},
+        options={"runtime": "simulator"},
     )
-    # Fixed supplier-model BF16 goldens; positive outputs absorb bias 1 at
-    # FP32 precision. Each input row is [first_value, other_value, ...].
-    # The mixed case aligns to [-117, 82, ...], giving INT21=414018 -> 0x7f4a;
-    # the old magnitude-first shift would instead produce 0x7f4e.
+    # Powers of two make the expected corrected values independently exact.
     cases = (
-        ("negative_relu", -0.01, -0.01, 0x0000),
-        ("positive", 0.01, 0.01, 0x7E52),
-        ("double_input", 0.02, 0.02, 0x7ED2),
-        ("quadruple_input", 0.04, 0.04, 0x7F52),
-        ("mixed_sign_exponents", -0.01, 0.04, 0x7F4A),
+        ("negative_relu", -1.0, -1.0, 0.0),
+        ("positive", 1.0, 1.0, 33.0),
+        ("double_input", 2.0, 2.0, 65.0),
+        ("quadruple_input", 4.0, 4.0, 129.0),
+        ("mixed_sign", -1.0, 2.0, 63.5),
     )
+    prepared = []
+    for name, first, other, expected in cases:
+        value = torch.full((1, 64), other)
+        value[0, 0] = first
+        prepared.append((name, value, expected))
     with torch.inference_mode():
-        for case_name, first_value, other_value, expected_bits in cases:
-            inputs = torch.full((1, 64), other_value)
-            inputs[0, 0] = first_value
-            expected = (
-                torch.full((1, 16), expected_bits, dtype=torch.int16)
-                .view(torch.bfloat16)
-                .float()
-            )
+        for case_name, inputs, expected_value in prepared:
+            expected = torch.full((1, 16), expected_value)
             torch.testing.assert_close(
                 compiled(inputs),
                 expected,
@@ -57,7 +53,7 @@ def main() -> None:
                 atol=0,
                 msg=lambda message, name=case_name: f"{name}: {message}",
             )
-    print("CIM22 torch.compile supplier-model checks passed.")
+    print("CIM22 torch.compile sign-split BF16 checks passed.")
 
 
 if __name__ == "__main__":

@@ -377,11 +377,208 @@ void checkInt8NumericModel() {
                   "1024 lane-position checks, signed dense extremes, "
                   "zero/cancellation/reuse, signed21 overflow rejection\n";
 }
+
+void checkBF16LegacyCompensation() {
+  using Mode = BF16Compensation;
+  std::array<uint16_t, kCIMInputElements> input{}, laneWeights{};
+  std::array<uint16_t, kCIMOutputElements> output{};
+  CIMInputView inputView{{}, input};
+  CIMOutputView outputView{{}, output};
+  CIMRunInputs inputs{llvm::ArrayRef<CIMInputView>(&inputView, 1)};
+  CIMRunOutputs outputs{llvm::MutableArrayRef<CIMOutputView>(&outputView, 1)};
+  auto run = [&](Mode mode) {
+    std::array<uint16_t, kCIMOutputElements * kCIMInputElements> bits{};
+    for (size_t lane = 0; lane < kCIMOutputElements; ++lane)
+      std::copy(laneWeights.begin(), laneWeights.end(),
+                bits.begin() + lane * kCIMInputElements);
+    auto prepared = mlir::cim22::prealignBF16WeightTile(bits);
+    StaticWeightSection weight;
+    weight.groupId = weight.workId = weight.coreSlot = weight.macroSlot = 0;
+    weight.dataType = CIMDataType::BF16;
+    weight.values = prepared.mantissas;
+    weight.exponents = prepared.exponents;
+    CIMSoftwareRunner runner(mode);
+    return runner.run(makeBF16Executable(true, 0, &weight), inputs, outputs);
+  };
+  auto check = [&](Mode mode, uint16_t expected) {
+    const auto original = input;
+    assert(!run(mode));
+    assert(input == original);
+    for (uint16_t value : output)
+      assert(value == expected);
+  };
+  input.fill(0x3f80);
+  laneWeights.fill(0x3f00);
+  check(Mode::Legacy, 0x4200); // 64 * .5 = 32.
+  laneWeights.fill(0x3f08);
+  check(Mode::None, 0x7f88);   // Uncompensated NaN is intentional.
+  check(Mode::Legacy, 0x4208); // 34.
+
+  input.fill(0);
+  laneWeights.fill(0);
+  input[0] = input[1] = 0x3f80;
+  laneWeights[0] = 0x3f80;
+  laneWeights[1] = 0xbf00;
+  check(Mode::Legacy, 0xbf00); // Legacy returns -.5 instead of +.5.
+
+  laneWeights[0] = laneWeights[1] = 0x3f00;
+  input[1] = 0xbf00;
+  check(Mode::Legacy, 0xbe80); // Legacy returns -.25 instead of +.25.
+  input[1] = 0xbf80;
+  check(Mode::Legacy, 0x3c80); // A zero dot retains the old false 1/64.
+  input[0] = 0x3f84;
+  check(Mode::Legacy, 0x3c80); // p=128 shares that converter bit pattern.
+
+  input.fill(0);
+  laneWeights.fill(0);
+  input[0] = 0x7880; // 2^114: delta=1, input exponent becomes 240.
+  laneWeights[0] = 0x3f00;
+  check(Mode::Legacy, 0x7800); // 2^113.
+  input[0] = 1;
+  laneWeights[0] = 0x3f80;
+  check(Mode::Legacy, 0); // Preserve the old all-subnormal input loss.
+  input[0] = 0x7f80;
+  expectError(run(Mode::Legacy));
+  input[0] = 0x7fc1;
+  expectError(run(Mode::Legacy));
+  input[0] = input[1] = 0x7f7f;
+  laneWeights[0] = laneWeights[1] = 0x3f80;
+  expectError(run(Mode::Legacy)); // True BF16 overflow is not saturated.
+}
+
+void checkBF16NonnegativeCorrection() {
+  CIMSoftwareRunner corrected(BF16Compensation::SignSplit);
+  std::array<uint16_t, kCIMInputElements> input{};
+  std::array<uint16_t, kCIMOutputElements> output{};
+  CIMInputView inputView{{}, input};
+  CIMOutputView outputView{{}, output};
+  CIMRunInputs inputs{llvm::ArrayRef<CIMInputView>(&inputView, 1)};
+  CIMRunOutputs outputs{llvm::MutableArrayRef<CIMOutputView>(&outputView, 1)};
+  StaticWeightSection weight;
+  weight.groupId = weight.workId = weight.coreSlot = weight.macroSlot = 0;
+  weight.dataType = CIMDataType::BF16;
+  auto setWeight = [&](int8_t mantissa, uint8_t exponent) {
+    weight.values.fill(mantissa);
+    weight.exponents.fill(exponent);
+  };
+  auto run = [&] {
+    return corrected.run(makeBF16Executable(true, 0, &weight), inputs, outputs);
+  };
+  auto check = [&](uint16_t expected) {
+    const auto originalInput = input;
+    const auto originalWeight = weight.values;
+    const auto originalExponents = weight.exponents;
+    assert(!run());
+    for (uint16_t bits : output)
+      assert(bits == expected);
+    assert(input == originalInput && weight.values == originalWeight &&
+           weight.exponents == originalExponents);
+  };
+
+  setWeight(64, 126); // .5.
+  input.fill(0x3f80);
+  check(0x4200); // 64*.5 = 32; E127 requires no normalization.
+
+  input.fill(0);
+  input[0] = 0x3f80;
+  input[1] = 0x3f00;
+  check(0x3f40); // Sparse .75.
+
+  // Nonzero p=128 has the same raw chip bits as p=0. Support, rather than
+  // output bits or the internal integer sum, decides whether to publish zero.
+  setWeight(2, 127);
+  input[1] = 0;
+  check(0x3d00); // q_input=64, q_weight=2: true product 1/32.
+
+  // Orthogonal support, an all-zero weight lane and input lost in ordinary
+  // alignment all skip the chip path. The retained lane still computes one.
+  setWeight(0, 127);
+  weight.values[0] = 64;
+  weight.values[64 + 1] = 64;
+  weight.values[3 * 64 + 2] = 64;
+  input[1] = 0x3b80; // 2^-8, below the retained alignment precision.
+  assert(!run());
+  assert(output[0] == 0x3f80);
+  for (size_t lane = 1; lane < output.size(); ++lane)
+    assert(output[lane] == 0);
+
+  setWeight(64, 127); // Unit weights.
+  input.fill(0);
+  check(0);
+  input.fill(0x8000); // Negative zero is accepted and canonicalized locally.
+  check(0);
+
+  // Full positive BF16 exponent range, including all-subnormal rows. The
+  // smallest subnormal needs a +133 shift before the unmodified prealigner.
+  input.fill(0);
+  input[0] = 1;
+  check(1);
+  input[0] = 0x007f;
+  check(0x007f);
+  input[0] = 0x0080;
+  check(0x0080);
+  input[0] = 0x3f00;
+  check(0x3f00);
+  input[0] = 0x7f00; // 2^127 remains finite after compensation.
+  check(0x7f00);
+
+  // Mixed normal/subnormal support drops only the unresolvable small input.
+  input[0] = 0x3f80;
+  input[1] = 1;
+  check(0x3f80);
+
+  // Sparse support traversal must reach bit 63 after an earlier unmatched
+  // input bit, and must include the final prepared weight byte.
+  input.fill(0);
+  input[0] = input[63] = 0x3f80;
+  setWeight(0, 127);
+  weight.values.back() = 64;
+  assert(!run());
+  for (size_t lane = 0; lane + 1 < output.size(); ++lane)
+    assert(output[lane] == 0);
+  assert(output.back() == 0x3f80);
+
+  // Final ABI rounding is allowed to underflow a genuinely tiny result.
+  input.fill(0);
+  input[0] = 1;
+  input[1] = 0;
+  setWeight(1, 127); // 1/64.
+  check(0);
+
+  setWeight(64, 254); // 2^127 * 2 exceeds the true BF16 finite range.
+  input[0] = 0x4000;
+  expectError(run());
+  setWeight(64, 127);
+  input[0] = 0x3f80;
+  input[1] = 0xbf80;
+  expectError(run());
+  input[1] = 0x8001; // Negative subnormal also rejected.
+  expectError(run());
+  for (uint16_t nonfinite :
+       {uint16_t{0x7f80}, uint16_t{0x7fc1}, uint16_t{0xff80}}) {
+    input[1] = nonfinite;
+    expectError(run());
+  }
+  input.fill(0); // Zero input does not hide an invalid prepared weight.
+  weight.values.back() = -1;
+  expectError(run());
+  setWeight(64, 255);
+  expectError(run());
+  setWeight(64, 127);
+  input[0] = 0x3f80;
+  check(0x3f80); // Rejection does not poison the following work.
+
+  llvm::outs() << "PASS nonnegative BF16 correction: normal/sparse, true "
+                  "p128, quantized zero support, negative zero, full exponent "
+                  "range/subnormal, input/weight rejection, true overflow\n";
+}
 } // namespace
 
 int main(int argc, char **argv) {
   if (argc == 2 && llvm::StringRef(argv[1]) == "--bf16-layout-fixtures")
     return replayBF16Fixtures() ? 0 : 1;
+  checkBF16NonnegativeCorrection();
+  checkBF16LegacyCompensation();
   checkInt8NumericModel();
   if (argc == 2 && llvm::StringRef(argv[1]) == "--int8-numeric")
     return 0;

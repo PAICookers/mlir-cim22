@@ -1,6 +1,7 @@
 //===- Pipelines.cpp - Mixed BF16 CIM and Host pipelines ------*- C++ -*-===//
 
 #include "CIM22/Compiler/Compiler.h"
+#include "CIM22/Conversion/LinalgToCIM/Passes.h"
 #include "CIM22/Dialect/CIM/IR/CIMDialect.h"
 #include "CIM22/Dialect/CIM/IR/CIMOps.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -40,7 +41,7 @@ namespace {
 constexpr StringLiteral preparePipeline =
     "canonicalize,cse,normalize-cim-linear{allow-f32=true},"
     "normalize-cim-conv{allow-f32=true "
-    "allow-bias-epilogue=true},prepare-cim-bf16";
+    "allow-bias-epilogue=true}";
 constexpr StringLiteral vmmPipeline = "partition-cim-program,form-cim-program";
 constexpr StringLiteral packetPipeline =
     "partition-cim-program,form-cim-program,"
@@ -316,6 +317,9 @@ struct BF16PipelineOptions : PassPipelineOptions<BF16PipelineOptions> {
   Option<int64_t> maxKernelColumns{*this, "max-kernel-columns",
                                    llvm::cl::init(32)};
   Option<bool> requireCIM{*this, "require-cim", llvm::cl::init(false)};
+  Option<std::string> bf16Compensation{
+      *this, "bf16-compensation", llvm::cl::init("sign-split"),
+      llvm::cl::desc("Internal BF16 lowering: sign-split, legacy or none")};
 };
 } // namespace
 
@@ -326,12 +330,19 @@ void registerCIM22Pipelines() {
   PassPipelineRegistration<>(
       "cim-bf16-prepare",
       "Normalize floating geometry and insert BF16 boundaries",
-      [](OpPassManager &pm) { appendPipeline(pm, preparePipeline); });
+      [](OpPassManager &pm) {
+        appendPipeline(pm, preparePipeline);
+        appendPipeline(pm, "prepare-cim-bf16");
+      });
   PassPipelineRegistration<BF16PipelineOptions>(
       "cim-bf16-pipeline",
       "Compile mixed Linalg into separate CIM and Host modules",
       [](OpPassManager &pm, const BF16PipelineOptions &options) {
         appendPipeline(pm, preparePipeline);
+        cim::SplitCIMBF16SignsOptions splitOptions;
+        splitOptions.compensation = options.bf16Compensation;
+        pm.addPass(cim::createSplitCIMBF16Signs(splitOptions));
+        appendPipeline(pm, "prepare-cim-bf16");
         appendPipeline(pm, "outline-cim-bf16{max-kernel-columns=" +
                                std::to_string(options.maxKernelColumns) + "}");
         auto compile = std::make_unique<CompileCIMParts>();

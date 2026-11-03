@@ -7,7 +7,7 @@
 | 编译器本体       | CMake/Ninja            | 原生优化器、compiler/runtime 库，可选 ONNX 工具  |
 | PyTorch 编译后端 | uv + scikit-build-core | 包含上述原生组件的 Python wheel 或 editable 安装 |
 
-仅使用预编译包时，直接阅读 [Python 安装指南](python/README.md#安装)。以下命令除另有说明外，均在**仓库根目录**执行。
+仅使用预编译包时，直接阅读 [Python 安装指南](../python/README.md#安装)。以下命令除另有说明外，均在**仓库根目录**执行。
 
 ## 环境与依赖
 
@@ -15,7 +15,7 @@
 
 Linux USB 后端直接使用系统 libusb，无需安装 Cypress `cyusb_linux` SDK。CMake 通过 `pkg-config` 获取 libusb 的头文件与链接配置。设备访问权限和板卡配套的 FX3 固件需另行准备；安装主机库不会下载设备固件。
 
-PLL 自动串口控制仅支持 Linux，使用 POSIX 接口，不需要 PyUSB 或 pyserial。Linux 上未提供串口或指定设备不存在时，使用用户手动设置的时钟，不计为程序已配置或校验 PLL。Windows 保留 CyAPI USB 支持，省略串口选项并手动设钟；请求自动串口控制会报错。设备权限及可选串口的使用方法见 [USB 与 PLL 配置](python/README.md#usb-与-pll-配置)。
+PLL 自动串口控制仅支持 Linux，使用 POSIX 接口，不需要 PyUSB 或 pyserial。Linux 上未提供串口或指定设备不存在时，使用用户手动设置的时钟，不计为程序已配置或校验 PLL。Windows 保留 CyAPI USB 支持，省略串口选项并手动设钟；请求自动串口控制会报错。设备权限及可选串口的使用方法见 [USB 与 PLL 配置](../python/README.md#usb-与-pll-配置)。
 
 例如 Ubuntu 24.04：
 
@@ -132,7 +132,7 @@ build/bin/mlir-cim22-opt \
 
 ### 构建 wheel
 
-发布包含 Web 界面的 wheel 前，先按 [Web 构建说明](web/README.md#从源码构建) 生成静态页面。
+发布包含 Web 界面的 wheel 前，先按 [Web 构建说明](../web/README.md#从源码构建) 生成静态页面。
 
 在当前终端设置 `MLIR_DIR`，并显式传给 wheel 构建。将下面的路径替换为实际 LLVM/MLIR 工具链路径；若按上文构建，使用 `$(cd ../llvm-build && pwd)/lib/cmake/mlir`：
 
@@ -156,11 +156,11 @@ cim22/
   web/static/assets/
 ```
 
-按 [Python 安装指南](python/README.md#安装)安装该 wheel，再运行自检脚本。
+按 [Python 安装指南](../python/README.md#安装)安装该 wheel，再运行自检脚本。
 
 ## GitHub Actions 预编译 wheel
 
-[wheel 工作流](.github/workflows/wheels.yml) 在 `main` 更新或推送 `v*` 标签时自动构建，也支持从 Actions 页面手动运行；没有每日定时任务。Linux 使用 manylinux_2_28 x86-64，Windows 使用 Windows Server 2022 / MSVC x64；两者均为 Release、USB 开启、测试和 ONNX 导入器关闭。
+[wheel 工作流](../.github/workflows/wheels.yml) 在 `main` 更新或推送 `v*` 标签时自动构建，也支持从 Actions 页面手动运行；没有每日定时任务。Linux 使用 manylinux_2_28 x86-64，Windows 使用 Windows Server 2022 / MSVC x64；两者均为 Release、USB 开启、测试和 ONNX 导入器关闭。
 
 源码 `python/pyproject.toml` 的版本是当前开发目标，例如 `1.0.0`：
 
@@ -178,7 +178,7 @@ mlir_cim22-1.0.0-py3-none-win_amd64.whl
 
 ### Windows 的最小 CyAPI 依赖
 
-Actions 直接使用仓库中的 [third_party/cyapi](third_party/cyapi/README.md)，不下载或运行 FX3 SDK EXE，不登录英飞凌账号，也不需要私有依赖仓库或访问凭据。该目录保留官方 FX3 SDK 1.3.5 的两个必要头文件、x64 `CyAPI.lib`、组件 `license.rtf`、SDK `license.txt` 和 SHA256 校验清单；厂商文件内容与原始安装包一致。
+Actions 直接使用仓库中的 [third_party/cyapi](../third_party/cyapi/README.md)，不下载或运行 FX3 SDK EXE，不登录英飞凌账号，也不需要私有依赖仓库或访问凭据。该目录保留官方 FX3 SDK 1.3.5 的两个必要头文件、x64 `CyAPI.lib`、组件 `license.rtf`、SDK `license.txt` 和 SHA256 校验清单；厂商文件内容与原始安装包一致。
 
 CyAPI 使用其原始许可，不适用本项目的 Apache 许可。Windows wheel 的 `.dist-info/licenses/third-party/cyapi/` 保留两份协议及依赖说明，`cim22/share/licenses/cyapi/license.rtf` 保留现有运行库许可副本。保留声明不改变协议授予的用途与分发范围；发布含 CyAPI 的产物时仍须遵守两份协议。
 
@@ -217,7 +217,7 @@ cmake -G Ninja -S . -B build/test \
 cmake --build build/test --target check-mlir-cim22 --parallel 4
 ```
 
-自备工具链时应确认同样提供上述 LLVM 测试工具。测试说明见 [test/README](test/README.md)。Python 测试使用安装包内的原生组件；需要测试独立 CMake 构建时，可设置 `CIM22_OPT`、`CIM22_RUNTIME_LIBRARY` 和 `CIM22_COMPILER_LIBRARY` 为对应产物路径。
+自备工具链时应确认同样提供上述 LLVM 测试工具。测试说明见 [test/README](../test/README.md)。Python 测试使用安装包内的原生组件；需要测试独立 CMake 构建时，可设置 `CIM22_OPT`、`CIM22_RUNTIME_LIBRARY` 和 `CIM22_COMPILER_LIBRARY` 为对应产物路径。
 
 schema 修改后，用同一原生测试构建更新并检查 Python 测试绑定：
 
@@ -313,7 +313,7 @@ uv build --python 3.12 python --wheel --out-dir python/dist `
   -C "cmake.define.CYAPI_ROOT=$PWD/third_party/cyapi"
 ```
 
-Windows wheel 包含 `mlir-cim22-opt.exe`、`cim22_compiler.dll`、`cim22_runtime.dll` 和模型链接所需的 `.lib`。Python 后端使用 MSVC 将 COFF `.obj` 链接为模型 `.dll`，通过与 Linux 相同的模型 ABI 加载。安装及 DLL 重新加载见 [Python 安装](python/README.md#安装)和 [Session 与产物](python/README.md#session-与产物)。
+Windows wheel 包含 `mlir-cim22-opt.exe`、`cim22_compiler.dll`、`cim22_runtime.dll` 和模型链接所需的 `.lib`。Python 后端使用 MSVC 将 COFF `.obj` 链接为模型 `.dll`，通过与 Linux 相同的模型 ABI 加载。安装及 DLL 重新加载见 [Python 安装](../python/README.md#安装)和 [Session 与产物](../python/README.md#session-与产物)。
 
 开发环境的 `pyproject.toml` / `uv.lock` 按平台选择 torch-mlir：Linux 保留主分支的 `20261001` release wheel，Windows 从官方 release 安装 `20260923.595-cp312-abi3-win_amd64.whl`。不引入 torch-mlir 源码。在配置好 MSVC x64、`MLIR_DIR` 和 SDK 后，可执行：
 

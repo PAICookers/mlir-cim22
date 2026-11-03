@@ -11,13 +11,13 @@ from uuid import uuid4
 
 import torch
 from torch._dynamo.backends.common import aot_autograd
+from torch._dynamo.guards import GuardBuilder, install_guard
 from torch._dynamo.source import NNModuleSource, UnspecializedParamBufferSource
 from torch._dynamo.utils import defake
 from torch._functorch._aot_autograd.descriptors import PlainAOTInput
 from torch._functorch._aot_autograd.utils import make_boxed_func
 from torch._guards import TracingContext, tracing
 from torch.utils._python_dispatch import _disable_current_modes
-from torch_mlir.extras.fx_decomp_util import get_decomposition_table
 
 from .compiler import BackendOptions, _compile, _validate_options
 from .runtime import MODEL_SUFFIX, _initialize_session
@@ -42,21 +42,36 @@ def backend(
 ) -> TensorCallable:
     """Compile sequential inference; Dynamo caches the returned AOT callable.
 
-    AOTAutograd preserves mutations and input aliases. Read-only parameters are
+    Reference executes the captured graph with original CPU PyTorch operators.
+    Native modes use AOTAutograd to preserve mutations and input aliases. Parameters are
     cloned into constants and must remain fixed for this specialization.
     """
     options = options or {}
-    _validate_options(options)
+    _validate_options(options, allow_reference=True)
     runtime = options.get("runtime", "usb")
     usb_config = options.get("usb_config")
+    bf16_compensation = options.get("bf16_compensation", "sign-split")
     if torch.is_grad_enabled():
         raise ValueError(
             "Use torch.no_grad() or torch.inference_mode() with CIM22"
         )
     artifact_dir = options.get("artifact_dir")
     debug_dir = options.get("debug_dir")
-    parameter_indices = {
-        i
+    if runtime == "reference":
+        if any(
+            value.device.type != "cpu"
+            for value in example_inputs
+            if isinstance(value, torch.Tensor)
+        ):
+            raise ValueError("CIM22 reference requires CPU tensors")
+        if artifact_dir is not None or debug_dir is not None:
+            raise ValueError("CIM22 reference does not emit native artifacts")
+        return graph.forward
+
+    from torch_mlir.extras.fx_decomp_util import get_decomposition_table
+
+    parameter_sources = {
+        i: node.meta["grapharg"].source
         for i, node in enumerate(graph.graph.find_nodes(op="placeholder"))
         if isinstance(example_inputs[i], torch.nn.Parameter)
         and _is_module_input(node)
@@ -70,6 +85,7 @@ def backend(
         metadata = TracingContext.get().fw_metadata
         aliased = {output.base_idx for output in metadata.output_info}
         input_indices: list[int] = []
+        frozen_parameters: set[int] = set()
         # The independent torch-mlir export needs its own context.
         with _disable_current_modes(), tracing(None):
             for i, node in enumerate(gm.graph.find_nodes(op="placeholder")):
@@ -78,7 +94,7 @@ def backend(
                 # Freeze read-only weights, preserving mutations and aliases.
                 if (
                     not isinstance(source, PlainAOTInput)
-                    or source.idx not in parameter_indices
+                    or source.idx not in parameter_sources
                     or mutation.mutates_data
                     or mutation.mutates_metadata
                     or i in aliased
@@ -86,6 +102,7 @@ def backend(
                     input_indices.append(i)
                     continue
                 value = example_inputs[source.idx]
+                frozen_parameters.add(source.idx)
                 name = f"_cim22_frozen_{source.idx}"
                 gm.register_buffer(name, value.detach().clone())
                 with gm.graph.inserting_before(node):
@@ -105,6 +122,12 @@ def backend(
                 if debug_dir is not None
                 else None,
                 runtime=runtime,
+                bf16_compensation=bf16_compensation,
+            )
+        # Frozen values cannot be reused for a different model's parameters.
+        for index in frozen_parameters:
+            install_guard(
+                parameter_sources[index].make_guard(GuardBuilder.ID_MATCH)
             )
         session = _initialize_session(session, usb_config)
 

@@ -1,5 +1,5 @@
 // RUN: mlir-cim22-opt %s --prepare-cim-bf16 | FileCheck %s
-// RUN: mlir-cim22-opt %s --cim-bf16-pipeline='stage=llvm' | FileCheck %s --check-prefix=LLVM
+// RUN: mlir-cim22-opt %s --cim-bf16-pipeline='stage=llvm bf16-compensation=none' | FileCheck %s --check-prefix=LLVM
 
 // Convert the contraction only; the original FP32 activation is also returned.
 func.func @shared(%x: tensor<2xf32>) -> (tensor<1xf32>, tensor<2xf32>) {

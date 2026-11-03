@@ -11,7 +11,9 @@ from pathlib import Path
 
 
 def run(command):
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = subprocess.run(
+        command, capture_output=True, text=True, check=False
+    )
     if result.returncode:
         raise RuntimeError(f"{command}\n{result.stdout}\n{result.stderr}")
     return result.stdout
@@ -196,7 +198,8 @@ def main():
         [
             args.opt,
             str(source),
-            f"--cim-bf16-pipeline=stage=split max-kernel-columns={args.stream_columns}",
+            "--cim-bf16-pipeline=stage=split bf16-compensation=none "
+            f"max-kernel-columns={args.stream_columns}",
         ]
     )
     assert "scf.for" in split and "tensor.insert_slice" in split
@@ -229,7 +232,8 @@ def main():
         [
             args.opt,
             str(source),
-            f"--cim-bf16-pipeline=max-kernel-columns={args.stream_columns}",
+            "--cim-bf16-pipeline=bf16-compensation=none "
+            f"max-kernel-columns={args.stream_columns}",
         ]
     )
     transaction_reference = args.work_dir / "transaction-reference.mlir"
