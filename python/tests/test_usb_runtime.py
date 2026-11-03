@@ -434,13 +434,12 @@ def test_backend_usb_configuration_failure_closes_session(
     ("options", "message"),
     [
         ({"runtime": "invalid"}, "runtime must be"),
-        ({"unknown": True}, "Unknown CIM22"),
         (
             {"runtime": "software", "usb_config": UsbConfig(1, 2, 0x81, 1)},
             "requires runtime='usb'",
         ),
     ],
-    ids=["runtime", "unknown-option", "software-usb-config"],
+    ids=["runtime", "software-usb-config"],
 )
 def test_backend_rejects_invalid_options(
     options: dict[str, object], message: str

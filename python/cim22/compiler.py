@@ -4,26 +4,44 @@ import ctypes
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from contextlib import ExitStack
 from importlib.resources import files
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypedDict
 
 import torch
 from torch._dynamo.utils import dynamo_timed
-from torch_mlir import fx
-from torch_mlir.compiler_utils import OutputType
 
 from .runtime import (
     MODEL_SUFFIX,
     Session,
+    UsbConfig,
     _load_library,
     compiler_library,
     runtime_library,
 )
 
 type RuntimeBackend = Literal["software", "usb"]
+
+
+class BackendOptions(TypedDict, total=False):
+    """Application options shared by the PyTorch and TensorFlow frontends."""
+
+    runtime: RuntimeBackend
+    usb_config: UsbConfig
+    artifact_dir: str | Path
+    debug_dir: str | Path
+
+
+def _validate_options(options: BackendOptions) -> None:
+    """Reject unsupported runtime choices before capture or compilation."""
+    runtime = options.get("runtime", "usb")
+    if runtime not in ("software", "usb"):
+        raise ValueError("CIM22 runtime must be 'software' or 'usb'")
+    if options.get("usb_config") is not None and runtime != "usb":
+        raise ValueError("CIM22 usb_config requires runtime='usb'")
 
 
 def _emit_object(
@@ -75,6 +93,22 @@ def _compile(
     The loaded Session owns the code and any files needed until it closes.
     Optional artifact/debug paths retain diagnostics for this specialization.
     """
+    # Check before importing FX: LLVM's duplicate registration aborts Python.
+    if (
+        sys.platform == "linux"
+        and "tensorflow" in sys.modules
+        and "torch_mlir.fx" not in sys.modules
+    ):
+        raise RuntimeError(
+            "CIM22 cannot first load torch-mlir FX after TensorFlow on Linux: "
+            "their bundled LLVM libraries can conflict and abort the process. "
+            "Compile the PyTorch model in a fresh Python process without "
+            "TensorFlow; save it with artifact_dir, then load the native "
+            "model with cim22.Session for inference."
+        )
+    from torch_mlir import fx
+    from torch_mlir.compiler_utils import OutputType
+
     with dynamo_timed("cim22.torch_mlir"):
         module = fx.export_and_import(
             graph,
