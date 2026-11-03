@@ -115,11 +115,7 @@ def main() -> None:
 
     # Prove each independent stage is checked. Never regenerate expected values
     # from C++ output or silently bless a changed fixture.
-    for field in (
-        "input_words",
-        "exponent_words",
-        "response",
-    ):
+    for field in ("input_words", "exponent_words", "response"):
         changed = dict(cases[0])
         changed[field] = list(changed[field])
         changed[field][0] ^= (1 << 43) if field == "response" else 1

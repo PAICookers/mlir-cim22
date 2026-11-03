@@ -64,10 +64,7 @@ def native_toolchain(native_runtime: Path) -> None:
 
 @pytest.fixture
 def host_artifact() -> proto.ModelArtifact:
-    model = proto.ModelArtifact(
-        schema_version=1,
-        backend=proto.SOFTWARE,
-    )
+    model = proto.ModelArtifact(schema_version=1, backend=proto.SOFTWARE)
     model.outputs.add(data_type=proto.FP32)  # Rank-zero is valid.
     return model
 

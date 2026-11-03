@@ -11,7 +11,9 @@ from pathlib import Path
 
 
 def run(command):
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = subprocess.run(
+        command, capture_output=True, text=True, check=False
+    )
     if result.returncode:
         raise RuntimeError(f"{command}\n{result.stdout}\n{result.stderr}")
     return result.stdout
