@@ -205,7 +205,7 @@ llvm::Error validateOutputs(const CIMTransaction &executable,
 
 llvm::Expected<CIMDeviceProgram>
 materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
-                   const CIMBoardRunPolicy &policy, CIMTraceSink *trace,
+                   const CIM22HardwareConfig &hardware, CIMTraceSink *trace,
                    uint64_t &sequence, bool zeroWeightExponent) {
   CIMDeviceProgram program;
 
@@ -285,7 +285,7 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
             inputs.values[bindings->inputIndex].values);
       }
       CIMDeviceOperation inputWrite;
-      inputWrite.postDelayMs = policy.cacheWriteDelayMs;
+      inputWrite.postDelayMs = hardware.cache_write_delay_ms;
       if (llvm::Error error =
               appendCIMInputCachePacket(work.route, input.inputCacheAddress,
                                         inputWords, inputWrite.flits))
@@ -296,7 +296,7 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
                 input.inputCacheAddress);
 
       CIMDeviceOperation weightWrite;
-      weightWrite.postDelayMs = policy.weightWriteDelayMs;
+      weightWrite.postDelayMs = hardware.weight_write_delay_ms;
       llvm::SmallVector<uint32_t, 256> weightWords;
       weightWords.reserve(weight.words.size());
       for (int32_t word : weight.words)
@@ -315,7 +315,7 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
   // pacing delay begins only after every active Core has been started.
   CIMDeviceOperation startWork;
   startWork.phase = CIMDevicePhase::Work;
-  startWork.postDelayMs = policy.workDelayMs;
+  startWork.postDelayMs = hardware.work_delay_ms;
   for (const CIMGroup &group : executable.getGroups()) {
     startWork.flits.push_back(encodeCIMWorkOnceFlit(group.works.front().route));
     emitTrace(trace, sequence, CIMTraceEventKind::StartWork, group.groupId);
@@ -342,7 +342,7 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
     command.dataType = readback.dataType;
     command.selection.flits.push_back(encodeCIMControlFlit(
         readback.route, readback.macroSlot, readback.dataType));
-    command.selection.postDelayMs = policy.readbackSelectDelayMs;
+    command.selection.postDelayMs = hardware.readback_select_delay_ms;
     command.request.flits.push_back(encodeCIMOutputCacheReadFlit(
         readback.route, readback.outputCacheAddress));
     program.readbacks.push_back(std::move(command));
@@ -528,7 +528,7 @@ CIMBoardRunner::captureImpl(const execution::CIMTransaction &executable,
                             bool zeroWeightExponent) {
   if (llvm::Error error = validateInputs(executable, inputs))
     return std::move(error);
-  auto program = materializeProgram(executable, inputs, policy_, trace,
+  auto program = materializeProgram(executable, inputs, hardware_, trace,
                                     sequence, zeroWeightExponent);
   if (!program)
     return program.takeError();

@@ -275,7 +275,8 @@ extern "C" int cim22_session_invoke(void *handle, void **buffers,
 }
 
 static int configureUsb(void *handle, const CIM22UsbConfig *config,
-                        const CIM22PLLConfig *pll, char *error,
+                        const CIM22PLLConfig *pll,
+                        const CIM22HardwareConfig &hardware, char *error,
                         size_t capacity) {
   if (!handle || !config) {
     cim22::runtime::copyError("invalid USB runtime configuration", error,
@@ -339,6 +340,7 @@ static int configureUsb(void *handle, const CIM22UsbConfig *config,
   deviceConfig.transferTimeoutMs = config->transfer_timeout_ms;
   deviceConfig.receivePollTimeoutMs = config->receive_poll_timeout_ms;
   deviceConfig.responseTimeoutMs = config->response_timeout_ms;
+  deviceConfig.startupDelayMs = hardware.startup_delay_ms;
   deviceConfig.pll = std::move(pllConfig);
   // Release the interface before replacement. A failed open leaves dispatch
   // disabled; a previous transaction's failure was reported above.
@@ -350,7 +352,7 @@ static int configureUsb(void *handle, const CIM22UsbConfig *config,
     return 1;
   }
   session.runner = std::make_unique<cim22::runtime::CIMBoardRunner>(
-      *session.device, cim22::runtime::CIMBoardRunPolicy{});
+      *session.device, hardware);
   return 0;
 #else
   cim22::runtime::copyError("CIM22 runtime was built without USB support",
@@ -362,14 +364,27 @@ static int configureUsb(void *handle, const CIM22UsbConfig *config,
 extern "C" int cim22_session_configure_usb(void *handle,
                                            const CIM22UsbConfig *config,
                                            char *error, size_t capacity) {
-  return configureUsb(handle, config, nullptr, error, capacity);
+  const auto hardware = cim22::runtime::defaultCIM22HardwareConfig();
+  return configureUsb(handle, config, nullptr, hardware, error, capacity);
 }
 
 extern "C" int
 cim22_session_configure_usb_with_pll(void *handle, const CIM22UsbConfig *config,
                                      const CIM22PLLConfig *pll, char *error,
                                      size_t capacity) {
-  return configureUsb(handle, config, pll, error, capacity);
+  const auto hardware = cim22::runtime::defaultCIM22HardwareConfig();
+  return configureUsb(handle, config, pll, hardware, error, capacity);
+}
+
+extern "C" int cim22_session_configure_usb_with_hardware(
+    void *handle, const CIM22UsbConfig *config, const CIM22PLLConfig *pll,
+    const CIM22HardwareConfig *hardware, char *error, size_t capacity) {
+  if (!hardware) {
+    cim22::runtime::copyError("missing CIM22 hardware configuration", error,
+                              capacity);
+    return 1;
+  }
+  return configureUsb(handle, config, pll, *hardware, error, capacity);
 }
 
 extern "C" int64_t cim22_session_num_readbacks(void *handle, int64_t id) {
@@ -390,7 +405,7 @@ extern "C" int cim22_session_capture_usb(void *handle, int64_t id,
   std::lock_guard<std::mutex> lock(session.mutex);
   session.error.clear();
   if (session.model.backend != cim22::runtime::RuntimeBackend::USB ||
-      !session.device) {
+      !session.runner) {
     session.error = "raw capture requires a configured USB model";
     return 1;
   }
@@ -414,8 +429,7 @@ extern "C" int cim22_session_capture_usb(void *handle, int64_t id,
     }
     views.push_back({{}, {inputs + index * 64, 64}});
   }
-  cim22::runtime::CIMBoardRunner runner(*session.device, {});
-  auto response = runner.capture(transaction, {views});
+  auto response = session.runner->capture(transaction, {views});
   if (!response) {
     session.error = llvm::toString(response.takeError());
     return 1;

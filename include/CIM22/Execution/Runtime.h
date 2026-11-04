@@ -32,6 +32,14 @@ typedef struct CIM22PLLConfig {
   uint32_t work_word;
   uint32_t readback_word;
 } CIM22PLLConfig;
+// Optional board timing configuration shared by the native runtime layers.
+typedef struct CIM22HardwareConfig {
+  uint32_t startup_delay_ms;
+  uint32_t cache_write_delay_ms;
+  uint32_t weight_write_delay_ms;
+  uint32_t work_delay_ms;
+  uint32_t readback_select_delay_ms;
+} CIM22HardwareConfig;
 // Shared models need only the execution runtime. Packet loading and object
 // emission are compiler-only functions in libcim22_compiler.
 void *cim22_session_load_shared(const char *model_file, char *error,
@@ -64,6 +72,9 @@ int cim22_session_configure_usb_with_pll(void *session,
                                          const CIM22UsbConfig *config,
                                          const CIM22PLLConfig *pll, char *error,
                                          size_t error_capacity);
+int cim22_session_configure_usb_with_hardware(
+    void *session, const CIM22UsbConfig *config, const CIM22PLLConfig *pll,
+    const CIM22HardwareConfig *hardware, char *error, size_t error_capacity);
 int64_t cim22_session_num_readbacks(void *session, int64_t transaction);
 // Diagnostic only: BF16 input bits in dynamic-binding order (64 per row).
 // Output is one header and six body flits per readback, in binding order.
