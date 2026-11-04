@@ -15,9 +15,10 @@ import pytest
 import torch
 from torch._dynamo.exc import BackendCompilerFailed
 
-from cim22 import PLLConfig, Session, UsbConfig
+from cim22 import CIMTimingConfig, PLLConfig, Session, UsbConfig
 from cim22.runtime import (
     MODEL_SUFFIX,
+    _HardwareConfig,
     _initialize_session,
     _PLLConfig,
     _release_session,
@@ -30,7 +31,12 @@ from ._generated import cim22_model_pb2 as proto
 def test_public_runtime_exports() -> None:
     import cim22
 
-    assert set(cim22.__all__) == {"PLLConfig", "Session", "UsbConfig"}
+    assert set(cim22.__all__) == {
+        "CIMTimingConfig",
+        "PLLConfig",
+        "Session",
+        "UsbConfig",
+    }
 
 
 if TYPE_CHECKING:
@@ -73,6 +79,21 @@ def test_usb_config_rejects_truncation(
         replace(usb_config, **{field: value})
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("startup_delay_ms", -1, ValueError),
+        ("work_delay_ms", 2**32, ValueError),
+        ("readback_select_delay_ms", 1.5, TypeError),
+    ],
+)
+def test_timing_config_rejects_invalid_values(
+    field: str, value: object, error: type[Exception]
+) -> None:
+    with pytest.raises(error, match=field):
+        replace(CIMTimingConfig(), **{field: value})
+
+
 @pytest.fixture
 def pll_config() -> PLLConfig:
     return PLLConfig("/dev/serial/by-id/pll", "2828A4", "2c28a4", "3028A4")
@@ -99,12 +120,14 @@ def test_pll_config_rejects_invalid_commands(
         replace(pll_config, **{field: value})
 
 
-def test_supplier_defaults_preserve_legacy_usb_abi(
+def test_usb_defaults_preserve_legacy_usb_abi(
     usb_config: UsbConfig,
 ) -> None:
     assert usb_config.physical_link == 0
     assert usb_config.logical_channel == 3
     assert usb_config.response_timeout_ms == 7000
+    assert usb_config.timing.work_delay_ms == 10
+    assert usb_config.timing.readback_select_delay_ms == 40
     assert usb_config.pll is None
     # Existing native callers pass this unversioned structure by pointer.
     assert ctypes.sizeof(_UsbConfig) == 28
@@ -119,11 +142,13 @@ def mock_usb_session() -> tuple[Session, Mock, Mock]:
     session._handle = 123
     legacy = Mock(return_value=0)
     with_pll = Mock(return_value=0)
+    hardware = Mock(return_value=0)
     session._library = SimpleNamespace(
         cim22_session_configure_usb=legacy,
         cim22_session_configure_usb_with_pll=with_pll,
+        cim22_session_configure_usb_with_hardware=hardware,
     )
-    return session, legacy, with_pll
+    return session, legacy, hardware
 
 
 @pytest.mark.parametrize("failure", [False, True])
@@ -191,16 +216,53 @@ def test_cleanup_failure_leaves_session_closed(
     destroy.assert_called_once_with(123)
 
 
-def test_manual_clock_uses_legacy_usb_entry(
+def test_manual_clock_uses_unified_hardware_entry(
     usb_config: UsbConfig, mock_usb_session: tuple[Session, Mock, Mock]
 ) -> None:
-    session, legacy, with_pll = mock_usb_session
+    session, legacy, with_hardware = mock_usb_session
     session.configure_usb(usb_config)
-    legacy.assert_called_once()
-    with_pll.assert_not_called()
-    native = ctypes.cast(legacy.call_args.args[1], ctypes.POINTER(_UsbConfig))
+    legacy.assert_not_called()
+    with_hardware.assert_called_once()
+    native = ctypes.cast(
+        with_hardware.call_args.args[1], ctypes.POINTER(_UsbConfig)
+    )
     assert native.contents.physical_link == 0
     assert native.contents.response_timeout_ms == 7000
+
+
+def test_hardware_timing_reaches_native_configuration() -> None:
+    session = Session.__new__(Session)
+    session._lock = threading.RLock()
+    session._handle = 123
+    configure = Mock(return_value=0)
+    session._library = SimpleNamespace(
+        cim22_session_configure_usb_with_hardware=configure,
+    )
+    config = UsbConfig(
+        0x1234,
+        0x5678,
+        0x81,
+        0x01,
+        timing=CIMTimingConfig(
+            startup_delay_ms=3,
+            cache_write_delay_ms=4,
+            weight_write_delay_ms=5,
+            work_delay_ms=6,
+            readback_select_delay_ms=7,
+        ),
+    )
+    session.configure_usb(config)
+    configure.assert_called_once()
+    native = ctypes.cast(
+        configure.call_args.args[3], ctypes.POINTER(_HardwareConfig)
+    )
+    assert [
+        native.contents.startup_delay_ms,
+        native.contents.cache_write_delay_ms,
+        native.contents.weight_write_delay_ms,
+        native.contents.work_delay_ms,
+        native.contents.readback_select_delay_ms,
+    ] == [3, 4, 5, 6, 7]
 
 
 def test_optional_pll_commands_reach_separate_native_config(
@@ -208,11 +270,13 @@ def test_optional_pll_commands_reach_separate_native_config(
     pll_config: PLLConfig,
     mock_usb_session: tuple[Session, Mock, Mock],
 ) -> None:
-    session, legacy, with_pll = mock_usb_session
+    session, legacy, with_hardware = mock_usb_session
     session.configure_usb(replace(usb_config, pll=pll_config))
     legacy.assert_not_called()
-    with_pll.assert_called_once()
-    native = ctypes.cast(with_pll.call_args.args[2], ctypes.POINTER(_PLLConfig))
+    with_hardware.assert_called_once()
+    native = ctypes.cast(
+        with_hardware.call_args.args[2], ctypes.POINTER(_PLLConfig)
+    )
     assert native.contents.port == os.fsencode(pll_config.port)
     assert native.contents.configuration_word == 0x2828A4
     assert native.contents.work_word == 0x2C28A4
@@ -225,14 +289,14 @@ def test_missing_pll_device_is_delegated_to_native_manual_fallback(
     pll_config: PLLConfig,
     mock_usb_session: tuple[Session, Mock, Mock],
 ) -> None:
-    session, _, with_pll = mock_usb_session
+    session, _, with_hardware = mock_usb_session
     missing = tmp_path / "no-such-serial-device"
     assert not missing.exists()
     session.configure_usb(
         replace(usb_config, pll=replace(pll_config, port=str(missing)))
     )
     # Native open decides availability; Python must not reject an absent port.
-    with_pll.assert_called_once()
+    with_hardware.assert_called_once()
 
 
 def test_present_pll_error_is_not_hidden(
@@ -240,19 +304,20 @@ def test_present_pll_error_is_not_hidden(
     pll_config: PLLConfig,
     mock_usb_session: tuple[Session, Mock, Mock],
 ) -> None:
-    session, _, with_pll = mock_usb_session
+    session, _, with_hardware = mock_usb_session
 
     def fail(
         _handle: int,
         _usb: object,
         _pll: object,
+        _hardware: object,
         error: ctypes.Array,
         _capacity: int,
     ) -> int:
         error.value = b"PLL echo timeout"
         return 1
 
-    with_pll.side_effect = fail
+    with_hardware.side_effect = fail
     with pytest.raises(RuntimeError, match="PLL echo timeout"):
         session.configure_usb(replace(usb_config, pll=pll_config))
 
@@ -485,7 +550,7 @@ def test_usb_address_selection(usb_config: UsbConfig) -> None:
 def test_frequency_selection_reaches_all_native_pll_phases(
     usb_config: UsbConfig, mock_usb_session: tuple[Session, Mock, Mock]
 ) -> None:
-    session, legacy, with_pll = mock_usb_session
+    session, legacy, with_hardware = mock_usb_session
     selected = replace(
         usb_config,
         clock_frequency_mhz=24,
@@ -494,21 +559,25 @@ def test_frequency_selection_reaches_all_native_pll_phases(
     assert selected.clock_setting.serial_hex == "2828A4"
     session.configure_usb(selected)
     legacy.assert_not_called()
-    native = ctypes.cast(with_pll.call_args.args[2], ctypes.POINTER(_PLLConfig))
+    native = ctypes.cast(
+        with_hardware.call_args.args[2], ctypes.POINTER(_PLLConfig)
+    )
     assert native.contents.port == b"/dev/serial/by-id/pll"
     assert native.contents.configuration_word == 0x2828A4
     assert native.contents.work_word == 0x2828A4
     assert native.contents.readback_word == 0x2828A4
     changed = replace(selected, clock_frequency_mhz=32)
     session.configure_usb(changed)
-    native = ctypes.cast(with_pll.call_args.args[2], ctypes.POINTER(_PLLConfig))
+    native = ctypes.cast(
+        with_hardware.call_args.args[2], ctypes.POINTER(_PLLConfig)
+    )
     assert native.contents.work_word == 0x2C20B4
 
 
 def test_maybe_available_row_is_warned_and_its_literal_bytes_are_sent(
     usb_config: UsbConfig, mock_usb_session: tuple[Session, Mock, Mock]
 ) -> None:
-    session, _, with_pll = mock_usb_session
+    session, _, with_hardware = mock_usb_session
     with pytest.warns(RuntimeWarning, match="may be unstable"):
         selected = replace(
             usb_config, clock_frequency_mhz=284, pll_port="/missing-pll"
@@ -516,19 +585,21 @@ def test_maybe_available_row_is_warned_and_its_literal_bytes_are_sent(
     assert selected.clock_setting.actual_frequency_mhz == 283.2
     assert selected.clock_setting.status == "maybe available"
     session.configure_usb(selected)
-    native = ctypes.cast(with_pll.call_args.args[2], ctypes.POINTER(_PLLConfig))
+    native = ctypes.cast(
+        with_hardware.call_args.args[2], ctypes.POINTER(_PLLConfig)
+    )
     assert native.contents.work_word == 0xE813A4
 
 
 def test_frequency_without_serial_keeps_manual_clock(
     usb_config: UsbConfig, mock_usb_session: tuple[Session, Mock, Mock]
 ) -> None:
-    session, legacy, with_pll = mock_usb_session
+    session, legacy, with_hardware = mock_usb_session
     selected = replace(usb_config, clock_frequency_mhz=24)
     assert selected.clock_setting.actual_frequency_mhz == 24
     session.configure_usb(selected)
-    legacy.assert_called_once()
-    with_pll.assert_not_called()
+    legacy.assert_not_called()
+    with_hardware.assert_called_once()
 
 
 @pytest.mark.parametrize(
