@@ -102,17 +102,25 @@ with compile_tf(infer, options={"runtime": "simulator"}) as compiled:
 前端通过 `options={"runtime": "usb", "usb_config": config}` 交给公共运行时。直接加载 USB 模型动态库时，在首次 CIM dispatch 前调用 `session.configure_usb(config)`。
 
 ```python
-from cim22 import UsbConfig
+from cim22 import CIMTimingConfig, UsbConfig
 
 config = UsbConfig(
     vendor_id=0x04B4,
     product_id=0x00F1,
     bulk_in_endpoint=0x81,
     bulk_out_endpoint=0x01,
+    timing=CIMTimingConfig(
+        work_delay_ms=10,
+        readback_select_delay_ms=40,
+    ),
 )
 ```
 
 按实际 FPGA/FX3 固件设置 VID/PID、端点和接口。Linux 为对应设备配置 USB 访问权限，Windows 使用 CyAPI 与 CyUSB3 驱动。上述配置使用手动时钟。Linux 如需自动配置，传入 `clock_frequency_mhz` 与实际 `pll_port`，或使用 `PLLConfig` 指定三个阶段的命令。频率选择和设备字段校验见 [pll.py](cim22/pll.py) 和 [runtime.py](cim22/runtime.py)。
+
+`UsbConfig.timing` 统一管理板卡时序：`startup_delay_ms`、
+`cache_write_delay_ms`、`weight_write_delay_ms`、`work_delay_ms` 和
+`readback_select_delay_ms`。默认值分别为 `20/1/2/10/40`，单位为毫秒，允许设为 `0`。
 
 ## 安装
 

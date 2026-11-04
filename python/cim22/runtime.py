@@ -78,12 +78,37 @@ class PLLConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class CIMTimingConfig:
+    """Board startup and per-operation delays, in milliseconds."""
+
+    startup_delay_ms: int = 20
+    cache_write_delay_ms: int = 1
+    weight_write_delay_ms: int = 2
+    work_delay_ms: int = 10
+    readback_select_delay_ms: int = 40
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("startup_delay_ms", self.startup_delay_ms),
+            ("cache_write_delay_ms", self.cache_write_delay_ms),
+            ("weight_write_delay_ms", self.weight_write_delay_ms),
+            ("work_delay_ms", self.work_delay_ms),
+            ("readback_select_delay_ms", self.readback_select_delay_ms),
+        ):
+            if type(value) is not int:
+                raise TypeError(f"{name} must be an integer")
+            if not 0 <= value <= 0xFFFFFFFF:
+                raise ValueError(f"{name} must be in [0, 4294967295]")
+
+
+@dataclass(frozen=True, slots=True)
 class UsbConfig:
     """Platform USB bridge settings and optional supplier PLL selection.
 
     clock_frequency_mhz selects the same clock in all three phases. Without
     pll_port the caller configures that clock manually; clock_setting records
     the selected table frequency, not a measured or verified hardware clock.
+    ``timing`` controls board startup and per-operation waits.
     """
 
     vendor_id: int
@@ -103,6 +128,7 @@ class UsbConfig:
     pll: PLLConfig | None = None
     clock_frequency_mhz: float | None = None
     pll_port: str | None = None
+    timing: CIMTimingConfig = field(default_factory=CIMTimingConfig)
     clock_setting: PLLClockSetting | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
@@ -152,6 +178,8 @@ class UsbConfig:
                 "clock_setting",
                 select_pll_clock(self.clock_frequency_mhz),
             )
+        if not isinstance(self.timing, CIMTimingConfig):
+            raise TypeError("timing must be a CIMTimingConfig")
 
 
 def runtime_library(library: Path | None = None) -> Path:
@@ -292,29 +320,36 @@ class Session:
         """Open USB with optional PLL control or a manually configured clock."""
         with self._lock:
             self._require_open()
-            argument_types = [
-                ctypes.c_void_p,
-                ctypes.POINTER(_UsbConfig),
-            ]
             native_config = _UsbConfig.from_config(config)
-            arguments = [self._handle, ctypes.byref(native_config)]
             pll = config.pll
             if config.clock_setting is not None and config.pll_port is not None:
                 word = config.clock_setting.serial_hex
                 pll = PLLConfig(config.pll_port, word, word, word)
-            if pll is None:
-                native = self._library.cim22_session_configure_usb
-            else:
-                native = self._library.cim22_session_configure_usb_with_pll
-                native_pll = _PLLConfig.from_config(pll)
-                argument_types.append(ctypes.POINTER(_PLLConfig))
-                arguments.append(ctypes.byref(native_pll))
+            try:
+                native = self._library.cim22_session_configure_usb_with_hardware
+            except AttributeError as error:
+                raise RuntimeError(
+                    "runtime library lacks CIM22 hardware configuration ABI"
+                ) from error
+            native_pll = (
+                _PLLConfig.from_config(pll) if pll is not None else None
+            )
+            native_hardware = _HardwareConfig.from_config(config.timing)
             native.argtypes = [
-                *argument_types,
+                ctypes.c_void_p,
+                ctypes.POINTER(_UsbConfig),
+                ctypes.POINTER(_PLLConfig),
+                ctypes.POINTER(_HardwareConfig),
                 ctypes.c_char_p,
                 ctypes.c_size_t,
             ]
             native.restype = ctypes.c_int
+            arguments = [
+                self._handle,
+                ctypes.byref(native_config),
+                ctypes.byref(native_pll) if native_pll is not None else None,
+                ctypes.byref(native_hardware),
+            ]
             error = ctypes.create_string_buffer(16384)
             if native(*arguments, error, len(error)):
                 raise RuntimeError(error.value.decode(errors="replace"))
@@ -517,4 +552,24 @@ class _PLLConfig(ctypes.Structure):
             int(config.config_hex, 16),
             int(config.work_hex, 16),
             int(config.readback_hex, 16),
+        )
+
+
+class _HardwareConfig(ctypes.Structure):
+    _fields_ = [
+        ("startup_delay_ms", ctypes.c_uint32),
+        ("cache_write_delay_ms", ctypes.c_uint32),
+        ("weight_write_delay_ms", ctypes.c_uint32),
+        ("work_delay_ms", ctypes.c_uint32),
+        ("readback_select_delay_ms", ctypes.c_uint32),
+    ]
+
+    @classmethod
+    def from_config(cls, config: CIMTimingConfig) -> Self:
+        return cls(
+            config.startup_delay_ms,
+            config.cache_write_delay_ms,
+            config.weight_write_delay_ms,
+            config.work_delay_ms,
+            config.readback_select_delay_ms,
         )

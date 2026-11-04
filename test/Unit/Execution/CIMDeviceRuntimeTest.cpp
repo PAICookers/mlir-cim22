@@ -254,7 +254,7 @@ void testPacketCodec() {
 void testBoardRunner() {
   FakeCIMDevice device;
   expectSuccess(device.open());
-  CIMBoardRunner runner(device, {});
+  CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
   CIMTransaction executable = makeTransaction();
 
   std::array<int8_t, 64> inputStorage{};
@@ -284,21 +284,28 @@ void testBoardRunner() {
   CHECK(device.program.operations[3].postDelayMs == 2);
   CHECK(device.program.operations[4].flits.size() == 1);
   CHECK(device.program.operations[4].flits.front() == 0x9000000000000001ULL);
-  CHECK(device.program.operations[4].postDelayMs == 20);
+  CHECK(device.program.operations[4].postDelayMs == 10);
   CHECK(device.program.operations[4].phase == CIMDevicePhase::Work);
   CHECK(device.program.readbacks.size() == 1);
   CHECK(device.program.readbacks.front().selection.flits.size() == 1);
-  CHECK(device.program.readbacks.front().selection.postDelayMs == 100);
+  CHECK(device.program.readbacks.front().selection.postDelayMs == 40);
   CHECK(device.program.readbacks.front().request.flits.size() == 1);
   CHECK(device.program.readbacks.front().request.flits.back() ==
         0x500000000081c000ULL);
+  CIMBoardRunner tuned(device, {0, 3, 4, 5, 6});
+  expectSuccess(tuned.run(executable, inputs, outputs));
+  CHECK(device.program.operations[2].postDelayMs == 3);
+  CHECK(device.program.operations[3].postDelayMs == 4);
+  CHECK(device.program.operations[4].postDelayMs == 5);
+  CHECK(device.program.readbacks.front().selection.postDelayMs == 6);
+  CHECK(outputStorage == kExpected);
   device.close();
 }
 
 void testGroupExecutionOrder() {
   FakeCIMDevice device;
   expectSuccess(device.open());
-  CIMBoardRunner runner(device, {});
+  CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
   CIMTransaction executable = makeTwoGroupTransaction();
   device.outputCoreSlots = {3, 4};
 
@@ -318,7 +325,7 @@ void testGroupExecutionOrder() {
   CHECK((device.program.operations[0].flits[1] >> 60) == 0xa);
   CHECK((device.program.operations[4].flits.front() >> 60) == 0x8);
   CHECK(device.program.operations[7].flits.size() == 2);
-  CHECK(device.program.operations[7].postDelayMs == 20);
+  CHECK(device.program.operations[7].postDelayMs == 10);
   CHECK(device.program.operations[7].phase == CIMDevicePhase::Work);
   CHECK(device.program.operations[7].flits[0] == 0x9000000000000001ULL);
   CHECK(device.program.operations[7].flits[1] == 0x9000000000000001ULL);
@@ -328,7 +335,7 @@ void testGroupExecutionOrder() {
 void testTwoMacrosShareReturnRouteAndOnce() {
   FakeCIMDevice device;
   expectSuccess(device.open());
-  CIMBoardRunner runner(device, {});
+  CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
   const std::array<int32_t, 6> route{};
   CIMTransaction executable = makeTwoMacroTransaction();
   device.outputCoreSlots = {3, 3};
@@ -353,7 +360,7 @@ void testTwoMacrosShareReturnRouteAndOnce() {
   CHECK(device.program.operations[7].flits.size() == 1);
   CHECK(device.program.operations[7].flits.front() == 0x9000000000000001ULL);
   CHECK(device.program.readbacks.size() == 2);
-  CHECK(device.program.readbacks[0].selection.postDelayMs == 100);
+  CHECK(device.program.readbacks[0].selection.postDelayMs == 40);
   CHECK(device.program.readbacks[0].selection.flits.size() == 1);
   CHECK(device.program.readbacks[0].request.flits.size() == 1);
   CHECK(device.program.readbacks[0].request.flits.back() ==
@@ -367,7 +374,7 @@ void testBF16RawCaptureKeepsPrefixAndBody() {
   FakeCIMDevice device;
   device.corruptResponsePadding = true;
   expectSuccess(device.open());
-  CIMBoardRunner runner(device, {});
+  CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
   CIMTransaction executable = makeBF16Transaction();
 
   std::array<uint16_t, 64> inputStorage{};
@@ -397,7 +404,7 @@ void testBF16RawCaptureKeepsPrefixAndBody() {
 void testRawCaptureValidatesInputsBeforeDeviceExecution() {
   FakeCIMDevice device;
   expectSuccess(device.open());
-  CIMBoardRunner runner(device, {});
+  CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
   CIMTransaction executable = makeBF16Transaction();
   auto missingInputs = runner.capture(executable, {});
   CHECK(!missingInputs);
@@ -427,7 +434,7 @@ void testRawCaptureValidatesInputsBeforeDeviceExecution() {
 void testRawCaptureValidatesResponseBindings() {
   FakeCIMDevice device;
   expectSuccess(device.open());
-  CIMBoardRunner runner(device, {});
+  CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
   CIMTransaction executable = makeTwoMacroTransaction();
   std::array<std::array<int8_t, 64>, 2> inputStorage{};
   const std::array<CIMInputView, 2> inputViews{
@@ -450,7 +457,7 @@ void testRawCaptureValidatesResponseBindings() {
 void testUnknownDataModeIsRejectedBeforeDeviceExecution() {
   FakeCIMDevice device;
   expectSuccess(device.open());
-  CIMBoardRunner runner(device, {});
+  CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
   CIMTransaction executable = makeTransaction(static_cast<CIMDataType>(-1));
   std::array<int8_t, 64> inputStorage{};
   const std::array<CIMInputView, 1> inputViews{CIMInputView{inputStorage, {}}};
@@ -489,7 +496,7 @@ void testInvalidPlacementAndReadbackRouteRejectBeforeIO() {
                            std::move(readbacks), {});
     FakeCIMDevice device;
     expectSuccess(device.open());
-    CIMBoardRunner runner(device, {});
+    CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
     std::array<std::array<int8_t, 64>, 2> inputStorage{};
     const std::array<CIMInputView, 2> inputViews{
         CIMInputView{inputStorage[0], {}}, CIMInputView{inputStorage[1], {}}};
@@ -516,7 +523,7 @@ void testInvalidPlacementAndReadbackRouteRejectBeforeIO() {
 void testBF16BoardReadbackPreservesBits() {
   FakeCIMDevice device;
   expectSuccess(device.open());
-  CIMBoardRunner runner(device, {});
+  CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
   CIMTransaction executable = makeBF16Transaction();
   std::array<uint16_t, 64> inputStorage{};
   const std::array<CIMInputView, 1> inputViews{CIMInputView{{}, inputStorage}};
@@ -583,7 +590,7 @@ void testBF16BoardCompensation() {
   } trace;
   FakeCIMDevice device;
   expectSuccess(device.open());
-  CIMBoardRunner runner(device, {});
+  CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
   std::array<uint16_t, 64> input{};
   input[0] = 0x7880; // 2^114.
   std::array<uint16_t, 16> output{}, reply{};
@@ -699,7 +706,7 @@ void testBF16CompensationWorkIsolation() {
   FakeCIMDevice device;
   expectSuccess(device.open());
   device.reverseReadbacks = true;
-  CIMBoardRunner runner(device, {});
+  CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
   const auto base = makeBF16Transaction();
   auto group = base.getGroups().front();
   group.works.push_back({1, 3, 1, {}});
@@ -749,7 +756,7 @@ void testMixedModeReadbacks() {
     device.reverseReadbacks = !corruptPadding;
     device.corruptResponsePadding = corruptPadding;
     expectSuccess(device.open());
-    CIMBoardRunner runner(device, {});
+    CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
     CIMTransaction executable = makeTwoGroupTransaction(CIMDataType::BF16);
     std::array<int8_t, 64> intInput{};
     std::array<uint16_t, 64> bf16Input{};
@@ -784,7 +791,7 @@ void testMalformedResponseDoesNotPublishPartialOutputs() {
   FakeCIMDevice device;
   device.corruptResponsePadding = true;
   expectSuccess(device.open());
-  CIMBoardRunner runner(device, {});
+  CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
   CIMTransaction executable = makeTwoMacroTransaction();
   std::array<std::array<int8_t, 64>, 2> inputStorage{};
   const std::array<CIMInputView, 2> inputViews{

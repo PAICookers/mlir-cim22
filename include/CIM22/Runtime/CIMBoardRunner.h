@@ -10,21 +10,19 @@
 #define CIM22_RUNTIME_CIMBOARDRUNNER_H
 
 #include "CIM22/Execution/CIMRunner.h"
+#include "CIM22/Execution/Runtime.h"
 #include "CIM22/Runtime/CIMDevice.h"
 
 namespace cim22::runtime {
 
-struct CIMBoardRunPolicy {
-  uint32_t cacheWriteDelayMs = 1;
-  uint32_t weightWriteDelayMs = 2;
-  uint32_t workDelayMs = 20;
-  uint32_t readbackSelectDelayMs = 100;
-};
+inline CIM22HardwareConfig defaultCIM22HardwareConfig() {
+  return {20, 1, 2, 10, 40};
+}
 
 class CIMBoardRunner final : public execution::CIMRunner {
 public:
-  CIMBoardRunner(CIMDevice &device, CIMBoardRunPolicy policy)
-      : device_(device), policy_(policy) {}
+  CIMBoardRunner(CIMDevice &device, CIM22HardwareConfig hardware)
+      : device_(device), hardware_(hardware) {}
 
   llvm::Error run(const execution::CIMTransaction &executable,
                   const execution::CIMRunInputs &inputs,
@@ -51,7 +49,7 @@ private:
               bool zeroWeightExponent = false);
 
   CIMDevice &device_;
-  CIMBoardRunPolicy policy_;
+  CIM22HardwareConfig hardware_;
 };
 
 } // namespace cim22::runtime
