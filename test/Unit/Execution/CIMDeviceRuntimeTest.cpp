@@ -468,20 +468,18 @@ void testBF16RawCaptureKeepsPrefixAndBody() {
   expectedBody[5] = 1;
   CHECK(response->readbacks[0].bodyFlits == expectedBody);
   CHECK(device.executeCount == 1);
-  CHECK(device.program.operations.size() == 6);
+  CHECK(device.program.operations.size() == 5);
   const CIMDeviceOperation &prefix = device.program.operations[1];
   CHECK(prefix.flits.size() == 4);
   CHECK((prefix.flits[0] >> 60) == 0x8);
   CHECK((prefix.flits[1] >> 60) == 0x3);
   CHECK((prefix.flits[1] & 0x3fff) == 2);
   const std::array<int32_t, 6> route{};
-  const auto &startWork = device.program.operations[4];
+  const auto &startWork = device.program.operations.back();
   CHECK(startWork.phase == CIMDevicePhase::Work);
   CHECK(startWork.postDelayMs == hardware.work_delay_ms);
   CHECK(startWork.flits.size() == 1);
   CHECK(startWork.flits.front() == encodeCIMWorkOnceFlit(route));
-  CHECK(device.program.operations.back().flits.front() ==
-        encodeCIMWorkIdleFlit(route));
   CHECK(device.program.readbackBatches.size() == 1);
   device.close();
 }

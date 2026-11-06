@@ -25,13 +25,6 @@ llvm::Error runnerError(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(), message);
 }
 
-bool hasBF16(const CIMTransaction &executable) {
-  return llvm::any_of(executable.getDynamicInputs(),
-                      [](const DynamicInputBinding &binding) {
-                        return binding.dataType == CIMDataType::BF16;
-                      });
-}
-
 const CIMWork *findWork(const CIMTransaction &executable, int64_t groupId,
                         int64_t workId) {
   for (const CIMGroup &group : executable.getGroups())
@@ -397,7 +390,8 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
 
   // The execution-plan contract completes every Core/Macro configuration
   // before triggering work. Keep all Once flits in one batch so the board
-  // pacing delay begins only after every active Core has been started.
+  // wait for computation and writeback begins after every active Core starts.
+  // Once terminates automatically.
   CIMDeviceOperation startWork;
   startWork.phase = CIMDevicePhase::Work;
   startWork.postDelayMs = hardware.work_delay_ms;
@@ -406,15 +400,6 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
     emitTrace(trace, sequence, CIMTraceEventKind::StartWork, group.groupId);
   }
   program.operations.push_back(std::move(startWork));
-
-  // The supplier BF16 testbench returns to idle after Once.
-  if (hasBF16(executable)) {
-    CIMDeviceOperation idle;
-    idle.phase = CIMDevicePhase::Work;
-    for (const CIMGroup &group : executable.getGroups())
-      idle.flits.push_back(encodeCIMWorkIdleFlit(group.works.front().route));
-    program.operations.push_back(std::move(idle));
-  }
 
   if (auto error = appendReadbackBatches(
           executable, hardware.readback_select_delay_ms, program))
