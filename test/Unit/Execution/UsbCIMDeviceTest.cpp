@@ -827,7 +827,168 @@ void testSupplierWeightPacketChunks() {
   device->close();
 }
 
+void testWeightResidencyRejectsPartialWrite() {
+  using namespace cim22::execution;
+  class PartialWeightDriver final : public FakeUsbDriver {
+  public:
+    llvm::Expected<size_t> write(llvm::ArrayRef<uint8_t> bytes) override {
+      if (fail && !writes().empty()) {
+        fail = false;
+        return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       "injected partial Weight write");
+      }
+      return FakeUsbDriver::write(bytes);
+    }
+    bool fail = true;
+  };
+
+  StaticWeightSection section;
+  section.words.resize(256);
+  CIMWeightCatalog catalog;
+  CIMDeviceProgram program;
+  program.useWeightResidency = true;
+  CIMDeviceOperation write;
+  write.weight =
+      CIMDeviceWeightWrite{0, catalog.intern(section), BF16Compensation::None};
+  program.operations.push_back(std::move(write));
+
+  auto driver = std::make_unique<PartialWeightDriver>();
+  auto *view = driver.get();
+  auto device = detail::createUsbCIMDevice(makeConfig(), std::move(driver));
+  expectSuccess(device->open());
+  CIMDeviceResponse response;
+  assert(takeError(device->execute(program, response)).find("partial Weight") !=
+         std::string::npos);
+  assert(view->writes().size() == 1 && device->weightStats().writes == 0);
+  assert(takeError(device->execute(program, response)).find("faulted") !=
+         std::string::npos);
+  expectSuccess(device->open());
+  expectSuccess(device->execute(program, response));
+  expectSuccess(device->execute(program, response));
+  assert(view->writes().size() == 257);
+  assert(device->weightStats().writes == 1 && device->weightStats().hits == 1);
+  program.operations.front().weight->slot = 1;
+  expectSuccess(device->execute(program, response));
+  assert(view->writes().size() == 514 && device->weightStats().writes == 2);
+  program.operations.front().weight->slot = 0;
+  expectSuccess(device->execute(program, response));
+  assert(view->writes().size() == 514 && device->weightStats().hits == 2);
+  device->close();
+}
+
 #ifndef _WIN32
+void testBoardWeightResidency(cim22::execution::CIMDataType dataType) {
+  using namespace cim22::execution;
+  const bool bf16 = dataType == CIMDataType::BF16;
+  const std::array<int32_t, 6> route{0, 3, 0, 0, 0, 0};
+  auto makeTransaction = [&](int32_t word) {
+    StaticWeightSection weight;
+    weight.groupId = weight.workId = weight.macroSlot = 0;
+    weight.coreSlot = 3;
+    weight.route = route;
+    weight.words.resize(256);
+    weight.words.front() = word;
+    weight.exponents.fill(127);
+    weight.dataType = dataType;
+    return CIMTransaction("cim22-4x5-v1", 1, 1, {{0, {{0, 3, 0, route}}}},
+                          {weight}, {}, {{0, 0, 0, 0, dataType}},
+                          {{0, 0, 0, 7, route, {}, dataType}}, {});
+  };
+  const CIMTransaction first = makeTransaction(0);
+  const CIMTransaction changed = makeTransaction(1);
+  CIMWeightCatalog catalog;
+  const std::array firstIdentity{catalog.intern(first.getStaticWeights()[0])};
+  const std::array changedIdentity{
+      catalog.intern(changed.getStaticWeights()[0])};
+  std::array<int8_t, 64> int8Input{};
+  std::array<uint16_t, 64> bf16Input{};
+  std::array<int32_t, 16> int8Output{};
+  std::array<uint16_t, 16> bf16Output{};
+  const std::array<CIMInputView, 1> inputs{{{int8Input, bf16Input}}};
+  std::array<CIMOutputView, 1> outputViews{{{int8Output, bf16Output}}};
+  CIMRunOutputs outputs{outputViews};
+  auto driver = std::make_unique<FakeUsbDriver>();
+  auto *view = driver.get();
+  auto device = detail::createUsbCIMDevice(makeConfig(), std::move(driver));
+  CIMBoardRunner runner(*device, {0, 0, 0, 0, 0});
+  expectSuccess(device->open());
+
+  auto run = [&](const CIMTransaction &transaction,
+                 llvm::ArrayRef<CIMWeightIdentity> identities,
+                 BF16Compensation mode = BF16Compensation::None) {
+    const size_t begin = view->writes().size();
+    expectSuccess(
+        runner.run(transaction, {inputs}, outputs, mode, nullptr, identities));
+    std::vector<uint64_t> flits;
+    for (const auto &record : llvm::ArrayRef(view->writes()).drop_front(begin))
+      flits.push_back(record.flit);
+    const std::array expectedSuffix{encodeCIMWorkOnceFlit(route),
+                                    encodeCIMControlFlit(route, 0, dataType),
+                                    encodeCIMOutputCacheReadFlit(route, 7)};
+    assert(flits.size() >= expectedSuffix.size());
+    assert(std::equal(expectedSuffix.begin(), expectedSuffix.end(),
+                      flits.end() - expectedSuffix.size()));
+    return flits;
+  };
+  auto weightHead = [](uint64_t flit) { return (flit >> 60) == 2; };
+  auto cold = run(first, firstIdentity);
+  const auto coldInt8Output = int8Output;
+  const auto coldBF16Output = bf16Output;
+  assert(std::count_if(cold.begin(), cold.end(), weightHead) == 1);
+  auto weight = std::find_if(cold.begin(), cold.end(), weightHead);
+  assert(std::distance(weight, cold.end()) >= 257);
+  cold.erase(weight, weight + 257);
+  assert(run(first, firstIdentity) == cold);
+  assert(int8Output == coldInt8Output && bf16Output == coldBF16Output);
+
+  int8Input.front() = 5;
+  bf16Input.front() = 0x3f80;
+  const auto newInput = run(first, firstIdentity);
+  assert(newInput.size() == cold.size() && newInput != cold);
+  assert(std::none_of(newInput.begin(), newInput.end(), weightHead));
+  assert(device->weightStats().writes == 1 && device->weightStats().hits == 2);
+
+  const auto overwritten = run(changed, changedIdentity);
+  const auto restored = run(first, firstIdentity);
+  assert(overwritten.size() == restored.size() && overwritten != restored);
+  assert(device->weightStats().writes == 3);
+  const BF16Compensation residentMode =
+      bf16 ? BF16Compensation::SignSplit : BF16Compensation::None;
+  if (bf16) {
+    const auto signSplit = run(first, firstIdentity, residentMode);
+    assert(std::count_if(signSplit.begin(), signSplit.end(), weightHead) == 1);
+    const auto hit = run(first, firstIdentity, residentMode);
+    assert(std::none_of(hit.begin(), hit.end(), weightHead));
+    assert(bf16Output == (std::array<uint16_t, 16>{}));
+  }
+
+  const auto beforeCapture = device->weightStats();
+  const size_t beforeCaptureFlits = view->writes().size();
+  auto capture = runner.capture(first, {inputs});
+  assert(capture && capture->readbacks.size() == 1);
+  assert(view->writes().size() - beforeCaptureFlits == restored.size());
+  assert(device->weightStats().writes == beforeCapture.writes);
+  auto afterCapture = run(first, firstIdentity, residentMode);
+  assert(std::count_if(afterCapture.begin(), afterCapture.end(), weightHead) ==
+         1);
+
+  device->close();
+  expectSuccess(device->open());
+  auto afterReopen = run(first, firstIdentity, residentMode);
+  assert(std::count_if(afterReopen.begin(), afterReopen.end(), weightHead) ==
+         1);
+  view->setCorruptHeader(true);
+  assert(takeError(runner.run(first, {inputs}, outputs, residentMode, nullptr,
+                              firstIdentity))
+             .find("reserved header bits") != std::string::npos);
+  assert(device->isFaulted());
+  view->setCorruptHeader(false);
+  expectSuccess(device->open());
+  auto afterFault = run(first, firstIdentity, residentMode);
+  assert(std::count_if(afterFault.begin(), afterFault.end(), weightHead) == 1);
+  device->close();
+}
+
 void testPLLReuse(const std::array<uint32_t, 3> &words) {
   using namespace cim22::execution;
   std::vector<CIMGroup> groups;
@@ -1205,7 +1366,10 @@ int main() {
   testPreservesErrorDuringStop();
   testDrainsBeforeClose();
   testSupplierWeightPacketChunks();
+  testWeightResidencyRejectsPartialWrite();
 #ifndef _WIN32
+  testBoardWeightResidency(cim22::execution::CIMDataType::Int8);
+  testBoardWeightResidency(cim22::execution::CIMDataType::BF16);
   testThreePLLPhases(false);
   testThreePLLPhases(true);
   testThreePLLPhases(false, true);

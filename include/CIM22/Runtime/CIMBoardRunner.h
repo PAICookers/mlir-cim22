@@ -32,15 +32,19 @@ public:
                   execution::CIMRunOutputs &outputs,
                   execution::CIMTraceSink *trace = nullptr) override;
 
-  // Applies the requested BF16 compensation on the Host.
-  llvm::Error run(const execution::CIMTransaction &executable,
-                  const execution::CIMRunInputs &inputs,
-                  execution::CIMRunOutputs &outputs,
-                  execution::BF16Compensation compensation,
-                  execution::CIMTraceSink *trace = nullptr);
+  // Applies the requested BF16 compensation on the Host. Prepared weight
+  // identities, when supplied, represent the exact static sections in
+  // executable.getStaticWeights() order. A capable device may reuse them.
+  // Board traces describe planned commands; physical writes may be elided.
+  llvm::Error
+  run(const execution::CIMTransaction &executable,
+      const execution::CIMRunInputs &inputs, execution::CIMRunOutputs &outputs,
+      execution::BF16Compensation compensation,
+      execution::CIMTraceSink *trace = nullptr,
+      llvm::ArrayRef<execution::CIMWeightIdentity> preparedWeights = {});
 
-  // Capture validated headers and six raw body flits per readback, with
-  // outputIndex identifying the binding.
+  // Invalidate weight residency and capture validated response headers and
+  // six raw body flits per readback, with outputIndex identifying the binding.
   llvm::Expected<CIMDeviceResponse>
   capture(const execution::CIMTransaction &executable,
           const execution::CIMRunInputs &inputs,
@@ -51,7 +55,10 @@ private:
   captureImpl(const execution::CIMTransaction &executable,
               const execution::CIMRunInputs &inputs,
               execution::CIMTraceSink *trace, uint64_t &sequence,
-              bool zeroWeightExponent, bool captureRawReadbacks);
+              execution::BF16Compensation compensation =
+                  execution::BF16Compensation::None,
+              llvm::ArrayRef<execution::CIMWeightIdentity> preparedWeights = {},
+              bool captureRawReadbacks = false);
 
   CIMDevice &device_;
   CIM22HardwareConfig hardware_;

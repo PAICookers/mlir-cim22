@@ -111,7 +111,9 @@ CIMTransaction makeExecutable(FixtureFault fault = FixtureFault::None,
 
 CIMTransaction
 makeBF16Executable(bool withExponent = true, int8_t weightMantissa = 0,
-                   const StaticWeightSection *fixture = nullptr) {
+                   const StaticWeightSection *fixture = nullptr,
+                   int64_t outputAddress = 0,
+                   std::optional<int64_t> extraReadAddress = std::nullopt) {
   const int64_t macro = fixture ? fixture->macroSlot : 0;
   CIMGroup group;
   group.groupId = 0;
@@ -129,15 +131,13 @@ makeBF16Executable(bool withExponent = true, int8_t weightMantissa = 0,
     weight = *fixture;
 
   DynamicInputBinding input{0, 0, macro, 0, CIMDataType::BF16};
-  ReadbackBinding readback{0, 0, macro, 0, {}, {}, CIMDataType::BF16};
   std::vector<CIMFramePacket> packets;
-  auto add = [&](CIMPacketKind kind) {
+  auto add = [&](CIMPacketKind kind, int64_t address = -1) {
     CIMFramePacket packet{kind};
     packet.groupId = 0;
     packet.workId = 0;
     packet.macroSlot = macro;
-    if (kind == CIMPacketKind::OutputCacheRead)
-      packet.cacheAddress = 0;
+    packet.cacheAddress = address;
     packet.dataType = CIMDataType::BF16;
     packets.push_back(packet);
   };
@@ -145,12 +145,19 @@ makeBF16Executable(bool withExponent = true, int8_t weightMantissa = 0,
   if (withExponent)
     add(CIMPacketKind::WeightExponent);
   add(CIMPacketKind::Weight);
-  add(CIMPacketKind::ReturnRoute);
-  add(CIMPacketKind::Control);
-  add(CIMPacketKind::OutputCacheRead);
+  std::vector<ReadbackBinding> readbacks;
+  auto addReadback = [&](int64_t address) {
+    readbacks.push_back({0, 0, macro, address, {}, {}, CIMDataType::BF16});
+    add(CIMPacketKind::ReturnRoute);
+    add(CIMPacketKind::Control);
+    add(CIMPacketKind::OutputCacheRead, address);
+  };
+  addReadback(outputAddress);
+  if (extraReadAddress)
+    addReadback(*extraReadAddress);
   return CIMTransaction("cim22-4x5-v1", 1, 1, {std::move(group)},
                         {std::move(weight)}, std::move(packets), {input},
-                        {readback}, {});
+                        std::move(readbacks), {});
 }
 
 int32_t expectedValue(const StaticWeightSection &weight,
@@ -343,6 +350,128 @@ void checkAliasedBF16Views() {
       assert(finalOutput[0] == (overlapOutputs ? 0x4000 : 0x3f80));
     }
   }
+}
+
+void checkWeightIdentity() {
+  CIMWeightCatalog catalog;
+  StaticWeightSection weight;
+  weight.words.resize(256);
+  const auto original = catalog.intern(weight);
+  weight.workId = 17;
+  weight.resource = "other";
+  assert(catalog.intern(weight) == original);
+  weight.dataType = CIMDataType::BF16;
+  const auto bf16 = catalog.intern(weight);
+  assert(bf16 != original);
+  weight.exponents[0] = 126;
+  assert(catalog.intern(weight) != bf16);
+  weight.exponents[0] = 0;
+  weight.words[0] = 1;
+  assert(catalog.intern(weight) != bf16);
+  weight.words[0] = 0;
+  weight.values[0] = -1;
+  assert(catalog.intern(weight) != bf16);
+  weight.values[0] = 0;
+  weight.route[0] = 1;
+  assert(catalog.intern(weight) != bf16);
+}
+
+void checkInt8WeightResidency() {
+  auto transaction = makeExecutable(FixtureFault::None, /*distinctCores=*/true);
+  CIMWeightCatalog catalog;
+  CIMWeightResidency residency;
+  std::vector<CIMWeightIdentity> identities;
+  for (const auto &weight : transaction.getStaticWeights())
+    identities.push_back(catalog.intern(weight));
+  std::array<std::array<int8_t, kCIMInputElements>, 4> input{};
+  std::array<std::array<int32_t, kCIMOutputElements>, 4> output{};
+  std::array<CIMInputView, 4> inputViews{};
+  std::array<CIMOutputView, 4> outputViews{};
+  for (size_t i = 0; i < input.size(); ++i) {
+    inputViews[i].values = input[i];
+    outputViews[i].values = output[i];
+  }
+  CIMRunOutputs outputs{outputViews};
+  CIMSoftwareRunner runner;
+  const CIMSoftwareRunner::Plan plan(transaction);
+  for (int8_t value : {int8_t{3}, int8_t{-2}}) {
+    for (auto &row : input)
+      row[0] = value;
+    VectorTrace trace;
+    assert(!runner.run(plan, {inputViews}, outputs, residency, identities,
+                       &trace));
+    assert(std::count_if(
+               trace.events.begin(), trace.events.end(), [](const auto &event) {
+                 return event.kind == CIMTraceEventKind::ConfigureWeight;
+               }) == (value == 3 ? 4 : 0));
+    for (size_t i = 0; i < output.size(); ++i)
+      for (int32_t lane : output[i])
+        assert(lane == value * static_cast<int32_t>(i / 2 + i % 2 + 1));
+  }
+  assert(residency.stats.writes == 4 && residency.stats.hits == 4);
+  expectError(runner.run(plan, {}, outputs, residency, identities));
+  for (size_t slot = 0; slot < identities.size(); ++slot)
+    assert(!residency.match(slot, identities[slot], BF16Compensation::None));
+  assert(!runner.run(plan, {inputViews}, outputs, residency, identities));
+  assert(residency.stats.writes == 8 && residency.stats.hits == 4);
+  VectorTrace trace;
+  expectError(runner.run(plan, {inputViews}, outputs, residency, {}, &trace));
+  assert(trace.events.size() == 1 &&
+         trace.events.front().kind == CIMTraceEventKind::Error);
+}
+
+void checkBF16WeightResidency() {
+  using Mode = BF16Compensation;
+  StaticWeightSection weight;
+  weight.groupId = weight.workId = weight.coreSlot = weight.macroSlot = 0;
+  weight.dataType = CIMDataType::BF16;
+  weight.values.fill(64);
+  weight.exponents.fill(126); // .5 in every lane.
+  auto first = makeBF16Executable(true, 0, &weight, 7);
+  auto second = makeBF16Executable(true, 0, &weight, 0, 7);
+  CIMWeightCatalog catalog;
+  CIMWeightResidency residency;
+  const std::array firstIdentity{catalog.intern(first.getStaticWeights()[0])};
+  const std::array secondIdentity{catalog.intern(second.getStaticWeights()[0])};
+  assert(firstIdentity == secondIdentity);
+  const CIMSoftwareRunner::Plan firstPlan(first), secondPlan(second);
+  std::array<uint16_t, kCIMInputElements> input;
+  std::array<std::array<uint16_t, kCIMOutputElements>, 2> output{};
+  const std::array<CIMInputView, 1> inputViews{{{{}, input}}};
+  std::array<CIMOutputView, 2> outputViews{{{{}, output[0]}, {{}, output[1]}}};
+  CIMRunOutputs firstOutput{llvm::MutableArrayRef(outputViews).take_front()};
+  CIMRunOutputs secondOutput{outputViews};
+  CIMSoftwareRunner signSplit(Mode::SignSplit), legacy(Mode::Legacy);
+
+  input.fill(0x3f80);
+  assert(!signSplit.run(firstPlan, {inputViews}, firstOutput, residency,
+                        firstIdentity));
+  for (uint16_t lane : output[0])
+    assert(lane == 0x4200); // 32.
+
+  input.fill(0);
+  input[0] = 0x3f80;
+  input[1] = 0x3f00;
+  assert(!signSplit.run(secondPlan, {inputViews}, secondOutput, residency,
+                        secondIdentity));
+  assert(residency.stats.writes == 1 && residency.stats.hits == 1);
+  for (uint16_t lane : output[0])
+    assert(lane == 0x3f40); // .75 with the new input.
+  for (uint16_t lane : output[1])
+    assert(lane == 0); // Row 7 was written in the preceding run only.
+
+  input.fill(0x3f80);
+  assert(!legacy.run(firstPlan, {inputViews}, firstOutput, residency,
+                     firstIdentity));
+  assert(residency.stats.writes == 2 && residency.stats.hits == 1);
+  for (uint16_t lane : output[0])
+    assert(lane == 0x4200);
+
+  input[0] = 0x7f80;
+  expectError(legacy.run(firstPlan, {inputViews}, firstOutput, residency,
+                         firstIdentity));
+  assert(residency.stats.writes == 2 && residency.stats.hits == 1);
+  assert(!residency.match(0, firstIdentity[0], Mode::Legacy));
 }
 
 // Grow the configured-state storage beyond its inline capacity, revisit every
@@ -751,6 +880,9 @@ int main(int argc, char **argv) {
   checkBF16LegacyCompensation();
   checkIndependentReadbackBatches();
   checkAliasedBF16Views();
+  checkWeightIdentity();
+  checkInt8WeightResidency();
+  checkBF16WeightResidency();
   checkAllMacroCaches();
   checkInt8NumericModel();
   if (argc == 2 && llvm::StringRef(argv[1]) == "--int8-numeric")

@@ -282,10 +282,13 @@ llvm::Error appendReadbackBatches(const CIMTransaction &executable,
 llvm::Expected<CIMDeviceProgram>
 materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
                    const CIM22HardwareConfig &hardware, CIMTraceSink *trace,
-                   uint64_t &sequence, bool zeroWeightExponent,
+                   uint64_t &sequence, BF16Compensation compensation,
+                   llvm::ArrayRef<CIMWeightIdentity> preparedWeights,
                    bool captureRawReadbacks) {
   CIMDeviceProgram program;
+  program.useWeightResidency = !preparedWeights.empty();
   program.captureRawReadbacks = captureRawReadbacks;
+  const bool zeroWeightExponent = compensation != BF16Compensation::None;
 
   // The supplier board flow configures one return path per active Core before
   // selecting or programming any Macro. Multiple Macro works on the same Core
@@ -375,14 +378,27 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
 
       CIMDeviceOperation weightWrite;
       weightWrite.postDelayMs = hardware.weight_write_delay_ms;
-      llvm::SmallVector<uint32_t, 256> weightWords;
-      weightWords.reserve(weight.words.size());
-      for (int32_t word : weight.words)
-        weightWords.push_back(llvm::bit_cast<uint32_t>(word));
-      if (llvm::Error error = appendCIMWeightWordsPacket(
-              weight.route, weightWords, weightWrite.flits))
-        return std::move(error);
+      if (program.useWeightResidency) {
+        const size_t index = &weight - executable.getStaticWeights().data();
+        const CIMWeightIdentity &identity = preparedWeights[index];
+        if (!identity || identity->words.size() != 256 ||
+            identity->dataType != weight.dataType ||
+            identity->route != weight.route)
+          return runnerError("invalid prepared CIM weight identity");
+        weightWrite.weight = CIMDeviceWeightWrite{
+            static_cast<size_t>(work.coreSlot * 2 + work.macroSlot), identity,
+            compensation};
+      } else {
+        llvm::SmallVector<uint32_t, 256> weightWords;
+        weightWords.reserve(weight.words.size());
+        for (int32_t word : weight.words)
+          weightWords.push_back(llvm::bit_cast<uint32_t>(word));
+        if (llvm::Error error = appendCIMWeightWordsPacket(
+                weight.route, weightWords, weightWrite.flits))
+          return std::move(error);
+      }
       program.operations.push_back(std::move(weightWrite));
+      // This trace describes the plan. A device may reuse resident weights.
       emitTrace(trace, sequence, CIMTraceEventKind::ConfigureWeight,
                 group.groupId, work.workId, work.macroSlot);
     }
@@ -477,7 +493,8 @@ llvm::Error CIMBoardRunner::run(const execution::CIMTransaction &executable,
 llvm::Error CIMBoardRunner::run(
     const execution::CIMTransaction &executable,
     const execution::CIMRunInputs &inputs, execution::CIMRunOutputs &outputs,
-    execution::BF16Compensation compensation, execution::CIMTraceSink *trace) {
+    execution::BF16Compensation compensation, execution::CIMTraceSink *trace,
+    llvm::ArrayRef<execution::CIMWeightIdentity> preparedWeights) {
   uint64_t sequence = 0;
   emitTrace(trace, sequence, execution::CIMTraceEventKind::BeginRun);
   if (llvm::Error error = validateOutputs(executable, outputs)) {
@@ -520,12 +537,13 @@ llvm::Error CIMBoardRunner::run(
   }
   auto response =
       captureImpl(executable, compensate ? CIMRunInputs{chipInputs} : inputs,
-                  trace, sequence, compensate, /*captureRawReadbacks=*/false);
+                  trace, sequence, compensation, preparedWeights);
   if (!response) {
     emitTrace(trace, sequence, execution::CIMTraceEventKind::Error);
     return response.takeError();
   }
   if (llvm::Error error = decodeResponse(executable, *response, outputs)) {
+    device_.clearWeightResidency();
     emitTrace(trace, sequence, execution::CIMTraceEventKind::Error);
     return error;
   }
@@ -538,8 +556,10 @@ llvm::Error CIMBoardRunner::run(
           findInput(executable, binding.groupId, binding.workId, inputIndex);
       const auto *weight =
           findWeight(executable, binding.groupId, binding.workId);
-      if (!input || !weight)
+      if (!input || !weight) {
+        device_.clearWeightResidency();
         return fail(runnerError("CIM BF16 restoration binding is missing"));
+      }
       auto output = outputs.values[index].bf16Values;
       for (size_t lane = 0; lane < kCIMOutputElements; ++lane) {
         const bool hasSupport =
@@ -551,8 +571,10 @@ llvm::Error CIMBoardRunner::run(
         auto restored =
             restoreBF16Output(output[lane], weight->exponents[lane], hasSupport,
                               prepared[inputIndex], compensation);
-        if (!restored)
+        if (!restored) {
+          device_.clearWeightResidency();
           return fail(restored.takeError());
+        }
         output[lane] = *restored;
       }
     }
@@ -565,11 +587,12 @@ llvm::Expected<CIMDeviceResponse>
 CIMBoardRunner::capture(const execution::CIMTransaction &executable,
                         const execution::CIMRunInputs &inputs,
                         execution::CIMTraceSink *trace) {
+  device_.clearWeightResidency();
   uint64_t sequence = 0;
   emitTrace(trace, sequence, execution::CIMTraceEventKind::BeginRun);
-  auto response =
-      captureImpl(executable, inputs, trace, sequence,
-                  /*zeroWeightExponent=*/false, /*captureRawReadbacks=*/true);
+  auto response = captureImpl(executable, inputs, trace, sequence,
+                              BF16Compensation::None, {},
+                              /*captureRawReadbacks=*/true);
   if (!response) {
     emitTrace(trace, sequence, execution::CIMTraceEventKind::Error);
     return response.takeError();
@@ -581,20 +604,29 @@ CIMBoardRunner::capture(const execution::CIMTransaction &executable,
 llvm::Expected<CIMDeviceResponse> CIMBoardRunner::captureImpl(
     const execution::CIMTransaction &executable,
     const execution::CIMRunInputs &inputs, execution::CIMTraceSink *trace,
-    uint64_t &sequence, bool zeroWeightExponent, bool captureRawReadbacks) {
+    uint64_t &sequence, execution::BF16Compensation compensation,
+    llvm::ArrayRef<execution::CIMWeightIdentity> preparedWeights,
+    bool captureRawReadbacks) {
   if (llvm::Error error = validateInputs(executable, inputs))
     return std::move(error);
-  auto program = materializeProgram(executable, inputs, hardware_, trace,
-                                    sequence, zeroWeightExponent,
-                                    captureRawReadbacks);
+  if (!preparedWeights.empty() &&
+      preparedWeights.size() != executable.getStaticWeights().size())
+    return runnerError("prepared CIM weight count differs from transaction");
+  if (!device_.supportsWeightResidency())
+    preparedWeights = {};
+  auto program =
+      materializeProgram(executable, inputs, hardware_, trace, sequence,
+                         compensation, preparedWeights, captureRawReadbacks);
   if (!program)
     return program.takeError();
   CIMDeviceResponse response;
   if (llvm::Error error = device_.execute(*program, response))
     return std::move(error);
   if (llvm::Error error =
-          validateResponse(executable, response, trace, sequence))
+          validateResponse(executable, response, trace, sequence)) {
+    device_.clearWeightResidency();
     return std::move(error);
+  }
   return response;
 }
 

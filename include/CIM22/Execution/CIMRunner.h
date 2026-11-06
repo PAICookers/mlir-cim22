@@ -5,6 +5,7 @@
 
 #include "CIM22/Execution/BF16Compensation.h"
 #include "CIM22/Execution/CIMExecutable.h"
+#include "CIM22/Execution/WeightResidency.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
@@ -135,8 +136,20 @@ public:
   // Reuse static resolution with fresh dynamic inputs and Cache state.
   llvm::Error run(const Plan &plan, const CIMRunInputs &inputs,
                   CIMRunOutputs &outputs, CIMTraceSink *trace = nullptr);
+  // Identities follow the transaction's StaticWeightSection order and
+  // represent those exact payloads. The caller retains residency across
+  // runs; failure clears resident weights.
+  llvm::Error run(const Plan &plan, const CIMRunInputs &inputs,
+                  CIMRunOutputs &outputs, CIMWeightResidency &residency,
+                  llvm::ArrayRef<CIMWeightIdentity> identities,
+                  CIMTraceSink *trace = nullptr);
 
 private:
+  llvm::Error runImpl(const Plan &plan, const CIMRunInputs &inputs,
+                      CIMRunOutputs &outputs, CIMWeightResidency *residency,
+                      llvm::ArrayRef<CIMWeightIdentity> identities,
+                      CIMTraceSink *trace);
+
   BF16Compensation bf16Mode;
 };
 

@@ -2,6 +2,7 @@
 #ifndef CIM22_RUNTIME_SESSION_H
 #define CIM22_RUNTIME_SESSION_H
 #include "CIM22/Execution/CIMRunner.h"
+#include "CIM22/Execution/WeightResidency.h"
 #include "CIM22/Runtime/CIMBoardRunner.h"
 #include "CIM22/Runtime/CIMDevice.h"
 #include "ModelData.h"
@@ -20,6 +21,14 @@ struct Session {
   // from model and are destroyed before it.
   std::vector<std::optional<::cim22::execution::CIMSoftwareRunner::Plan>>
       softwarePlans;
+  // Intern immutable images across transactions. Each prepared row follows
+  // the corresponding transaction's StaticWeightSection order.
+  ::cim22::execution::CIMWeightCatalog weightCatalog;
+  std::vector<std::vector<::cim22::execution::CIMWeightIdentity>> weightPlans;
+  // Simulator slots survive successful invocations. The USB device owns
+  // its own physical residency, which ends when that device closes.
+  ::cim22::execution::CIMWeightResidency softwareWeights;
+  bool enableWeightResidency = true;
   void (*invoke)(void **) = nullptr;
   std::unique_ptr<::cim22::runtime::CIMDevice> device;
   // The board runner borrows the device; destroy it first.

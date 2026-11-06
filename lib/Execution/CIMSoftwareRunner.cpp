@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstddef>
 
 namespace cim22::execution {
@@ -295,12 +296,34 @@ llvm::Error CIMSoftwareRunner::run(const CIMTransaction &executable,
 llvm::Error CIMSoftwareRunner::run(const Plan &plan, const CIMRunInputs &inputs,
                                    CIMRunOutputs &outputs,
                                    CIMTraceSink *trace) {
+  return runImpl(plan, inputs, outputs, nullptr, {}, trace);
+}
+
+llvm::Error CIMSoftwareRunner::run(const Plan &plan, const CIMRunInputs &inputs,
+                                   CIMRunOutputs &outputs,
+                                   CIMWeightResidency &residency,
+                                   llvm::ArrayRef<CIMWeightIdentity> identities,
+                                   CIMTraceSink *trace) {
+  if (auto error =
+          runImpl(plan, inputs, outputs, &residency, identities, trace)) {
+    residency.clear();
+    return error;
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error CIMSoftwareRunner::runImpl(
+    const Plan &plan, const CIMRunInputs &inputs, CIMRunOutputs &outputs,
+    CIMWeightResidency *residency, llvm::ArrayRef<CIMWeightIdentity> identities,
+    CIMTraceSink *trace) {
   const CIMTransaction &executable = plan.transaction;
   uint64_t sequence = 0;
   auto fail = [&](const llvm::Twine &message) -> llvm::Error {
     emitTrace(trace, sequence, CIMTraceEventKind::Error);
     return runnerError(message);
   };
+  if (residency && identities.size() != executable.getStaticWeights().size())
+    return fail("prepared CIM weight count differs from transaction");
   if (llvm::Error error = validateBindings(executable, inputs, outputs)) {
     emitTrace(trace, sequence, CIMTraceEventKind::Error);
     return error;
@@ -345,14 +368,36 @@ llvm::Error CIMSoftwareRunner::run(const Plan &plan, const CIMRunInputs &inputs,
                   inputs.values[inputPosition].values.end(),
                   macro.input.begin());
       }
-      const std::array<int8_t, kCIMWeightElements> weightValues =
-          weight->values;
-      const std::array<uint8_t, kCIMOutputElements> weightExponents =
-          weight->exponents;
+      std::array<int8_t, kCIMWeightElements> coldWeight;
+      std::array<uint8_t, kCIMOutputElements> coldExponents;
+      const CIMWeightImage *resident = nullptr;
+      bool wroteWeight = true;
+      if (residency) {
+        const auto &identity =
+            identities[weight - executable.getStaticWeights().data()];
+        if (!identity)
+          return fail("missing prepared CIM weight identity");
+        resident = residency->match(physicalSlot, identity, bf16Mode);
+        wroteWeight = !resident;
+        if (wroteWeight) {
+          residency->store(physicalSlot, identity, bf16Mode);
+          resident = identity.get();
+          ++residency->stats.writes;
+        } else {
+          ++residency->stats.hits;
+        }
+      } else {
+        coldWeight = weight->values;
+        coldExponents = weight->exponents;
+      }
+      const auto &weightValues = residency ? resident->values : coldWeight;
+      const auto &weightExponents =
+          residency ? resident->exponents : coldExponents;
       emitTrace(trace, sequence, CIMTraceEventKind::ConfigureInput,
                 group.groupId, work.workId, work.macroSlot);
-      emitTrace(trace, sequence, CIMTraceEventKind::ConfigureWeight,
-                group.groupId, work.workId, work.macroSlot);
+      if (wroteWeight)
+        emitTrace(trace, sequence, CIMTraceEventKind::ConfigureWeight,
+                  group.groupId, work.workId, work.macroSlot);
       emitTrace(trace, sequence, CIMTraceEventKind::SelectMacro, group.groupId,
                 work.workId, work.macroSlot);
       emitTrace(trace, sequence, CIMTraceEventKind::StartWork, group.groupId,

@@ -7,6 +7,7 @@
 #include "UsbDriver.h"
 
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/bit.h"
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
@@ -32,6 +33,8 @@ constexpr size_t kCacheRows = 8;
 constexpr size_t kMaxBatchResponses = kCoreCount * kCacheRows;
 constexpr size_t kUsbChannelCount = 8;
 using ResponsePacket = std::array<uint64_t, kResponseRecords>;
+using PendingWeights = std::array<const CIMDeviceWeightWrite *,
+                                  execution::CIMWeightResidency::slotCount>;
 
 struct PartialResponse {
   ResponsePacket flits{};
@@ -119,6 +122,8 @@ public:
     if (faulted_)
       return usbError(llvm::Twine("CIM USB session is faulted: ") +
                       faultMessage_);
+    if (!program.useWeightResidency)
+      weightResidency_.clear();
     {
       std::lock_guard<std::mutex> lock(receiveMutex_);
       if (hasPendingResponse())
@@ -153,6 +158,7 @@ public:
     if (llvm::Error error = configurePhase(CIMDevicePhase::Configuration))
       return fault(llvm::toString(std::move(error)));
     bool workPhase = false;
+    PendingWeights pendingWeights{};
     for (const CIMDeviceOperation &operation : program.operations) {
       if (operation.phase == CIMDevicePhase::Work && !workPhase) {
         if (llvm::Error error = configurePhase(CIMDevicePhase::Work))
@@ -163,8 +169,15 @@ public:
                   operation.phase != CIMDevicePhase::Configuration)) {
         return fault("CIM device program has an invalid phase order");
       }
-      if (llvm::Error error = executeOperation(operation))
-        return fault(llvm::toString(std::move(error)));
+      if (operation.weight) {
+        if (!program.useWeightResidency)
+          return fault("CIM USB deferred Weight operation in raw program");
+        if (llvm::Error error = executeWeight(operation, pendingWeights))
+          return fault(llvm::toString(std::move(error)));
+      } else {
+        if (llvm::Error error = executeOperation(operation))
+          return fault(llvm::toString(std::move(error)));
+      }
     }
 
     if (!program.readbackBatches.empty())
@@ -182,7 +195,24 @@ public:
       if (llvm::Error error = checkReceiveBoundary())
         return fault(llvm::toString(std::move(error)));
     }
+    // Confirm staged writes only after the complete response set is verified.
+    for (const CIMDeviceWeightWrite *weight : pendingWeights)
+      if (weight)
+        weightResidency_.store(weight->slot, weight->identity,
+                               weight->compensation);
     return llvm::Error::success();
+  }
+
+  bool supportsWeightResidency() const override { return true; }
+
+  execution::CIMWeightStats weightStats() override {
+    std::lock_guard<std::mutex> lock(executionMutex_);
+    return weightResidency_.stats;
+  }
+
+  void clearWeightResidency() override {
+    std::lock_guard<std::mutex> lock(executionMutex_);
+    weightResidency_.clear();
   }
 
   bool isFaulted() override {
@@ -229,13 +259,53 @@ private:
   }
 
   llvm::Error executeOperation(const CIMDeviceOperation &operation) {
-    if (operation.flits.empty())
-      return usbError("CIM device operation has no flits");
-    if (llvm::Error error = writeFlits(operation.flits))
+    return executeFlits(operation.flits, operation.postDelayMs);
+  }
+
+  llvm::Error executeWeight(const CIMDeviceOperation &operation,
+                            PendingWeights &pendingWeights) {
+    const CIMDeviceWeightWrite &weight = *operation.weight;
+    if (!operation.flits.empty() ||
+        operation.phase != CIMDevicePhase::Configuration ||
+        weight.slot >= execution::CIMWeightResidency::slotCount ||
+        !weight.identity)
+      return usbError("invalid CIM USB deferred Weight operation");
+    // A write staged earlier in this transaction already replaced the
+    // physical slot. Prefer it when resolving another write to that slot.
+    const CIMDeviceWeightWrite *pending = pendingWeights[weight.slot];
+    const bool hit =
+        pending ? pending->identity == weight.identity &&
+                      pending->compensation == weight.compensation
+                : weightResidency_.match(weight.slot, weight.identity,
+                                         weight.compensation) != nullptr;
+    if (hit) {
+      ++weightResidency_.stats.hits;
+      return llvm::Error::success();
+    }
+
+    llvm::SmallVector<uint32_t, 256> words;
+    words.reserve(weight.identity->words.size());
+    for (int32_t word : weight.identity->words)
+      words.push_back(llvm::bit_cast<uint32_t>(word));
+    llvm::SmallVector<uint64_t, 257> flits;
+    if (llvm::Error error =
+            appendCIMWeightWordsPacket(weight.identity->route, words, flits))
       return error;
-    if (operation.postDelayMs != 0)
-      std::this_thread::sleep_for(
-          std::chrono::milliseconds(operation.postDelayMs));
+    if (llvm::Error error = executeFlits(flits, operation.postDelayMs))
+      return error;
+    pendingWeights[weight.slot] = &weight;
+    ++weightResidency_.stats.writes;
+    return llvm::Error::success();
+  }
+
+  llvm::Error executeFlits(llvm::ArrayRef<uint64_t> flits,
+                           uint32_t postDelayMs) {
+    if (flits.empty())
+      return usbError("CIM device operation has no flits");
+    if (llvm::Error error = writeFlits(flits))
+      return error;
+    if (postDelayMs != 0)
+      std::this_thread::sleep_for(std::chrono::milliseconds(postDelayMs));
     return llvm::Error::success();
   }
 
@@ -381,6 +451,7 @@ private:
   // Forget cached state and block further execute calls until open.
   llvm::Error fault(std::string message) {
     verifiedPLLWord_.reset();
+    weightResidency_.clear();
     faulted_ = true;
     faultMessage_ = std::move(message);
     return usbError(faultMessage_);
@@ -452,6 +523,7 @@ private:
 
   void closeUnlocked() {
     verifiedPLLWord_.reset();
+    weightResidency_.clear();
     {
       std::lock_guard<std::mutex> lock(receiveMutex_);
       stopRequested_ = true;
@@ -487,6 +559,7 @@ private:
   // The PLL is one physical register. Cache only its current successfully
   // verified word, so a phase change cannot be skipped accidentally.
   std::optional<uint32_t> verifiedPLLWord_;
+  execution::CIMWeightResidency weightResidency_;
   std::unique_ptr<detail::UsbDriver> driver_;
   std::mutex executionMutex_;
   std::mutex receiveMutex_;

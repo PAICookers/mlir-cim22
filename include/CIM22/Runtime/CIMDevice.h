@@ -9,7 +9,7 @@
 #ifndef CIM22_RUNTIME_CIMDEVICE_H
 #define CIM22_RUNTIME_CIMDEVICE_H
 
-#include "CIM22/Execution/CIMExecutable.h"
+#include "CIM22/Execution/WeightResidency.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
@@ -17,11 +17,20 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace cim22::runtime {
 
 enum class CIMDevicePhase : uint8_t { Configuration, Work, Readback };
+
+// Deferred write to physical slot core * 2 + macro. The immutable identity
+// owns the payload used by the encoder on a miss.
+struct CIMDeviceWeightWrite {
+  size_t slot = 0;
+  execution::CIMWeightIdentity identity;
+  execution::BF16Compensation compensation = execution::BF16Compensation::None;
+};
 
 // One ordered CIM flit batch followed by an optional pacing delay in ms.
 // Backends may split a batch into physical transfers, but must not reorder its
@@ -30,6 +39,9 @@ struct CIMDeviceOperation {
   llvm::SmallVector<uint64_t> flits;
   uint32_t postDelayMs = 0;
   CIMDevicePhase phase = CIMDevicePhase::Configuration;
+  // Prepared Weight writes carry this descriptor instead of flits. A hit
+  // skips both encoding and the post-write delay.
+  std::optional<CIMDeviceWeightWrite> weight;
 };
 
 // The response head supplies Core and Cache row; outputIndex refers to the
@@ -54,6 +66,8 @@ struct CIMDeviceReadbackBatch {
 struct CIMDeviceProgram {
   std::vector<CIMDeviceOperation> operations;
   std::vector<CIMDeviceReadbackBatch> readbackBatches;
+  // Raw programs clear residency and send pre-encoded Weight packets.
+  bool useWeightResidency = false;
   // Diagnostic capture retains raw body padding. Headers and reply coverage
   // still have to match the readback plan.
   bool captureRawReadbacks = false;
@@ -85,6 +99,10 @@ public:
   // fault blocks subsequent execution until an explicit open.
   virtual llvm::Error execute(const CIMDeviceProgram &program,
                               CIMDeviceResponse &response) = 0;
+  virtual bool supportsWeightResidency() const { return false; }
+  // Cumulative tracked Weight operations, retained on residency clear.
+  virtual execution::CIMWeightStats weightStats() { return {}; }
+  virtual void clearWeightResidency() {}
   // Inspect after close to include tail data and receive errors.
   virtual bool isFaulted() = 0;
   // Retire receive operations and release the link, preserving fault evidence.
