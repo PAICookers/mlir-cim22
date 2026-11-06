@@ -2,6 +2,7 @@
 
 #include "CIM22/Runtime/UsbCIMDevice.h"
 
+#include "CIM22/Runtime/CIMPacketCodec.h"
 #include "CIM22/Runtime/UsbRecordCodec.h"
 #include "UsbDriver.h"
 
@@ -9,6 +10,7 @@
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -16,6 +18,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -23,7 +26,17 @@
 
 namespace cim22::runtime {
 namespace {
-constexpr size_t kMaxResponseRecords = 7;
+constexpr size_t kResponseRecords = 7;
+constexpr size_t kCoreCount = 20;
+constexpr size_t kCacheRows = 8;
+constexpr size_t kMaxBatchResponses = kCoreCount * kCacheRows;
+constexpr size_t kUsbChannelCount = 8;
+using ResponsePacket = std::array<uint64_t, kResponseRecords>;
+
+struct PartialResponse {
+  ResponsePacket flits{};
+  size_t size = 0;
+};
 
 llvm::Error usbError(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(), message);
@@ -50,7 +63,10 @@ public:
 
     {
       std::lock_guard<std::mutex> lock(receiveMutex_);
-      records_.clear();
+      responses_.clear();
+      for (PartialResponse &response : partialResponses_)
+        response.size = 0;
+      responseRecordsRemaining_ = kResponseRecords;
       receiveError_.clear();
       faulted_ = false;
       faultMessage_.clear();
@@ -105,7 +121,7 @@ public:
                       faultMessage_);
     {
       std::lock_guard<std::mutex> lock(receiveMutex_);
-      if (!records_.empty() || receiveCodec_.pendingBytes() != 0)
+      if (hasPendingResponse())
         return fault("CIM USB session has stale response bytes");
       if (!receiveError_.empty())
         return fault(receiveError_);
@@ -142,33 +158,20 @@ public:
         return fault(llvm::toString(std::move(error)));
     }
 
-    response.readbacks.reserve(program.readbacks.size());
-    if (!program.readbacks.empty())
+    if (!program.readbackBatches.empty())
       if (llvm::Error error = configurePhase(CIMDevicePhase::Readback))
         return fault(llvm::toString(std::move(error)));
-    for (const CIMDeviceReadbackCommand &command : program.readbacks) {
-      if (!command.selection.flits.empty())
-        if (llvm::Error error = executeOperation(command.selection))
-          return fault(llvm::toString(std::move(error)));
-      if (llvm::Error error = executeOperation(command.request))
+    for (const CIMDeviceReadbackBatch &batch : program.readbackBatches) {
+      if (llvm::Error error =
+              executeReadback(batch, response, program.captureRawReadbacks)) {
+        response.readbacks.clear();
         return fault(llvm::toString(std::move(error)));
-      auto records = takeRecords(kMaxResponseRecords);
-      if (!records)
-        return fault(llvm::toString(records.takeError()));
-
-      CIMDeviceReadback readback;
-      readback.outputIndex = command.outputIndex;
-      readback.headerFlit = (*records)[0].flit;
-      for (size_t index = 0; index < readback.bodyFlits.size(); ++index)
-        readback.bodyFlits[index] = (*records)[index + 1].flit;
-      response.readbacks.push_back(readback);
+      }
     }
     {
       std::lock_guard<std::mutex> lock(receiveMutex_);
-      if (!receiveError_.empty())
-        return fault(receiveError_);
-      if (!records_.empty() || receiveCodec_.pendingBytes() != 0)
-        return fault("CIM USB session has unsolicited response bytes");
+      if (llvm::Error error = checkReceiveBoundary())
+        return fault(llvm::toString(std::move(error)));
     }
     return llvm::Error::success();
   }
@@ -176,8 +179,7 @@ public:
   bool isFaulted() override {
     std::lock_guard<std::mutex> executionLock(executionMutex_);
     std::lock_guard<std::mutex> receiveLock(receiveMutex_);
-    return faulted_ || !receiveError_.empty() || !records_.empty() ||
-           receiveCodec_.pendingBytes() != 0;
+    return faulted_ || !receiveError_.empty() || hasPendingResponse();
   }
 
   void close() override {
@@ -261,30 +263,113 @@ private:
     return llvm::Error::success();
   }
 
-  llvm::Expected<std::vector<UsbRecord>> takeRecords(size_t count) {
-    std::unique_lock<std::mutex> lock(receiveMutex_);
+  // Requires receiveMutex_. A response has no Macro identifier, so queued
+  // data cannot cross from one selection to the next.
+  bool hasPendingResponse() const {
+    return !responses_.empty() || receiveCodec_.pendingBytes() != 0 ||
+           std::any_of(partialResponses_.begin(), partialResponses_.end(),
+                       [](const PartialResponse &response) {
+                         return response.size != 0;
+                       });
+  }
+
+  llvm::Error checkReceiveBoundary() const {
+    if (!receiveError_.empty())
+      return usbError(receiveError_);
+    if (hasPendingResponse())
+      return usbError("CIM USB session has unsolicited response bytes");
+    return llvm::Error::success();
+  }
+
+  // Keep all sends and replies for this Macro under one boundary. A single
+  // response deadline prevents one slow packet from extending the budget.
+  llvm::Error executeReadback(const CIMDeviceReadbackBatch &batch,
+                              CIMDeviceResponse &response,
+                              bool captureRawReadbacks) {
+    if (batch.targets.empty() || batch.targets.size() > kMaxBatchResponses)
+      return usbError("CIM USB readback batch has an invalid target count");
+    std::array<std::optional<size_t>, kMaxBatchResponses> outputIndices{};
+    for (const CIMDeviceReadbackTarget &target : batch.targets) {
+      if (target.coreIndex >= kCoreCount || target.cacheAddress >= kCacheRows)
+        return usbError(
+            "CIM USB readback target is outside the target profile");
+      auto &outputIndex =
+          outputIndices[target.coreIndex * kCacheRows + target.cacheAddress];
+      if (outputIndex)
+        return usbError("CIM USB readback batch has duplicate targets");
+      outputIndex = target.outputIndex;
+    }
+    {
+      std::lock_guard<std::mutex> lock(receiveMutex_);
+      if (llvm::Error error = checkReceiveBoundary())
+        return error;
+    }
+    if (llvm::Error error = executeOperation(batch.selection))
+      return error;
+    {
+      std::lock_guard<std::mutex> lock(receiveMutex_);
+      if (llvm::Error error = checkReceiveBoundary())
+        return error;
+      responseRecordsRemaining_ = batch.targets.size() * kResponseRecords;
+    }
+    if (llvm::Error error = executeOperation(batch.request))
+      return error;
+
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(config_.responseTimeoutMs);
+    response.readbacks.reserve(response.readbacks.size() +
+                               batch.targets.size());
+    for (size_t index = 0; index < batch.targets.size(); ++index) {
+      auto records = takeResponse(deadline);
+      if (!records)
+        return records.takeError();
+      const uint64_t header = records->front();
+      auto key = decodeCIMOutputCacheResponseHeader(header);
+      if (!key)
+        return key.takeError();
+      auto &outputIndex =
+          outputIndices[key->coreIndex * kCacheRows + key->cacheAddress];
+      if (!outputIndex)
+        return usbError("CIM USB readback batch received an unexpected or "
+                        "duplicate Core/Cache response");
+      const auto body = llvm::ArrayRef(*records).drop_front();
+      if (!captureRawReadbacks)
+        if (llvm::Error error = validateCIMOutputCacheResponseBody(body))
+          return error;
+      CIMDeviceReadback readback;
+      readback.outputIndex = *outputIndex;
+      readback.headerFlit = header;
+      std::copy(body.begin(), body.end(), readback.bodyFlits.begin());
+      outputIndex.reset();
+      response.readbacks.push_back(readback);
+    }
+    std::lock_guard<std::mutex> lock(receiveMutex_);
+    return checkReceiveBoundary();
+  }
+
+  llvm::Expected<ResponsePacket>
+  takeResponse(std::chrono::steady_clock::time_point deadline) {
+    std::unique_lock<std::mutex> lock(receiveMutex_);
     if (!receiveCondition_.wait_until(lock, deadline, [&] {
-          return records_.size() >= count || !receiveError_.empty() ||
-                 stopRequested_;
+          return !responses_.empty() || responseRecordsRemaining_ == 0 ||
+                 !receiveError_.empty() || stopRequested_;
         }))
       return usbError("CIM USB response timed out");
     if (!receiveError_.empty())
       return usbError(receiveError_);
-    if (records_.size() < count)
+    if (responses_.empty() && responseRecordsRemaining_ == 0)
+      return usbError("CIM USB response has incomplete channel packets");
+    if (responses_.empty())
       return usbError(
           "CIM USB receive loop stopped before a complete response");
 
-    std::vector<UsbRecord> result;
-    result.reserve(count);
-    for (size_t index = 0; index < count; ++index) {
-      result.push_back(records_.front());
-      records_.pop_front();
-    }
+    const ResponsePacket result = responses_.front();
+    responses_.pop_front();
     return result;
   }
 
+  // After a transport fault the chip's last completed operation is unknown.
+  // Forget cached state and block further execute calls until open.
   llvm::Error fault(std::string message) {
     faulted_ = true;
     faultMessage_ = std::move(message);
@@ -338,10 +423,20 @@ private:
             decoded.begin(), decoded.end(),
             [](const UsbRecord &record) { return record.physicalLink != 0; }))
       return fail("CIM USB response has non-zero reserved link bits");
-    if (decoded.size() > kMaxResponseRecords - records_.size()) {
+    if (decoded.size() > responseRecordsRemaining_) {
       return fail("CIM USB response queue overflow");
     }
-    records_.insert(records_.end(), decoded.begin(), decoded.end());
+    responseRecordsRemaining_ -= decoded.size();
+    // Packet flits stay ordered within a logical channel. Other channels may
+    // interleave, and neither packet completion nor Core order is prescribed.
+    for (const UsbRecord &record : decoded) {
+      PartialResponse &packet = partialResponses_[record.logicalChannel];
+      packet.flits[packet.size++] = record.flit;
+      if (packet.size == kResponseRecords) {
+        responses_.push_back(packet.flits);
+        packet.size = 0;
+      }
+    }
     return true;
   }
 
@@ -385,7 +480,10 @@ private:
   std::thread receiveThread_;
   std::vector<uint8_t> receiveBuffer_;
   UsbRecordCodec receiveCodec_;
-  std::deque<UsbRecord> records_;
+  std::deque<ResponsePacket> responses_;
+  std::array<PartialResponse, kUsbChannelCount> partialResponses_{};
+  // Budget for the entire response set, including packets already consumed.
+  size_t responseRecordsRemaining_ = kResponseRecords;
   std::string receiveError_;
   std::string faultMessage_;
   bool stopRequested_ = true;

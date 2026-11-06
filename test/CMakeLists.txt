@@ -128,7 +128,8 @@ if(CIM22_ENABLE_USB)
     target_sources(mlir-cim22-usb-runtime-test PRIVATE
       "${PROJECT_SOURCE_DIR}/lib/Runtime/UsbCIMDevice.cpp"
       "${PROJECT_SOURCE_DIR}/lib/Runtime/UsbRecordCodec.cpp"
-      "${PROJECT_SOURCE_DIR}/lib/Runtime/PLLSerial.cpp")
+      "${PROJECT_SOURCE_DIR}/lib/Runtime/PLLSerial.cpp"
+      "${PROJECT_SOURCE_DIR}/lib/Support/CIMPacketCodec.cpp")
   endif()
   if(MSVC)
     target_compile_options(mlir-cim22-usb-runtime-test PRIVATE /GR-)

@@ -89,6 +89,16 @@ uint64_t encodeCIMOutputCacheReadFlit(llvm::ArrayRef<int32_t> route,
          (static_cast<uint64_t>(cacheAddress) << 14);
 }
 
+llvm::Expected<CIMOutputCacheResponseKey>
+decodeCIMOutputCacheResponseHeader(uint64_t header) {
+  const auto core = static_cast<uint8_t>((header >> 18) & 0x1f);
+  const auto row = static_cast<uint8_t>((header >> 14) & 0xf);
+  if ((header >> kTypeShift) != 5 || (header & kRequestBit) ||
+      (header & 0x3fff) != 6 || core >= 20 || row >= 8)
+    return codecError("invalid CIM output Cache response head");
+  return CIMOutputCacheResponseKey{core, row};
+}
+
 uint64_t encodeCIMWeightPayload(uint32_t word, uint8_t address) {
   return (static_cast<uint64_t>(word) << 8) | address;
 }
@@ -152,11 +162,18 @@ packCIMInt8InputCacheRow(llvm::ArrayRef<int8_t> values) {
   return words;
 }
 
+llvm::Error validateCIMOutputCacheResponseBody(llvm::ArrayRef<uint64_t> flits) {
+  if (flits.size() != 6)
+    return codecError("CIM output Cache response requires six body flits");
+  if ((flits.back() & uint64_t{0x0000ffffffffffff}) != 0)
+    return codecError("CIM output Cache response has non-zero padding");
+  return llvm::Error::success();
+}
+
 llvm::Expected<std::array<int32_t, 16>> decodeCIMInt21OutputCacheResponse(
     const std::array<uint64_t, 6> &responseFlits) {
-  if ((responseFlits[5] & uint64_t{0x0000ffffffffffff}) != 0)
-    return codecError("CIM output Cache response has non-zero padding");
-
+  if (llvm::Error error = validateCIMOutputCacheResponseBody(responseFlits))
+    return std::move(error);
   std::array<int32_t, 16> values{};
   for (size_t lane = 0; lane < values.size(); ++lane) {
     const size_t bitOffset = 48 + 21 * lane;

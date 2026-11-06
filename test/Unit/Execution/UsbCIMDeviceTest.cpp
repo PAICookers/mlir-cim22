@@ -9,6 +9,7 @@
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
 #include <array>
@@ -60,9 +61,10 @@ constexpr std::array<uint64_t, 6> kResponse{
 class FakeUsbDriver : public detail::UsbDriver {
 public:
   explicit FakeUsbDriver(bool corruptHeader = false,
-                         size_t unsolicitedRecords = 0)
-      : corruptHeader_(corruptHeader), unsolicitedRecords_(unsolicitedRecords) {
-  }
+                         size_t unsolicitedRecords = 0,
+                         size_t readChunkLimit = 7)
+      : corruptHeader_(corruptHeader), unsolicitedRecords_(unsolicitedRecords),
+        readChunkLimit_(readChunkLimit) {}
 
   llvm::Error open(const UsbCIMDeviceConfig &config) override {
     config_ = config;
@@ -106,7 +108,8 @@ public:
                         [&] { return !incoming_.empty() || cancelled_; });
     if (incoming_.empty())
       return size_t{0};
-    const size_t count = std::min({bytes.size(), incoming_.size(), size_t{7}});
+    const size_t count =
+        std::min({bytes.size(), incoming_.size(), readChunkLimit_});
     for (size_t index = 0; index < count; ++index) {
       bytes[index] = incoming_.front();
       incoming_.pop_front();
@@ -137,23 +140,25 @@ public:
     return writeBeforeRead_;
   }
 
-private:
-  void appendRecord(uint64_t flit) {
+protected:
+  void appendRecord(uint64_t flit, uint8_t channelOffset = 1) {
     const UsbRecord record{
-        0, static_cast<uint8_t>((config_.logicalChannel + 1) & 0x7), flit};
+        0, static_cast<uint8_t>((config_.logicalChannel + channelOffset) & 0x7),
+        flit};
     auto bytes = UsbRecordCodec::encode(record, config_.wordByteOrder);
     if (corruptHeader_)
       bytes[0] = 0x80;
     incoming_.insert(incoming_.end(), bytes.begin(), bytes.end());
   }
 
-  void appendResponse() {
+  virtual void appendResponse() {
     appendRecord((uint64_t{5} << 60) | (uint64_t{3} << 18) |
                  (uint64_t{7} << 14) | 6);
     for (uint64_t flit : kResponse)
       appendRecord(flit);
   }
 
+private:
   UsbCIMDeviceConfig config_;
   UsbRecordCodec outgoingCodec_;
   std::mutex mutex_;
@@ -163,6 +168,7 @@ private:
   size_t openCount_ = 0;
   bool corruptHeader_ = false;
   size_t unsolicitedRecords_ = 0;
+  size_t readChunkLimit_ = 7;
   bool readStarted_ = false;
   bool writeBeforeRead_ = false;
   bool open_ = false;
@@ -193,11 +199,11 @@ CIMDeviceProgram makeProgram() {
   once.flits = {0x9000000000000001ULL};
   once.phase = CIMDevicePhase::Work;
   program.operations.push_back(std::move(once));
-  CIMDeviceReadbackCommand readback;
-  readback.outputIndex = 0;
+  CIMDeviceReadbackBatch readback;
+  readback.targets.push_back({0, 3, 7});
   readback.selection.flits = {0x8000000000000000ULL};
   readback.request.flits = {0x500000000081c000ULL};
-  program.readbacks.push_back(std::move(readback));
+  program.readbackBatches.push_back(std::move(readback));
   return program;
 }
 
@@ -215,7 +221,8 @@ void testSupplierInteractionDefaults() {
 }
 
 void expectSuccess(llvm::Error error) {
-  assert(!error && "unexpected LLVM error");
+  if (error)
+    llvm::report_fatal_error(llvm::Twine(llvm::toString(std::move(error))));
 }
 
 std::string takeError(llvm::Error error) {
@@ -297,6 +304,153 @@ void testPartialTransfersAndIndependentReturnSource() {
   assert(driverView->writes().back().flit == 0x500000000081c000ULL);
   assert(!driverView->writeBeforeRead());
   device->close();
+}
+
+constexpr uint64_t responseHeader(uint8_t core, uint8_t row) {
+  return (uint64_t{5} << 60) | (uint64_t{core} << 18) | (uint64_t{row} << 14) |
+         6;
+}
+
+class BatchUsbDriver final : public FakeUsbDriver {
+public:
+  struct Reply {
+    uint64_t header;
+    uint64_t marker;
+    uint8_t bodyChannelOffset = 1;
+    uint8_t headChannelOffset = 1;
+    bool corruptPadding = false;
+  };
+
+  explicit BatchUsbDriver(std::vector<std::vector<Reply>> repliesByRequest,
+                          size_t readChunkLimit = 7, bool interleave = false)
+      : FakeUsbDriver(false, 0, readChunkLimit),
+        repliesByRequest_(std::move(repliesByRequest)),
+        interleave_(interleave) {}
+
+private:
+  void appendBodyFlit(const Reply &reply, size_t index) {
+    const uint64_t marker = index == kResponse.size() - 1
+                                ? uint64_t{reply.corruptPadding}
+                                : reply.marker;
+    appendRecord(kResponse[index] ^ marker, reply.bodyChannelOffset);
+  }
+
+  void appendResponse() override {
+    assert(requestCount_ < repliesByRequest_.size());
+    const auto &replies = repliesByRequest_[requestCount_++];
+    for (size_t index = 0; index < replies.size();) {
+      const Reply &reply = replies[index++];
+      appendRecord(reply.header, reply.headChannelOffset);
+      if (interleave_ && index < replies.size()) {
+        const Reply &other = replies[index++];
+        assert(reply.headChannelOffset != other.headChannelOffset);
+        appendRecord(other.header, other.headChannelOffset);
+        for (size_t lane = 0; lane < kResponse.size(); ++lane) {
+          appendBodyFlit(reply, lane);
+          appendBodyFlit(other, lane);
+        }
+      } else {
+        for (size_t lane = 0; lane < kResponse.size(); ++lane)
+          appendBodyFlit(reply, lane);
+      }
+    }
+  }
+
+  std::vector<std::vector<Reply>> repliesByRequest_;
+  size_t requestCount_ = 0;
+  bool interleave_;
+};
+
+void testBatchedOutOfOrderReadbacks() {
+  CIMDeviceProgram program;
+  CIMDeviceReadbackBatch first;
+  first.selection.flits = {0x8000000000000000ULL};
+  std::vector<std::vector<BatchUsbDriver::Reply>> repliesByRequest(9);
+  for (uint8_t row = 0; row < 8; ++row) {
+    first.request.flits.push_back(0x5000000000800000ULL |
+                                  (uint64_t{row} << 14));
+    for (uint8_t core = 0; core < 20; ++core) {
+      const size_t outputIndex = row * 20 + core;
+      first.targets.push_back({outputIndex, core, row});
+      // The fake device releases all 160 replies after all eight requests.
+      const uint8_t channelOffset = 1 + core % 2;
+      repliesByRequest[7].push_back({responseHeader(core, row), outputIndex,
+                                     channelOffset, channelOffset});
+    }
+  }
+  std::reverse(repliesByRequest[7].begin(), repliesByRequest[7].end());
+  program.readbackBatches.push_back(std::move(first));
+  CIMDeviceReadbackBatch second;
+  second.selection.flits = {0x8000000000000001ULL};
+  second.request.flits = {0x500000000081c000ULL};
+  second.targets.push_back({160, 19, 7});
+  repliesByRequest[8].push_back({responseHeader(19, 7), 160});
+  program.readbackBatches.push_back(std::move(second));
+
+  auto driver =
+      std::make_unique<BatchUsbDriver>(std::move(repliesByRequest), 7, true);
+  auto *view = driver.get();
+  auto device = detail::createUsbCIMDevice(makeConfig(), std::move(driver));
+  expectSuccess(device->open());
+  CIMDeviceResponse response;
+  expectSuccess(device->execute(program, response));
+  assert(response.readbacks.size() == 161);
+  for (size_t index = 0; index < response.readbacks.size(); ++index) {
+    const size_t outputIndex = index < 160 ? 159 - index : 160;
+    assert(response.readbacks[index].outputIndex == outputIndex);
+    for (size_t lane = 0; lane + 1 < kResponse.size(); ++lane)
+      assert(response.readbacks[index].bodyFlits[lane] ==
+             (kResponse[lane] ^ outputIndex));
+    assert(response.readbacks[index].bodyFlits.back() == kResponse.back());
+  }
+  assert(view->writes().size() == 11);
+  assert(view->writes()[9].flit == 0x8000000000000001ULL);
+  assert(!device->isFaulted());
+  device->close();
+}
+
+void testBatchedReadbackFaultsStopLaterMacro() {
+  using Reply = BatchUsbDriver::Reply;
+  const Reply first{responseHeader(3, 7), 0};
+  const Reply second{responseHeader(4, 7), 1};
+  const std::array cases{
+      std::pair{std::vector{first, first}, "duplicate"},
+      std::pair{std::vector{first, Reply{responseHeader(5, 7), 1}},
+                "unexpected"},
+      std::pair{std::vector{first, Reply{second.header ^ 1, 1}},
+                "response head"},
+      std::pair{std::vector{first, Reply{second.header, 1, 1, 1, true}},
+                "non-zero padding"},
+      std::pair{std::vector{first, Reply{second.header, 1, 2}},
+                "incomplete channel packets"},
+      std::pair{std::vector{first}, "timed out"},
+      std::pair{std::vector{first, second, second}, "queue overflow"},
+  };
+  for (const auto &[replies, error] : cases) {
+    CIMDeviceProgram program = makeProgram();
+    program.readbackBatches.front().targets.push_back({1, 4, 7});
+    program.readbackBatches.push_back(program.readbackBatches.front());
+    program.readbackBatches.back().selection.flits[0] |= 1;
+
+    auto config = makeConfig();
+    config.receiveChunkBytes = 3 * 7 * kUsbRecordBytes;
+    config.responseTimeoutMs = 100;
+    auto driver = std::make_unique<BatchUsbDriver>(
+        std::vector<std::vector<Reply>>{replies}, config.receiveChunkBytes);
+    auto *view = driver.get();
+    auto device = detail::createUsbCIMDevice(config, std::move(driver));
+    expectSuccess(device->open());
+
+    CIMDeviceResponse response;
+    assert(takeError(device->execute(program, response)).find(error) !=
+           std::string::npos);
+    assert(response.readbacks.empty());
+    assert(device->isFaulted());
+    assert(takeError(device->execute(program, response)).find("faulted") !=
+           std::string::npos);
+    assert(view->writes().size() == 4);
+    device->close();
+  }
 }
 
 void testLittleEndianDeviceReadback() {
@@ -544,18 +698,23 @@ void testRejectsInvalidWordByteOrder() {
 }
 
 void testPreservesRawBF16Readback() {
-  auto driver = std::make_unique<FakeUsbDriver>();
+  using Reply = BatchUsbDriver::Reply;
+  auto driver = std::make_unique<BatchUsbDriver>(
+      std::vector<std::vector<Reply>>{{{responseHeader(3, 7), 0, 1, 1, true}}});
   auto device = detail::createUsbCIMDevice(makeConfig(), std::move(driver));
   expectSuccess(device->open());
 
   CIMDeviceProgram program = makeProgram();
-  program.readbacks.front().dataType = cim22::execution::CIMDataType::BF16;
+  program.captureRawReadbacks = true;
+  program.readbackBatches.front().selection.flits.front() |= 2;
   CIMDeviceResponse response;
   expectSuccess(device->execute(program, response));
   assert(response.readbacks.size() == 1);
   assert(response.readbacks.front().headerFlit ==
          ((uint64_t{5} << 60) | (uint64_t{3} << 18) | (uint64_t{7} << 14) | 6));
-  assert(response.readbacks.front().bodyFlits == kResponse);
+  auto expectedBody = kResponse;
+  expectedBody.back() = 1;
+  assert(response.readbacks.front().bodyFlits == expectedBody);
   device->close();
 }
 
@@ -898,6 +1057,8 @@ int main() {
   testRecordCodecResidualBytes();
   testRecordCodecWordByteOrder();
   testPartialTransfersAndIndependentReturnSource();
+  testBatchedOutOfOrderReadbacks();
+  testBatchedReadbackFaultsStopLaterMacro();
   testLittleEndianDeviceReadback();
   testStickyFault();
   testTimeoutAndCancellation();

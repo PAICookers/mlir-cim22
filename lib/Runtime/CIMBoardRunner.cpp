@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <set>
@@ -176,6 +177,8 @@ llvm::Error validateInputs(const CIMTransaction &executable,
     const CIMWork *work = findWork(executable, binding.groupId, binding.workId);
     if (!work || binding.route != work->route)
       return runnerError("CIM readback route differs from Work route");
+    if (binding.macroSlot != work->macroSlot)
+      return runnerError("CIM readback Macro differs from Work placement");
     for (int32_t value : binding.testCore)
       if (value < -31 || value > 31)
         return runnerError("CIM readback test Core is outside [-31, 31]");
@@ -203,11 +206,93 @@ llvm::Error validateOutputs(const CIMTransaction &executable,
   return llvm::Error::success();
 }
 
+// Broadcast only with canonical routes and complete coverage of the relevant
+// Core set. Sparse selections and reads still share the Macro's barrier.
+llvm::Error appendReadbackBatches(const CIMTransaction &executable,
+                                  uint32_t selectionDelayMs,
+                                  CIMDeviceProgram &program) {
+  constexpr size_t coreCount = 20;
+  constexpr size_t cacheRows = 8;
+  // Supplier TB full-array route from the lower-left ingress.
+  constexpr std::array<int32_t, 6> broadcast{0, 0, 0, 0, 4, 3};
+  struct PendingBatch {
+    CIMDeviceReadbackBatch batch;
+    std::array<const ReadbackBinding *, coreCount> selections{};
+    std::array<std::bitset<coreCount>, cacheRows> rowCores;
+    bool canonicalRoutes = true;
+  };
+  std::array<PendingBatch, 2> pending;
+
+  for (auto [index, binding] : llvm::enumerate(executable.getReadbacks())) {
+    const CIMWork *work = findWork(executable, binding.groupId, binding.workId);
+    auto &entry = pending[binding.macroSlot];
+    const size_t core = work->coreSlot;
+    const size_t row = binding.outputCacheAddress;
+    if (entry.rowCores[row].test(core))
+      return runnerError("CIM Macro batch has a duplicate Core/Cache row");
+    entry.rowCores[row].set(core);
+    const auto *selected = entry.selections[core];
+    if (selected && selected->dataType != binding.dataType)
+      return runnerError("CIM Macro batch has conflicting readback modes");
+    entry.selections[core] = &binding;
+    entry.batch.targets.push_back(
+        {index, static_cast<uint8_t>(core), static_cast<uint8_t>(row)});
+
+    const int32_t x = core % 5;
+    const int32_t y = core / 5;
+    const int32_t diagonal = std::min(x, y);
+    entry.canonicalRoutes &=
+        binding.route ==
+        std::array<int32_t, 6>{diagonal, x - diagonal, y - diagonal, 0, 0, 0};
+  }
+
+  for (auto [macro, entry] : llvm::enumerate(pending)) {
+    auto &batch = entry.batch;
+    if (batch.targets.empty())
+      continue;
+    batch.selection.phase = batch.request.phase = CIMDevicePhase::Readback;
+    batch.selection.postDelayMs = selectionDelayMs;
+    const auto *first = entry.selections.front();
+    if (entry.canonicalRoutes && first &&
+        llvm::all_of(entry.selections, [&](const ReadbackBinding *binding) {
+          return binding && binding->dataType == first->dataType;
+        })) {
+      batch.selection.flits.push_back(
+          encodeCIMControlFlit(broadcast, macro, first->dataType));
+    } else {
+      for (const auto *binding : entry.selections)
+        if (binding)
+          batch.selection.flits.push_back(
+              encodeCIMControlFlit(binding->route, macro, binding->dataType));
+    }
+
+    std::bitset<cacheRows> broadcastRows;
+    for (const auto &target : batch.targets) {
+      const auto row = target.cacheAddress;
+      if (entry.canonicalRoutes && entry.rowCores[row].all()) {
+        if (broadcastRows.test(row))
+          continue;
+        broadcastRows.set(row);
+        batch.request.flits.push_back(
+            encodeCIMOutputCacheReadFlit(broadcast, row));
+      } else {
+        const auto &binding = executable.getReadbacks()[target.outputIndex];
+        batch.request.flits.push_back(
+            encodeCIMOutputCacheReadFlit(binding.route, row));
+      }
+    }
+    program.readbackBatches.push_back(std::move(batch));
+  }
+  return llvm::Error::success();
+}
+
 llvm::Expected<CIMDeviceProgram>
 materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
                    const CIM22HardwareConfig &hardware, CIMTraceSink *trace,
-                   uint64_t &sequence, bool zeroWeightExponent) {
+                   uint64_t &sequence, bool zeroWeightExponent,
+                   bool captureRawReadbacks) {
   CIMDeviceProgram program;
+  program.captureRawReadbacks = captureRawReadbacks;
 
   // The supplier board flow configures one return path per active Core before
   // selecting or programming any Macro. Multiple Macro works on the same Core
@@ -331,22 +416,9 @@ materializeProgram(const CIMTransaction &executable, const CIMRunInputs &inputs,
     program.operations.push_back(std::move(idle));
   }
 
-  for (auto [outputIndex, readback] :
-       llvm::enumerate(executable.getReadbacks())) {
-    const CIMWork *work =
-        findWork(executable, readback.groupId, readback.workId);
-    if (!work)
-      return runnerError("CIM readback references unknown work");
-    CIMDeviceReadbackCommand command;
-    command.outputIndex = outputIndex;
-    command.dataType = readback.dataType;
-    command.selection.flits.push_back(encodeCIMControlFlit(
-        readback.route, readback.macroSlot, readback.dataType));
-    command.selection.postDelayMs = hardware.readback_select_delay_ms;
-    command.request.flits.push_back(encodeCIMOutputCacheReadFlit(
-        readback.route, readback.outputCacheAddress));
-    program.readbacks.push_back(std::move(command));
-  }
+  if (auto error = appendReadbackBatches(
+          executable, hardware.readback_select_delay_ms, program))
+    return std::move(error);
   return program;
 }
 
@@ -368,12 +440,11 @@ llvm::Error validateResponse(const CIMTransaction &executable,
     if (!work)
       return runnerError("CIM readback references unknown work");
 
-    const uint64_t header = result.headerFlit;
-    if (((header >> 60) & 0xf) != 5 || ((header >> 23) & 1) != 0 ||
-        ((header >> 18) & 0x1f) != static_cast<uint64_t>(work->coreSlot) ||
-        ((header >> 14) & 0xf) !=
-            static_cast<uint64_t>(binding.outputCacheAddress) ||
-        (header & 0x3fff) != 6)
+    auto key = decodeCIMOutputCacheResponseHeader(result.headerFlit);
+    if (!key)
+      return key.takeError();
+    if (key->coreIndex != work->coreSlot ||
+        key->cacheAddress != binding.outputCacheAddress)
       return runnerError(
           "CIM output Cache response head does not match binding");
 
@@ -418,11 +489,10 @@ llvm::Error CIMBoardRunner::run(const execution::CIMTransaction &executable,
   return run(executable, inputs, outputs, BF16Compensation::None, trace);
 }
 
-llvm::Error CIMBoardRunner::run(const execution::CIMTransaction &executable,
-                                const execution::CIMRunInputs &inputs,
-                                execution::CIMRunOutputs &outputs,
-                                execution::BF16Compensation compensation,
-                                execution::CIMTraceSink *trace) {
+llvm::Error CIMBoardRunner::run(
+    const execution::CIMTransaction &executable,
+    const execution::CIMRunInputs &inputs, execution::CIMRunOutputs &outputs,
+    execution::BF16Compensation compensation, execution::CIMTraceSink *trace) {
   uint64_t sequence = 0;
   emitTrace(trace, sequence, execution::CIMTraceEventKind::BeginRun);
   if (llvm::Error error = validateOutputs(executable, outputs)) {
@@ -465,7 +535,7 @@ llvm::Error CIMBoardRunner::run(const execution::CIMTransaction &executable,
   }
   auto response =
       captureImpl(executable, compensate ? CIMRunInputs{chipInputs} : inputs,
-                  trace, sequence, compensate);
+                  trace, sequence, compensate, /*captureRawReadbacks=*/false);
   if (!response) {
     emitTrace(trace, sequence, execution::CIMTraceEventKind::Error);
     return response.takeError();
@@ -512,7 +582,9 @@ CIMBoardRunner::capture(const execution::CIMTransaction &executable,
                         execution::CIMTraceSink *trace) {
   uint64_t sequence = 0;
   emitTrace(trace, sequence, execution::CIMTraceEventKind::BeginRun);
-  auto response = captureImpl(executable, inputs, trace, sequence);
+  auto response =
+      captureImpl(executable, inputs, trace, sequence,
+                  /*zeroWeightExponent=*/false, /*captureRawReadbacks=*/true);
   if (!response) {
     emitTrace(trace, sequence, execution::CIMTraceEventKind::Error);
     return response.takeError();
@@ -521,15 +593,15 @@ CIMBoardRunner::capture(const execution::CIMTransaction &executable,
   return response;
 }
 
-llvm::Expected<CIMDeviceResponse>
-CIMBoardRunner::captureImpl(const execution::CIMTransaction &executable,
-                            const execution::CIMRunInputs &inputs,
-                            execution::CIMTraceSink *trace, uint64_t &sequence,
-                            bool zeroWeightExponent) {
+llvm::Expected<CIMDeviceResponse> CIMBoardRunner::captureImpl(
+    const execution::CIMTransaction &executable,
+    const execution::CIMRunInputs &inputs, execution::CIMTraceSink *trace,
+    uint64_t &sequence, bool zeroWeightExponent, bool captureRawReadbacks) {
   if (llvm::Error error = validateInputs(executable, inputs))
     return std::move(error);
   auto program = materializeProgram(executable, inputs, hardware_, trace,
-                                    sequence, zeroWeightExponent);
+                                    sequence, zeroWeightExponent,
+                                    captureRawReadbacks);
   if (!program)
     return program.takeError();
   CIMDeviceResponse response;
