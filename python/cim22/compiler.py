@@ -150,6 +150,7 @@ def _compile_linalg(
     runtime: RuntimeBackend = "usb",
     bf16_compensation: BF16Compensation = "sign-split",
     max_kernel_columns: int | Literal["auto"] | None = None,
+    weight_residency_schedule: bool = True,
 ) -> Session:
     """Lower Linalg IR, link the native model, and load it into a Session.
 
@@ -165,6 +166,9 @@ def _compile_linalg(
         max_kernel_columns: None or "auto" selects a width by wave count and
             static Work budget. A positive integer fixes the block width
             limit. Use 32 for fixed blocking or 1 for a per-column baseline.
+        weight_residency_schedule: Group independent FC/Linear transactions
+            that reuse weights when legal. False preserves the original order
+            and leaves runtime residency enabled.
 
     Returns:
         The loaded Session, which owns any temporary files.
@@ -198,6 +202,8 @@ def _compile_linalg(
     pipeline = f"--cim-bf16-pipeline=stage=packet bf16-compensation={bf16_compensation}"
     if max_kernel_columns is not None:
         pipeline += f" max-kernel-columns={max_kernel_columns}"
+    if not weight_residency_schedule:
+        pipeline += " weight-residency-schedule=false"
     with ExitStack() as cleanup:
         folder = Path(
             cleanup.enter_context(

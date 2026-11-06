@@ -1,6 +1,7 @@
 """Native model publication, typed boundaries and software execution."""
 
 import os
+import re
 import subprocess
 import sys
 from importlib.resources import files
@@ -103,7 +104,7 @@ import resource
 import signal
 import sys
 from pathlib import Path
-from cim22.compiler import _emit_object
+from cim22.compiler import _compile_linalg, _emit_object
 signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
 resource.setrlimit(resource.RLIMIT_FSIZE, (128, 128))
 try:
@@ -434,3 +435,193 @@ func.func @main(%x: {activation}) -> {output} {{
             assert serial.dispatch_count == columns * branches
             assert blocked.dispatch_count == fixed_waves * branches
             assert automatic.dispatch_count == auto_waves * branches
+
+
+@pytest.mark.usefixtures("native_toolchain")
+@pytest.mark.parametrize(
+    ("integer", "k", "n", "columns", "full_writes", "grouped_writes"),
+    [
+        (True, 256, 320, 3, 240, 80),
+        (True, 256, 320, 1, 80, 80),
+        (False, 256, 512, 1, 512, 256),
+        (False, 512, 110, 1, 224, 112),
+    ],
+    ids=["int8-linear", "int8-no-reuse", "bf16-fc1", "bf16-fc2"],
+)
+def test_weight_residency_schedule(
+    tmp_path: Path,
+    embedded_model: "EmbeddedModel",
+    integer: bool,
+    k: int,
+    n: int,
+    columns: int,
+    full_writes: int,
+    grouped_writes: int,
+) -> None:
+    """Replay actual Host dispatch order and check unchanged logical outputs."""
+    rng = np.random.default_rng(622)
+    weights = rng.integers(-4, 5, size=(n, k), dtype=np.int8)
+    data = rng.integers(
+        -8, 9, size=(k, columns) if integer else (k,), dtype=np.int8
+    )
+    element, result = ("i8", "i32") if integer else ("f32", "f32")
+    activation = (
+        f"tensor<{k}x{columns}x{element}>" if integer else f"tensor<{k}xf32>"
+    )
+    weight_type = f"tensor<{n}x{k}x{element}>"
+    output = (
+        f"tensor<{n}x{columns}x{result}>" if integer else f"tensor<{n}xf32>"
+    )
+    kernel = "linalg.matmul {cim.int8}" if integer else "linalg.matvec"
+    values = weights.tolist() if integer else weights.astype(float).tolist()
+    if not integer:
+        data = data.astype(np.float32)
+    source = f"""
+func.func @main(%x: {activation}) -> {output} {{
+  %w = arith.constant dense<{values}> : {weight_type}
+  %z = arith.constant dense<{"0" if integer else "0.0"}> : {output}
+  %r = {kernel} ins(%w, %x : {weight_type}, {activation})
+       outs(%z : {output}) -> {output}
+  return %r : {output}
+}}
+"""
+    counts = []
+    outputs = []
+    schedules = []
+    bindings = []
+    for enabled in (False, True):
+        debug = tmp_path / str(enabled)
+        artifact = tmp_path / f"test-{enabled}{MODEL_SUFFIX}"
+        with _compile_linalg(
+            source,
+            artifact_path=artifact,
+            debug_dir=debug,
+            runtime="simulator",
+            weight_residency_schedule=enabled,
+        ) as session:
+            outputs.append(session(data)[0].copy())
+            dispatches = session.dispatch_count
+        model = embedded_model(artifact)
+        transactions = {
+            kernel.kernel_name: kernel.transaction for kernel in model.kernels
+        }
+        bindings.append(
+            {
+                name: transaction.SerializeToString(deterministic=True)
+                for name, transaction in transactions.items()
+            }
+        )
+        text = (debug / "model.packet.mlir").read_text(encoding="utf-8")
+        host = text.split("module @__cim_device", maxsplit=1)[0]
+        calls = {}
+        for line in host.splitlines():
+            if match := re.match(r"    func.func (?:private )?@(\w+)\(", line):
+                current = match[1]
+                calls[current] = []
+            elif match := re.search(r"\bcall @(\w+)\(", line):
+                calls[current].append(match[1])
+
+        pending = ["main"]
+        order = []
+        while pending:
+            name = pending.pop()
+            if name in transactions:
+                order.append(name)
+            else:
+                pending.extend(reversed(calls[name]))
+        assert len(order) == dispatches
+        if not integer and enabled:
+            (helper,) = calls["main"]
+            assert helper.startswith("__cim_resident_linear")
+            assert calls[helper] == order
+        schedules.append(order)
+        resident = {}
+        writes = 0
+        works = 0
+        for name in order:
+            transaction = transactions[name]
+            assert len(transaction.weights) == len(transaction.readbacks)
+            for weight in transaction.weights:
+                slot = weight.core_slot, weight.macro_slot
+                identity = (
+                    weight.data_type,
+                    tuple(weight.route),
+                    tuple(weight.words),
+                    weight.exponents,
+                )
+                writes += resident.get(slot) != identity
+                resident[slot] = identity
+                works += 1
+        counts.append((dispatches, works, writes))
+
+    assert counts[0][:2] == counts[1][:2]
+    assert bindings[0] == bindings[1]
+    assert counts[0][1] == full_writes
+    assert [count[2] for count in counts] == [full_writes, grouped_writes]
+    if full_writes == grouped_writes:
+        assert schedules[0] == schedules[1]
+    else:
+        assert schedules[0] != schedules[1]
+    assert outputs[0].tobytes() == outputs[1].tobytes()
+    if integer:
+        np.testing.assert_array_equal(
+            outputs[0], weights.astype(np.int32) @ data
+        )
+        if columns == 3:
+            assert schedules[1] == [schedules[0][i] for i in [0, 2, 4, 1, 3, 5]]
+
+
+@pytest.mark.usefixtures("native_toolchain")
+def test_weight_residency_schedule_respects_host_effect() -> None:
+    """Leave sign branches around an opaque Host effect in their original order."""
+    optimizer = os.environ.get("CIM22_OPT") or str(
+        files("cim22")
+        / "bin"
+        / ("mlir-cim22-opt.exe" if os.name == "nt" else "mlir-cim22-opt")
+    )
+    source = """
+func.func @main(%x: tensor<65xf32>) -> tensor<17xf32> {
+  %w = arith.constant dense<1.0> : tensor<17x65xf32>
+  %z = arith.constant dense<0.0> : tensor<17xf32>
+  %r = linalg.matvec ins(%w, %x : tensor<17x65xf32>, tensor<65xf32>)
+       outs(%z : tensor<17xf32>) -> tensor<17xf32>
+  return %r : tensor<17xf32>
+}
+"""
+    split = subprocess.run(
+        [optimizer, "--cim-bf16-pipeline=stage=split"],
+        input=source,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    split = split.replace(
+        "\n    func.func @main",
+        "\n    func.func private @opaque()\n    func.func @main",
+        1,
+    )
+    split, count = re.subn(
+        r"^(.*= call @__cim_kernel_0\(.*)$",
+        r"\1\n      func.call @opaque() : () -> ()",
+        split,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    assert count == 1
+    packet = subprocess.run(
+        [optimizer, "--compile-cim-parts=stage=packet"],
+        input=split,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    main = packet.split("func.func @main", maxsplit=1)[1].split(
+        "\n    }", maxsplit=1
+    )[0]
+    assert re.findall(r"\bcall @(\w+)", main) == [
+        "__cim_kernel_0",
+        "opaque",
+        "__cim_kernel_1",
+        "__cim_kernel_2",
+        "__cim_kernel_3",
+    ]

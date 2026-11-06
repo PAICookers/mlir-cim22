@@ -2463,6 +2463,8 @@ public:
       if (op->hasAttr("cim.bf16_branch"))
         result.getDefiningOp()->setAttr("cim.bf16_branch",
                                         rewriter.getUnitAttr());
+      if (Attribute origin = op->getAttr(kResidencyLinearAttr))
+        result.getDefiningOp()->setAttr(kResidencyLinearAttr, origin);
       // Keep FP32 bias, residuals and shared activation users in their original
       // precision. Invoking this pass explicitly opts the contraction into
       // BF16.
@@ -2595,6 +2597,8 @@ public:
         builder.setInsertionPointToEnd(device.getBody());
         auto kernel = func::FuncOp::create(builder, op.getLoc(), symbol, type);
         kernel->setAttr("cim.kernel", builder.getUnitAttr());
+        if (Attribute origin = op->getAttr(kResidencyLinearAttr))
+          kernel->setAttr(kResidencyLinearAttr, origin);
         auto sourceFunction = op->getParentOfType<func::FuncOp>();
         for (StringRef attribute :
              {"cim.target_profile", "cim.target_profile_version",
