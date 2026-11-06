@@ -2278,6 +2278,8 @@ bool isNonnegativeFloat(Value value, DenseMap<Value, bool> &known) {
     result = prove(view.getSrc());
   } else if (auto view = value.getDefiningOp<tensor::ExtractSliceOp>()) {
     result = prove(view.getSource());
+  } else if (auto insert = value.getDefiningOp<tensor::InsertSliceOp>()) {
+    result = prove(insert.getSource()) && prove(insert.getDest());
   } else if (auto view = value.getDefiningOp<linalg::TransposeOp>()) {
     result = prove(view.getInput());
   } else if (auto pad = value.getDefiningOp<tensor::PadOp>()) {

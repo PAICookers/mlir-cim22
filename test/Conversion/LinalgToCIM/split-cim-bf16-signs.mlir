@@ -34,19 +34,21 @@ func.func @signed(%x: tensor<2xf32>) -> (tensor<1xf32>, tensor<2xf32>) {
 // PREPARED-NOT: linalg.matvec
 // PREPARED: return
 
-// UIToFP of a spike mask proves the activation nonnegative. The proof crosses
-// an explicit Linalg elementwise region, rather than guessing data.
-func.func @nonnegative(%mask: tensor<2xi1>) -> tensor<1xf32> {
-  %empty = tensor.empty() : tensor<2xf32>
+// A nonnegative spike slice and zero-initialized destination prove the
+// entire updated activation nonnegative.
+func.func @nonnegative(%mask: tensor<1xi1>) -> tensor<1xf32> {
+  %empty = tensor.empty() : tensor<1xf32>
   %x = linalg.generic {indexing_maps = [affine_map<(i) -> (i)>, affine_map<(i) -> (i)>], iterator_types = ["parallel"]}
-      ins(%mask : tensor<2xi1>) outs(%empty : tensor<2xf32>) {
+      ins(%mask : tensor<1xi1>) outs(%empty : tensor<1xf32>) {
     ^bb0(%bit: i1, %out: f32):
       %value = arith.uitofp %bit : i1 to f32
       linalg.yield %value : f32
-  } -> tensor<2xf32>
+  } -> tensor<1xf32>
+  %initial = arith.constant dense<0.0> : tensor<2xf32>
+  %updated = tensor.insert_slice %x into %initial[1] [1] [1] : tensor<1xf32> into tensor<2xf32>
   %w = arith.constant dense<[[1.0, -0.5]]> : tensor<1x2xf32>
   %z = arith.constant dense<0.0> : tensor<1xf32>
-  %r = linalg.matvec ins(%w, %x : tensor<1x2xf32>, tensor<2xf32>) outs(%z : tensor<1xf32>) -> tensor<1xf32>
+  %r = linalg.matvec ins(%w, %updated : tensor<1x2xf32>, tensor<2xf32>) outs(%z : tensor<1xf32>) -> tensor<1xf32>
   return %r : tensor<1xf32>
 }
 // CHECK-LABEL: func.func @nonnegative
@@ -58,6 +60,45 @@ func.func @nonnegative(%mask: tensor<2xi1>) -> tensor<1xf32> {
 // CHECK: return
 // PREPARED-LABEL: func.func @nonnegative
 // PREPARED-COUNT-2: linalg.matvec
+// PREPARED-NOT: linalg.matvec
+// PREPARED: return
+
+// The source can introduce negative elements even when the destination is zero.
+func.func @unknown_slice_source(%source: tensor<1xf32>) -> tensor<1xf32> {
+  %initial = arith.constant dense<0.0> : tensor<2xf32>
+  %updated = tensor.insert_slice %source into %initial[1] [1] [1] : tensor<1xf32> into tensor<2xf32>
+  %w = arith.constant dense<[[1.0, -0.5]]> : tensor<1x2xf32>
+  %z = arith.constant dense<0.0> : tensor<1xf32>
+  %r = linalg.matvec ins(%w, %updated : tensor<1x2xf32>, tensor<2xf32>) outs(%z : tensor<1xf32>) -> tensor<1xf32>
+  return %r : tensor<1xf32>
+}
+// CHECK-LABEL: func.func @unknown_slice_source
+// CHECK: arith.cmpf olt
+// CHECK-COUNT-4: linalg.matvec
+// CHECK-NOT: linalg.matvec
+// CHECK: return
+// PREPARED-LABEL: func.func @unknown_slice_source
+// PREPARED-COUNT-4: linalg.matvec
+// PREPARED-NOT: linalg.matvec
+// PREPARED: return
+
+// Elements outside the slice retain the destination's original values.
+func.func @negative_slice_dest() -> tensor<1xf32> {
+  %initial = arith.constant dense<[-1.0, 0.0]> : tensor<2xf32>
+  %source = arith.constant dense<1.0> : tensor<1xf32>
+  %updated = tensor.insert_slice %source into %initial[1] [1] [1] : tensor<1xf32> into tensor<2xf32>
+  %w = arith.constant dense<[[1.0, -0.5]]> : tensor<1x2xf32>
+  %z = arith.constant dense<0.0> : tensor<1xf32>
+  %r = linalg.matvec ins(%w, %updated : tensor<1x2xf32>, tensor<2xf32>) outs(%z : tensor<1xf32>) -> tensor<1xf32>
+  return %r : tensor<1xf32>
+}
+// CHECK-LABEL: func.func @negative_slice_dest
+// CHECK: arith.cmpf olt
+// CHECK-COUNT-4: linalg.matvec
+// CHECK-NOT: linalg.matvec
+// CHECK: return
+// PREPARED-LABEL: func.func @negative_slice_dest
+// PREPARED-COUNT-4: linalg.matvec
 // PREPARED-NOT: linalg.matvec
 // PREPARED: return
 

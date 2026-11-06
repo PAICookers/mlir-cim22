@@ -497,6 +497,105 @@ def test_mutable_state_and_cim_weights(
         assert session.num_transactions > 0
 
 
+@pytest.mark.parametrize("steps", [3, 32])
+def test_lif_frame_updates_use_slices(tmp_path: Path, steps: int) -> None:
+    class LIF(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.register_buffer(
+                "voltage", (torch.arange(6, dtype=torch.float32) - 2) / 8
+            )
+
+        def forward(self, frames: torch.Tensor) -> torch.Tensor:
+            spikes = torch.zeros_like(frames)
+            voltage = self.voltage
+            for step in range(frames.shape[0]):
+                voltage = voltage + (frames[step] - voltage) / 2
+                spike = (voltage >= 1).to(frames.dtype)
+                voltage = (1 - spike) * voltage
+                spikes[step] = spike
+            self.voltage.copy_(voltage)
+            return spikes
+
+    eager = LIF()
+    model = LIF()
+    compiled = torch.compile(
+        model,
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"runtime": "simulator", "debug_dir": tmp_path},
+    )
+    frames = (torch.arange(steps * 6, dtype=torch.float32) % 15).reshape(
+        steps, 6
+    ) / 8
+    next_frames = frames + 0.25
+    with torch.inference_mode():
+        for value in (frames, next_frames):
+            torch.testing.assert_close(
+                compiled(value), eager(value), rtol=0, atol=0
+            )
+            torch.testing.assert_close(
+                model.voltage, eager.voltage, rtol=0, atol=0
+            )
+    (linalg,) = tmp_path.glob("*/model.linalg.mlir")
+    ir = linalg.read_text()
+    assert ir.count("tensor.insert_slice") == steps
+    assert "arith.cmpi" not in ir
+
+
+def test_select_scatter_keeps_old_values_and_input_aliases(
+    tmp_path: Path,
+) -> None:
+    def update(value: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        first = torch.select_scatter(value, value[:, 0], dim=-2, index=-1)
+        second = torch.select_scatter(first, first[:, 1], dim=1, index=0)
+        return first, second, value[:, -1]
+
+    value = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4)
+    before = value.clone()
+    compiled = torch.compile(
+        update,
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"runtime": "simulator", "debug_dir": tmp_path},
+    )
+    with torch.inference_mode():
+        actual = compiled(value)
+        torch.testing.assert_close(actual, update(value), rtol=0, atol=0)
+    torch.testing.assert_close(value, before, rtol=0, atol=0)
+    assert (
+        actual[-1].untyped_storage().data_ptr()
+        == value.untyped_storage().data_ptr()
+    )
+    (linalg,) = tmp_path.glob("*/model.linalg.mlir")
+    assert linalg.read_text().count("tensor.insert_slice") == 2
+
+
+def test_select_scatter_mixed_dtype_uses_original_decomposition(
+    tmp_path: Path,
+) -> None:
+    def update(value: torch.Tensor, source: torch.Tensor) -> torch.Tensor:
+        return torch.select_scatter(value, source, dim=1, index=1)
+
+    value = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4)
+    source = torch.arange(8, dtype=torch.int32).reshape(2, 4)
+    compiled = torch.compile(
+        update,
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"runtime": "simulator", "debug_dir": tmp_path},
+    )
+    with torch.inference_mode():
+        torch.testing.assert_close(
+            compiled(value, source), update(value, source), rtol=0, atol=0
+        )
+    (linalg,) = tmp_path.glob("*/model.linalg.mlir")
+    assert "tensor.insert_slice" not in linalg.read_text()
+
+
 def test_duplicate_input_writeback(
     inference_context: AbstractContextManager[None],
 ) -> None:
