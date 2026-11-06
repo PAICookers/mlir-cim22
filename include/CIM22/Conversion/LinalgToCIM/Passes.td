@@ -87,10 +87,12 @@ def PrepareCIMBF16 : Pass<"prepare-cim-bf16", "::mlir::ModuleOp"> {
                            "::mlir::linalg::LinalgDialect"];
 }
 
+// Large static matrix activations use a Host loop over full-width kernels and
+// a smaller exact-width tail. Each call preserves its original column range.
 def OutlineCIMBF16 : Pass<"outline-cim-bf16", "::mlir::ModuleOp"> {
   let summary = "Split constant-weight BF16 and legal INT8/i32 kernels from Host code";
-  let options = [Option<"maxKernelColumns", "max-kernel-columns", "int64_t", "32",
-                        "Stream larger matrices through one-column kernels on Host">];
+  let options = [Option<"maxKernelColumns", "max-kernel-columns", "std::string", "\"auto\"",
+                        "Fixed column width or auto for wave-aware blocking">];
   let dependentDialects = ["::mlir::arith::ArithDialect",
                            "::mlir::func::FuncDialect",
                            "::mlir::linalg::LinalgDialect",
@@ -133,6 +135,8 @@ def MaterializeCIMSchedule
   let summary = "Validate and materialize the software-only CIM schedule";
 }
 
+// Divide mapped work into configuration, launch, and readback waves. A wave
+// admits one group per physical Core before the next wave can reuse its slots.
 def MaterializeCIMExecutionPlan
     : Pass<"materialize-cim-execution-plan", "::mlir::ModuleOp"> {
   let summary = "Materialize the software-only mapped CIM execution plan";

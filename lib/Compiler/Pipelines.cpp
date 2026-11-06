@@ -332,8 +332,9 @@ public:
 struct BF16PipelineOptions : PassPipelineOptions<BF16PipelineOptions> {
   Option<std::string> stage{*this, "stage", llvm::cl::init("packet"),
                             llvm::cl::desc("split, vmm, packet or llvm")};
-  Option<int64_t> maxKernelColumns{*this, "max-kernel-columns",
-                                   llvm::cl::init(32)};
+  Option<std::string> maxKernelColumns{
+      *this, "max-kernel-columns", llvm::cl::init("auto"),
+      llvm::cl::desc("Fixed column width or auto for wave-aware blocking")};
   Option<bool> requireCIM{*this, "require-cim", llvm::cl::init(false)};
   Option<std::string> bf16Compensation{
       *this, "bf16-compensation", llvm::cl::init("sign-split"),
@@ -361,8 +362,9 @@ void registerCIM22Pipelines() {
         splitOptions.compensation = options.bf16Compensation;
         pm.addPass(cim::createSplitCIMBF16Signs(splitOptions));
         appendPipeline(pm, "prepare-cim-bf16");
-        appendPipeline(pm, "outline-cim-bf16{max-kernel-columns=" +
-                               std::to_string(options.maxKernelColumns) + "}");
+        cim::OutlineCIMBF16Options outlineOptions;
+        outlineOptions.maxKernelColumns = options.maxKernelColumns;
+        pm.addPass(cim::createOutlineCIMBF16(outlineOptions));
         auto compile = std::make_unique<CompileCIMParts>();
         compile->stage = options.stage;
         compile->requireCIM = options.requireCIM;

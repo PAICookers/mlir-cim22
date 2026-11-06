@@ -149,8 +149,31 @@ def _compile_linalg(
     debug_dir: Path | None = None,
     runtime: RuntimeBackend = "usb",
     bf16_compensation: BF16Compensation = "sign-split",
+    max_kernel_columns: int | Literal["auto"] | None = None,
 ) -> Session:
-    """Share native lowering, linking and artifact ownership across frontends."""
+    """Lower Linalg IR, link the native model, and load it into a Session.
+
+    Args:
+        linalg_ir: Textual Linalg module with a static inference entry.
+        artifact_path: New path ending in the platform's model suffix. If
+            omitted, the model library lives in the Session's temporary area.
+        debug_dir: Optional new directory for Linalg IR, packet IR and the
+            native object file.
+        runtime: Backend encoded into the artifact. USB needs a configured
+            bridge before execution.
+        bf16_compensation: Numeric mode for native BF16 kernels.
+        max_kernel_columns: None or "auto" selects a width by wave count and
+            static Work budget. A positive integer fixes the block width
+            limit. Use 32 for fixed blocking or 1 for a per-column baseline.
+
+    Returns:
+        The loaded Session, which owns any temporary files.
+
+    Raises:
+        ValueError: The artifact suffix or local tool configuration is invalid.
+        FileExistsError: The destination artifact already exists.
+        RuntimeError: Lowering, object emission, linking, or loading failed.
+    """
     library = runtime_library()
     executable = os.environ.get("CIM22_OPT") or str(
         files("cim22")
@@ -172,6 +195,9 @@ def _compile_linalg(
         if artifact_path.exists() or artifact_path.is_symlink():
             raise FileExistsError(f"Artifact already exists: {artifact_path}")
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    pipeline = f"--cim-bf16-pipeline=stage=packet bf16-compensation={bf16_compensation}"
+    if max_kernel_columns is not None:
+        pipeline += f" max-kernel-columns={max_kernel_columns}"
     with ExitStack() as cleanup:
         folder = Path(
             cleanup.enter_context(
@@ -194,8 +220,7 @@ def _compile_linalg(
                 [
                     executable,
                     str(linalg),
-                    "--cim-bf16-pipeline=stage=packet max-kernel-columns=1 "
-                    f"bf16-compensation={bf16_compensation}",
+                    pipeline,
                     "-o",
                     str(packet),
                 ],

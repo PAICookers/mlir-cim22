@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import torch
 
-from cim22.compiler import _emit_object
+from cim22.compiler import _compile_linalg, _emit_object
 from cim22.runtime import MODEL_SUFFIX, Session, compiler_library
 
 from ._generated import cim22_model_pb2 as proto
@@ -367,3 +367,70 @@ def test_invalid_compensation_marker_rejected(packet: Path, mode: str) -> None:
     )
     with pytest.raises(RuntimeError, match="BF16 compensation must"):
         Session(packet)
+
+
+@pytest.mark.usefixtures("native_toolchain")
+@pytest.mark.parametrize(
+    ("columns", "k", "n", "fixed_waves", "auto_waves"),
+    [
+        (1, 65, 17, 1, 1),
+        (31, 65, 17, 4, 4),
+        (32, 65, 17, 4, 4),
+        (33, 65, 17, 5, 4),
+        (65, 65, 17, 9, 7),
+        (65, 64, 16, 3, 2),
+        (66, 64, 33, 7, 6),  # The static Work budget excludes a five-wave plan.
+    ],
+)
+@pytest.mark.parametrize("integer", [False, True], ids=["bf16", "int8"])
+def test_column_blocks(
+    columns: int,
+    k: int,
+    n: int,
+    fixed_waves: int,
+    auto_waves: int,
+    integer: bool,
+) -> None:
+    """Check exact tails, wave counts and column order across blocking modes."""
+    element, result = ("i8", "i32") if integer else ("f32", "f32")
+    marker = "{cim.int8}" if integer else ""
+    weights = np.arange(n * k).reshape(n, k) % 5 - 2
+    data = (np.arange(k * columns).reshape(k, columns) % 19 - 9).astype(
+        np.int8 if integer else np.float32
+    )
+    weight_values = (
+        weights.tolist() if integer else weights.astype(float).tolist()
+    )
+    activation = f"tensor<{k}x{columns}x{element}>"
+    weight_type = f"tensor<{n}x{k}x{element}>"
+    output = f"tensor<{n}x{columns}x{result}>"
+    source = f"""
+func.func @main(%x: {activation}) -> {output} {{
+  %w = arith.constant dense<{weight_values}> : {weight_type}
+  %z = arith.constant dense<{"0" if integer else "0.0"}> : {output}
+  %r = linalg.matmul {marker} ins(%w, %x : {weight_type}, {activation})
+       outs(%z : {output}) -> {output}
+  return %r : {output}
+}}
+"""
+    with (
+        _compile_linalg(
+            source, runtime="simulator", max_kernel_columns=1
+        ) as serial,
+        _compile_linalg(
+            source, runtime="simulator", max_kernel_columns=32
+        ) as blocked,
+        _compile_linalg(source, runtime="simulator") as automatic,
+    ):
+        branches = 1 if integer else 4
+        for value in (data, np.ascontiguousarray(-data[:, ::-1])):
+            expected = serial(value)[0]
+            for model in (blocked, automatic):
+                np.testing.assert_array_equal(
+                    model(value)[0].view(np.uint32), expected.view(np.uint32)
+                )
+            if integer:
+                np.testing.assert_array_equal(expected, weights @ value)
+            assert serial.dispatch_count == columns * branches
+            assert blocked.dispatch_count == fixed_waves * branches
+            assert automatic.dispatch_count == auto_waves * branches
