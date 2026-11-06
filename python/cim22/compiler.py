@@ -28,7 +28,19 @@ type BF16Compensation = Literal["sign-split", "legacy", "none"]
 
 
 class BackendOptions(TypedDict, total=False):
-    """Application options shared by the PyTorch and TensorFlow frontends."""
+    """Options for a static inference specialization.
+
+    Attributes:
+        runtime: USB by default. Use "simulator" to execute the CIM plan in
+            software. PyTorch also accepts "reference" for the CPU graph.
+        bf16_compensation: "sign-split" by default. "legacy" and "none" are
+            available for numeric diagnostics. This option applies to native
+            BF16 kernels.
+        usb_config: Bridge, timing and optional PLL settings for the USB
+            Session. Required to open the bridge before USB execution.
+        artifact_dir: Directory in which to keep each native model library.
+        debug_dir: Directory in which to keep the IR for each specialization.
+    """
 
     runtime: RuntimeBackend | Literal["reference"]
     bf16_compensation: BF16Compensation
@@ -65,6 +77,17 @@ def _emit_object(
     library: Path,
     runtime: RuntimeBackend = "usb",
 ) -> None:
+    """Emit a native object from packet-stage IR.
+
+    Args:
+        packet: Lowered packet IR file with the Host/device split.
+        object_file: Destination object file.
+        library: Execution library used to locate the compiler adapter.
+        runtime: Backend embedded in the emitted model descriptor.
+
+    Raises:
+        RuntimeError: The native compiler failed to emit the object.
+    """
     native = _load_library(compiler_library(library))
     emit = native.cim22_compile_object
     emit.argtypes = [
@@ -104,10 +127,18 @@ def _compile(
     runtime: RuntimeBackend = "usb",
     bf16_compensation: BF16Compensation = "sign-split",
 ) -> Session:
-    """Compile a functional ATen graph; return its internal flat runtime.
+    """Compile a functional ATen graph to its internal flat runtime.
 
-    The loaded Session owns the code and any files needed until it closes.
-    Optional artifact/debug paths retain diagnostics for this specialization.
+    Args:
+        graph: Functional ATen graph from AOTAutograd.
+        *example_inputs: Example tensors in the graph's input order.
+        artifact_path: New destination for the native model library, if kept.
+        debug_dir: Optional destination for the captured and lowered IR.
+        runtime: Backend encoded into the compiled artifact.
+        bf16_compensation: Numeric mode for native BF16 kernels.
+
+    Returns:
+        A loaded Session that owns its temporary files until it closes.
     """
     # Check before importing FX: LLVM's duplicate registration aborts Python.
     if (

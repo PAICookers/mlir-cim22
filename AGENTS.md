@@ -50,6 +50,7 @@ keep file ownership disjoint.
 - Follow the [shared completion and documentation rules](.codex/project-rules.md#task-completion-and-documentation)
   for acceptance scope, evidence levels, stash selection and documentation
   placement; keep the detailed policy in that shared source.
+- For CIM optimization work, use the [topic-specific reading rules](docs/cim-optimization/AGENTS.md).
 - Add concise, language-appropriate comments or docstrings for key code
   sections, functions, objects, types, and modules when they explain the main
   function, non-obvious behavior, important constraints, or notable risks.
