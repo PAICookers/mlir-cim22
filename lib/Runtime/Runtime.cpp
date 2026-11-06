@@ -17,8 +17,9 @@
 using cim22::runtime::Session;
 using llvm::SmallVector;
 namespace {
+// Generated tile calls consult the Session bound to their invoking thread.
 thread_local Session *activeSession = nullptr;
-}
+} // namespace
 
 void cim22::runtime::copyError(llvm::StringRef message, char *buffer,
                                size_t capacity) {
@@ -80,7 +81,9 @@ extern "C" void *cim22_session_load_shared(const char *path, char *error,
 }
 
 namespace {
-// Share descriptor validation and error propagation across the two tile ABIs.
+// Share descriptor validation and error propagation across INT8 and BF16
+// tile ABIs. The id indexes immutable transaction metadata, independent of
+// which backend consumes it.
 template <typename Input, typename Output>
 void dispatch(int64_t id, StridedMemRefType<Input, 2> *input,
               StridedMemRefType<Output, 2> *output,
@@ -146,8 +149,13 @@ void dispatch(int64_t id, StridedMemRefType<Input, 2> *input,
   auto error = [&]() -> llvm::Error {
     if (usb)
       return session.runner->run(transaction, {inputs}, runOutputs, mode);
+    if (session.softwarePlans.empty())
+      session.softwarePlans.resize(session.model.transactions.size());
+    auto &plan = session.softwarePlans[id];
+    if (!plan)
+      plan.emplace(transaction, /*batchReadbacks=*/true);
     ::cim22::execution::CIMSoftwareRunner runner(mode);
-    return runner.run(transaction, {inputs}, runOutputs);
+    return runner.run(*plan, {inputs}, runOutputs);
   }();
   if (error)
     session.error =

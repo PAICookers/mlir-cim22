@@ -45,13 +45,15 @@ void addPacket(std::vector<CIMFramePacket> &packets, CIMPacketKind kind,
   packets.push_back(packet);
 }
 
-CIMTransaction makeExecutable(FixtureFault fault = FixtureFault::None) {
+CIMTransaction makeExecutable(FixtureFault fault = FixtureFault::None,
+                              bool distinctCores = false) {
   std::vector<CIMGroup> groups;
   for (int64_t groupId : {1, 0}) {
     CIMGroup group;
     group.groupId = groupId;
     for (int64_t macro = 0; macro < 2; ++macro)
-      group.works.push_back({groupId * 2 + macro, 0, macro, {}});
+      group.works.push_back(
+          {groupId * 2 + macro, distinctCores ? groupId : 0, macro, {}});
     groups.push_back(std::move(group));
   }
 
@@ -65,7 +67,7 @@ CIMTransaction makeExecutable(FixtureFault fault = FixtureFault::None) {
       StaticWeightSection weight;
       weight.groupId = groupId;
       weight.workId = workId;
-      weight.coreSlot = 0;
+      weight.coreSlot = distinctCores ? groupId : 0;
       weight.macroSlot = macro;
       weight.values.fill(0);
       if (fault == FixtureFault::Overflow) {
@@ -238,7 +240,7 @@ void expectError(llvm::Error error) {
 }
 
 void checkRun(CIMSoftwareRunner &runner, const CIMTransaction &executable,
-              VectorTrace *trace = nullptr) {
+              VectorTrace *trace = nullptr, bool batchReadbacks = false) {
   std::array<std::array<int8_t, kCIMInputElements>, 4> inputStorage{};
   std::array<std::array<int32_t, kCIMOutputElements>, 4> outputStorage{};
   for (size_t index = 0; index < inputStorage.size(); ++index)
@@ -255,7 +257,8 @@ void checkRun(CIMSoftwareRunner &runner, const CIMTransaction &executable,
   }
   CIMRunInputs inputs{llvm::ArrayRef<CIMInputView>(inputViews)};
   CIMRunOutputs outputs{llvm::MutableArrayRef<CIMOutputView>(outputViews)};
-  assert(!runner.run(executable, inputs, outputs, trace));
+  assert(!runner.run(CIMSoftwareRunner::Plan(executable, batchReadbacks),
+                     inputs, outputs, trace));
 
   for (size_t index = 0; index < executable.getReadbacks().size(); ++index) {
     const ReadbackBinding &binding = executable.getReadbacks()[index];
@@ -267,6 +270,173 @@ void checkRun(CIMSoftwareRunner &runner, const CIMTransaction &executable,
              expectedValue(weight, inputStorage[inputIndex], row));
   }
 }
+
+void checkIndependentReadbackBatches() {
+  CIMSoftwareRunner runner;
+  VectorTrace trace;
+  checkRun(runner, makeExecutable(FixtureFault::None, /*distinctCores=*/true),
+           &trace, /*batchReadbacks=*/true);
+  std::vector<int64_t> readPackets;
+  size_t started = 0;
+  for (const auto &event : trace.events) {
+    if (event.kind == CIMTraceEventKind::StartWork)
+      ++started;
+    if (event.kind == CIMTraceEventKind::ReadOutput) {
+      assert(started == 4);
+      readPackets.push_back(event.packetIndex);
+    }
+  }
+  // Equal Cache addresses on distinct Cores share each Macro phase.
+  assert((readPackets == std::vector<int64_t>{4, 14, 9, 19}));
+}
+
+void checkAliasedBF16Views() {
+  std::vector<CIMGroup> groups;
+  std::vector<StaticWeightSection> weights;
+  std::vector<CIMFramePacket> packets;
+  std::vector<DynamicInputBinding> bindings;
+  std::vector<ReadbackBinding> readbacks;
+  for (int64_t id : {0, 1}) {
+    const int64_t macro = 1 - id;
+    groups.push_back({id, {{id, id, macro, {}}}});
+    auto &weight = weights.emplace_back();
+    weight.groupId = weight.workId = weight.coreSlot = id;
+    weight.macroSlot = macro;
+    weight.dataType = CIMDataType::BF16;
+    weight.exponents.fill(127);
+    for (size_t lane = 0; lane < kCIMOutputElements; ++lane)
+      weight.values[lane * kCIMInputElements] = 64;
+    bindings.push_back({id, id, macro, id, CIMDataType::BF16});
+    readbacks.push_back({id, id, macro, 0, {}, {}, CIMDataType::BF16});
+    for (auto kind :
+         {CIMPacketKind::InputCacheWrite, CIMPacketKind::WeightExponent,
+          CIMPacketKind::Weight, CIMPacketKind::ReturnRoute,
+          CIMPacketKind::Control, CIMPacketKind::OutputCacheRead}) {
+      addPacket(packets, kind, id, id, macro,
+                kind == CIMPacketKind::OutputCacheRead ? 0 : -1);
+      packets.back().dataType = CIMDataType::BF16;
+    }
+  }
+  CIMTransaction transaction("cim22-4x5-v1", 1, 1, std::move(groups),
+                             std::move(weights), std::move(packets),
+                             std::move(bindings), std::move(readbacks), {});
+  CIMSoftwareRunner runner(BF16Compensation::SignSplit);
+  const CIMSoftwareRunner::Plan plan(transaction);
+  for (bool prepared : {false, true}) {
+    for (bool overlapOutputs : {false, true}) {
+      std::array<uint16_t, kCIMInputElements> firstInput{}, secondInput{};
+      std::array<uint16_t, kCIMOutputElements> finalOutput{};
+      firstInput[0] = 0x3f80;  // 1.
+      secondInput[0] = 0x4000; // 2.
+      const std::array<CIMInputView, 2> inputs{CIMInputView{{}, firstInput},
+                                               CIMInputView{{}, secondInput}};
+      auto firstOutput = overlapOutputs ? llvm::MutableArrayRef(finalOutput)
+                                        : llvm::MutableArrayRef(secondInput)
+                                              .take_front(kCIMOutputElements);
+      std::array<CIMOutputView, 2> outputViews{CIMOutputView{{}, firstOutput},
+                                               CIMOutputView{{}, finalOutput}};
+      CIMRunOutputs outputs{outputViews};
+      auto error = prepared ? runner.run(plan, {inputs}, outputs)
+                            : runner.run(transaction, {inputs}, outputs);
+      assert(!error);
+      // Group 0 publishes before group 1 computes or overwrites it.
+      assert(finalOutput[0] == (overlapOutputs ? 0x4000 : 0x3f80));
+    }
+  }
+}
+
+// Grow the configured-state storage beyond its inline capacity, revisit every
+// physical slot, and read both an earlier Cache row and an unwritten row.
+void checkAllMacroCaches() {
+  std::vector<CIMGroup> groups;
+  std::vector<StaticWeightSection> weights;
+  std::vector<DynamicInputBinding> inputs;
+  std::vector<ReadbackBinding> readbacks;
+  std::vector<CIMFramePacket> packets;
+  auto addReadback = [&](int64_t group, int64_t work, int64_t macro,
+                         int64_t address) {
+    readbacks.push_back({group, work, macro, address, {}, {}});
+    addPacket(packets, CIMPacketKind::ReturnRoute, group, work, macro);
+    addPacket(packets, CIMPacketKind::Control, group, work, macro);
+    addPacket(packets, CIMPacketKind::OutputCacheRead, group, work, macro,
+              address);
+  };
+  for (int64_t groupId = 0; groupId < 2; ++groupId) {
+    CIMGroup group{groupId, {}};
+    for (int64_t slot = 0; slot < 40; ++slot) {
+      const int64_t work = groupId * 40 + slot;
+      const int64_t macro = slot % 2;
+      group.works.push_back({work, slot / 2, macro, {}});
+      StaticWeightSection weight;
+      weight.groupId = groupId;
+      weight.workId = work;
+      weight.coreSlot = slot / 2;
+      weight.macroSlot = macro;
+      for (size_t lane = 0; lane < kCIMOutputElements; ++lane)
+        weight.values[lane * kCIMInputElements] = static_cast<int8_t>(work + 1);
+      weights.push_back(std::move(weight));
+      inputs.push_back({groupId, work, macro, work});
+      addPacket(packets, CIMPacketKind::InputCacheWrite, groupId, work, macro);
+      addPacket(packets, CIMPacketKind::Weight, groupId, work, macro);
+      addReadback(groupId, work, macro, groupId == 0 ? 0 : 7);
+    }
+    groups.push_back(std::move(group));
+  }
+  // Group 1's slot 0 retains group 0's row 0 after configuring row 7.
+  addReadback(1, 40, 0, 0);
+  addReadback(1, 40, 0, 6);
+  std::reverse(groups.begin(), groups.end());
+  CIMTransaction transaction("cim22-4x5-v1", 1, 1, std::move(groups),
+                             std::move(weights), std::move(packets),
+                             std::move(inputs), std::move(readbacks), {});
+  std::array<std::array<int8_t, kCIMInputElements>, 80> inputStorage{};
+  std::array<std::array<int32_t, kCIMOutputElements>, 82> outputStorage{};
+  std::array<CIMInputView, 80> inputViews{};
+  std::array<CIMOutputView, 82> outputViews{};
+  for (size_t index = 0; index < inputViews.size(); ++index)
+    inputViews[index].values = inputStorage[index];
+  for (size_t index = 0; index < outputViews.size(); ++index)
+    outputViews[index].values = outputStorage[index];
+  CIMRunInputs runInputs{inputViews};
+  CIMRunOutputs runOutputs{outputViews};
+  CIMSoftwareRunner runner;
+  const CIMSoftwareRunner::Plan plan(transaction, /*batchReadbacks=*/true);
+  for (int8_t input : {int8_t{2}, int8_t{-3}}) {
+    for (auto &values : inputStorage)
+      values[0] = input;
+    for (auto &values : outputStorage)
+      values.fill(123456);
+    VectorTrace trace;
+    assert(!runner.run(plan, runInputs, runOutputs, &trace));
+    std::vector<int64_t> readPackets;
+    size_t started = 0;
+    for (const auto &event : trace.events) {
+      if (event.kind == CIMTraceEventKind::StartWork)
+        ++started;
+      if (event.kind != CIMTraceEventKind::ReadOutput)
+        continue;
+      assert(started == (event.groupId == 0 ? 40 : 80));
+      readPackets.push_back(event.packetIndex);
+    }
+    std::vector<int64_t> expectedPackets;
+    for (int64_t group : {0, 1}) {
+      for (int64_t macro : {0, 1}) {
+        for (int64_t slot = macro; slot < 40; slot += 2)
+          expectedPackets.push_back(4 + 5 * (40 * group + slot));
+        if (group == 1 && macro == 0)
+          expectedPackets.insert(expectedPackets.end(), {402, 405});
+      }
+    }
+    assert(readPackets == expectedPackets);
+    for (size_t index = 0; index < outputStorage.size(); ++index) {
+      const int32_t factor =
+          index < 80 ? static_cast<int32_t>(index + 1) : (index == 80 ? 1 : 0);
+      for (int32_t value : outputStorage[index])
+        assert(value == factor * input);
+    }
+  }
+}
+
 // Analytic expectations exercise the production runner without compiler or
 // Host fallback; the pair sweep does not duplicate its reduction loop.
 void checkInt8NumericModel() {
@@ -579,6 +749,9 @@ int main(int argc, char **argv) {
     return replayBF16Fixtures() ? 0 : 1;
   checkBF16NonnegativeCorrection();
   checkBF16LegacyCompensation();
+  checkIndependentReadbackBatches();
+  checkAliasedBF16Views();
+  checkAllMacroCaches();
   checkInt8NumericModel();
   if (argc == 2 && llvm::StringRef(argv[1]) == "--int8-numeric")
     return 0;

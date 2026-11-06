@@ -5,13 +5,12 @@
 #include "CIM22/Support/BF16Support.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <numeric>
-#include <optional>
 
 namespace cim22::execution {
 namespace {
@@ -26,9 +25,7 @@ llvm::Error runnerError(const llvm::Twine &message) {
 
 struct MacroState {
   std::array<int8_t, kCIMInputElements> input{};
-  std::array<int8_t, kCIMWeightElements> weight{};
   BF16InputPreparation bf16;
-  std::array<uint8_t, kCIMOutputElements> weightExponents{};
   // Store the final lane payload: signed INT21 or zero-extended BF16 bits.
   std::array<std::array<int32_t, kCIMOutputElements>, kCIMCacheRows>
       outputCache{};
@@ -130,6 +127,37 @@ bool hasWeightPacket(const CIMTransaction &executable,
   return false;
 }
 
+const char *validateWork(const CIMTransaction &transaction, const CIMWork &work,
+                         const DynamicInputBinding *input,
+                         const StaticWeightSection *weight,
+                         const ReadbackBinding *readback) {
+  if (!input || !weight)
+    return "CIM work has incomplete input or weight binding";
+  if (work.coreSlot < 0 || work.coreSlot >= kCIMCoreCount ||
+      work.macroSlot < 0 || work.macroSlot >= kCIMMacroCount ||
+      input->macroSlot != work.macroSlot || weight->coreSlot != work.coreSlot ||
+      weight->macroSlot != work.macroSlot)
+    return "CIM work has inconsistent Core or Macro placement";
+  if (!hasInputPacket(transaction, *input))
+    return "CIM input binding has no input Cache packet";
+  if (!hasWeightPacket(transaction, *weight))
+    return "CIM weight section has no weight packet";
+  if (weight->dataType == CIMDataType::BF16 &&
+      !hasWeightPacket(transaction, *weight, CIMPacketKind::WeightExponent))
+    return "CIM BF16 weight section has no Weight_EXP packet";
+  if (!readback)
+    return "CIM work has no readback binding";
+  if (input->dataType != weight->dataType ||
+      readback->dataType != input->dataType)
+    return "CIM work has inconsistent data mode";
+  return nullptr;
+}
+
+bool hasReadbackPlacement(const ReadbackBinding &binding, const CIMWork *work) {
+  return work && work->coreSlot >= 0 && work->coreSlot < kCIMCoreCount &&
+         work->macroSlot == binding.macroSlot;
+}
+
 void emitTrace(CIMTraceSink *trace, uint64_t &sequence, CIMTraceEventKind kind,
                int64_t groupId = -1, int64_t workId = -1,
                int64_t macroSlot = -1, int64_t packetIndex = -1,
@@ -179,10 +207,95 @@ llvm::Error validateBindings(const CIMTransaction &executable,
 }
 } // namespace
 
+CIMSoftwareRunner::Plan::Plan(const CIMTransaction &transaction,
+                              bool batchReadbacks)
+    : transaction(transaction) {
+  groups.reserve(transaction.getGroups().size());
+  for (const CIMGroup &group : transaction.getGroups())
+    groups.push_back({&group, {}});
+  llvm::sort(groups, [](const Group &lhs, const Group &rhs) {
+    return lhs.group->groupId < rhs.group->groupId;
+  });
+
+  // Readback may reorder by Macro within a wave; binding indices still
+  // determine where each output lands.
+  uint32_t waveCores = 0;
+  bool waveBatchable = false;
+  auto finishWave = [&] {
+    if (!waveBatchable)
+      return;
+    auto &readbacks = waves.back().readbacks;
+    std::stable_partition(
+        readbacks.begin(), readbacks.end(), [&](const Readback &readback) {
+          return transaction.getReadbacks()[readback.bindingIndex].macroSlot ==
+                 0;
+        });
+  };
+
+  // A later group on the same Core may overwrite Cache rows or change the
+  // selected Macro, so finish its predecessor's readbacks first.
+  for (auto [groupIndex, entry] : llvm::enumerate(groups)) {
+    const CIMGroup &group = *entry.group;
+    uint32_t groupCores = 0;
+    bool groupBatchable = true;
+    entry.works.reserve(group.works.size());
+    for (const CIMWork &work : group.works) {
+      const auto *input = findInput(transaction, group.groupId, work.workId);
+      const auto *weight = findWeight(transaction, group.groupId, work.workId);
+      const auto *readback =
+          findReadback(transaction, group.groupId, work.workId, work.macroSlot);
+      const char *error =
+          validateWork(transaction, work, input, weight, readback);
+      entry.works.push_back({input, weight, readback, error});
+      if (error)
+        groupBatchable = false;
+      else
+        groupCores |= uint32_t{1} << work.coreSlot;
+    }
+
+    llvm::SmallVector<Readback, 2> groupReadbacks;
+    for (auto [index, binding] : llvm::enumerate(transaction.getReadbacks())) {
+      if (binding.groupId != group.groupId)
+        continue;
+      size_t packetIndex = 0;
+      const bool found = hasReadbackSequence(transaction, binding, packetIndex);
+      const auto *work = findWork(transaction, binding.groupId, binding.workId);
+      groupReadbacks.push_back(
+          {index, work, found ? std::optional(packetIndex) : std::nullopt});
+      if (!found || !hasReadbackPlacement(binding, work))
+        groupBatchable = false;
+      else
+        groupCores |= uint32_t{1} << work->coreSlot;
+    }
+
+    // Keep malformed groups standalone, with their original error order.
+    if (waves.empty() || !waveBatchable || !groupBatchable ||
+        (waveCores & groupCores) != 0) {
+      finishWave();
+      waves.push_back({groupIndex + 1, {}});
+      waveCores = 0;
+      waveBatchable = batchReadbacks && groupBatchable;
+    }
+    Wave &wave = waves.back();
+    wave.groupEnd = groupIndex + 1;
+    wave.readbacks.insert(wave.readbacks.end(), groupReadbacks.begin(),
+                          groupReadbacks.end());
+    waveCores |= groupCores;
+  }
+  finishWave();
+}
+
 llvm::Error CIMSoftwareRunner::run(const CIMTransaction &executable,
                                    const CIMRunInputs &inputs,
                                    CIMRunOutputs &outputs,
                                    CIMTraceSink *trace) {
+  return run(Plan(executable), inputs, outputs, trace);
+}
+
+llvm::Error CIMSoftwareRunner::run(const Plan &plan, const CIMRunInputs &inputs,
+                                   CIMRunOutputs &outputs,
+                                   CIMTraceSink *trace) {
+  const CIMTransaction &executable = plan.transaction;
   uint64_t sequence = 0;
   auto fail = [&](const llvm::Twine &message) -> llvm::Error {
     emitTrace(trace, sequence, CIMTraceEventKind::Error);
@@ -193,64 +306,31 @@ llvm::Error CIMSoftwareRunner::run(const CIMTransaction &executable,
     return error;
   }
 
-  // Most transactions use few Macro slots. Initialize a slot's Cache only
-  // when configured, then retain it across groups for the existing readback
-  // semantics. Empty slots do not initialize their large payload arrays.
-  std::array<std::optional<MacroState>, kCIMCoreCount * kCIMMacroCount> macros;
+  // Keep only configured payloads: an array of optional<MacroState> can still
+  // compile to zeroing every slot's storage. Indices survive SmallVector growth
+  // and retain each slot's Cache across groups, without retaining it across
+  // runs.
+  std::array<int, kCIMCoreCount * kCIMMacroCount> macroIndices;
+  macroIndices.fill(-1);
+  llvm::SmallVector<MacroState, 2> macros;
   emitTrace(trace, sequence, CIMTraceEventKind::BeginRun);
 
-  std::vector<size_t> groupOrder(executable.getGroups().size());
-  std::iota(groupOrder.begin(), groupOrder.end(), 0);
-  llvm::sort(groupOrder, [&](size_t lhs, size_t rhs) {
-    return executable.getGroups()[lhs].groupId <
-           executable.getGroups()[rhs].groupId;
-  });
-
-  for (size_t groupIndex : groupOrder) {
-    const CIMGroup &group = executable.getGroups()[groupIndex];
-    for (const CIMWork &work : group.works) {
-      const DynamicInputBinding *input =
-          findInput(executable, group.groupId, work.workId);
-      const StaticWeightSection *weight =
-          findWeight(executable, group.groupId, work.workId);
-      if (!input || !weight)
-        return fail("CIM work has incomplete input or weight binding");
-      if (work.coreSlot < 0 || work.coreSlot >= kCIMCoreCount ||
-          work.macroSlot < 0 || work.macroSlot >= kCIMMacroCount ||
-          input->macroSlot != work.macroSlot ||
-          weight->coreSlot != work.coreSlot ||
-          weight->macroSlot != work.macroSlot)
-        return fail("CIM work has inconsistent Core or Macro placement");
-      if (!hasInputPacket(executable, *input))
-        return fail("CIM input binding has no input Cache packet");
-      if (!hasWeightPacket(executable, *weight))
-        return fail("CIM weight section has no weight packet");
-      if (weight->dataType == CIMDataType::BF16 &&
-          !hasWeightPacket(executable, *weight, CIMPacketKind::WeightExponent))
-        return fail("CIM BF16 weight section has no Weight_EXP packet");
-      const ReadbackBinding *readback =
-          findReadback(executable, group.groupId, work.workId, work.macroSlot);
-      if (!readback)
-        return fail("CIM work has no readback binding");
-      if (input->dataType != weight->dataType ||
-          readback->dataType != input->dataType)
-        return fail("CIM work has inconsistent data mode");
-      auto &slot = macros[macroIndex(work.coreSlot, work.macroSlot)];
-      if (!slot)
-        slot.emplace();
-      MacroState &macro = *slot;
-      size_t inputPosition = 0;
-      bool foundInput = false;
-      for (auto [index, candidate] :
-           llvm::enumerate(executable.getDynamicInputs())) {
-        if (&candidate == input) {
-          inputPosition = index;
-          foundInput = true;
-          break;
-        }
+  auto executeGroup = [&](const Plan::Group &entry) -> llvm::Error {
+    const CIMGroup &group = *entry.group;
+    for (auto [work, resolved] : llvm::zip_equal(group.works, entry.works)) {
+      if (resolved.error)
+        return fail(resolved.error);
+      const auto *input = resolved.input;
+      const auto *weight = resolved.weight;
+      const ReadbackBinding *readback = resolved.readback;
+      const size_t physicalSlot = macroIndex(work.coreSlot, work.macroSlot);
+      int &slot = macroIndices[physicalSlot];
+      if (slot < 0) {
+        slot = static_cast<int>(macros.size());
+        macros.emplace_back();
       }
-      if (!foundInput)
-        return fail("CIM work input binding is not addressable");
+      MacroState &macro = macros[slot];
+      const size_t inputPosition = input - executable.getDynamicInputs().data();
       if (input->dataType == CIMDataType::BF16) {
         auto prepared =
             prepareBF16Input(inputs.values[inputPosition].bf16Values, bf16Mode);
@@ -265,8 +345,10 @@ llvm::Error CIMSoftwareRunner::run(const CIMTransaction &executable,
                   inputs.values[inputPosition].values.end(),
                   macro.input.begin());
       }
-      macro.weight = weight->values;
-      macro.weightExponents = weight->exponents;
+      const std::array<int8_t, kCIMWeightElements> weightValues =
+          weight->values;
+      const std::array<uint8_t, kCIMOutputElements> weightExponents =
+          weight->exponents;
       emitTrace(trace, sequence, CIMTraceEventKind::ConfigureInput,
                 group.groupId, work.workId, work.macroSlot);
       emitTrace(trace, sequence, CIMTraceEventKind::ConfigureWeight,
@@ -278,7 +360,7 @@ llvm::Error CIMSoftwareRunner::run(const CIMTransaction &executable,
       std::array<int32_t, kCIMOutputElements> result{};
       for (size_t row = 0; row < kCIMOutputElements; ++row) {
         auto laneWeight =
-            llvm::ArrayRef(macro.weight)
+            llvm::ArrayRef(weightValues)
                 .slice(row * kCIMInputElements, kCIMInputElements);
         const bool hasSupport = input->dataType != CIMDataType::BF16 ||
                                 bf16Mode != BF16Compensation::SignSplit ||
@@ -292,14 +374,12 @@ llvm::Error CIMSoftwareRunner::run(const CIMTransaction &executable,
         if (sum < kCIMI21Min || sum >= kCIMI21MaxExclusive)
           return fail("CIM software result exceeds signed i21 range");
         if (input->dataType == CIMDataType::BF16) {
-          const uint8_t chipExponent = bf16Mode == BF16Compensation::None
-                                           ? macro.weightExponents[row]
-                                           : 0;
+          const uint8_t chipExponent =
+              bf16Mode == BF16Compensation::None ? weightExponents[row] : 0;
           const uint16_t chipBits = mlir::cim22::int21ToBF16(
               sum, chipExponent, macro.bf16.aligned.exponent);
-          auto restored =
-              restoreBF16Output(chipBits, macro.weightExponents[row],
-                                hasSupport, macro.bf16, bf16Mode);
+          auto restored = restoreBF16Output(chipBits, weightExponents[row],
+                                            hasSupport, macro.bf16, bf16Mode);
           if (!restored)
             return fail(llvm::toString(restored.takeError()));
           result[row] = *restored;
@@ -309,22 +389,29 @@ llvm::Error CIMSoftwareRunner::run(const CIMTransaction &executable,
       }
       macro.outputCache[readback->outputCacheAddress] = result;
     }
+    return llvm::Error::success();
+  };
 
-    for (auto [index, binding] : llvm::enumerate(executable.getReadbacks())) {
-      if (binding.groupId != group.groupId)
-        continue;
-      size_t packetIndex = 0;
-      if (!hasReadbackSequence(executable, binding, packetIndex))
+  size_t groupIndex = 0;
+  for (const Plan::Wave &wave : plan.waves) {
+    for (; groupIndex < wave.groupEnd; ++groupIndex)
+      if (llvm::Error error = executeGroup(plan.groups[groupIndex]))
+        return error;
+
+    for (const Plan::Readback &resolved : wave.readbacks) {
+      const size_t index = resolved.bindingIndex;
+      const ReadbackBinding &binding = executable.getReadbacks()[index];
+      if (!resolved.packetIndex)
         return fail("CIM readback is missing 1010/control/0101 sequence");
-      const CIMWork *work =
-          findWork(executable, binding.groupId, binding.workId);
-      if (!work || work->coreSlot < 0 || work->coreSlot >= kCIMCoreCount ||
-          work->macroSlot != binding.macroSlot)
+      const size_t packetIndex = *resolved.packetIndex;
+      const CIMWork *work = resolved.work;
+      if (!hasReadbackPlacement(binding, work))
         return fail("CIM readback references unknown placement");
-      const auto &slot = macros[macroIndex(work->coreSlot, work->macroSlot)];
-      if (!slot)
+      const int slot =
+          macroIndices[macroIndex(work->coreSlot, work->macroSlot)];
+      if (slot < 0)
         return fail("CIM readback references an unconfigured Macro");
-      const MacroState &macro = *slot;
+      const MacroState &macro = macros[slot];
       emitTrace(trace, sequence, CIMTraceEventKind::ConfigureReturnRoute,
                 binding.groupId, binding.workId, binding.macroSlot,
                 static_cast<int64_t>(packetIndex));

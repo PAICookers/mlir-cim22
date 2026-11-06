@@ -10,10 +10,16 @@
 #include <mutex>
 
 namespace cim22::runtime {
+// One loaded model, with per-backend state owned for its execution lifetime.
+// Invoke, USB configuration and capture serialize through mutex.
 struct Session {
   // Keeps either a JIT engine or an RTLD_LOCAL model DSO alive through invoke.
   std::shared_ptr<void> code;
   ModelData model;
+  // Lazily built under the invoke lock. Plans borrow immutable transactions
+  // from model and are destroyed before it.
+  std::vector<std::optional<::cim22::execution::CIMSoftwareRunner::Plan>>
+      softwarePlans;
   void (*invoke)(void **) = nullptr;
   std::unique_ptr<::cim22::runtime::CIMDevice> device;
   // The board runner borrows the device; destroy it first.
