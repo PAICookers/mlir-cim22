@@ -19,6 +19,7 @@
 #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace mlir;
@@ -52,15 +53,16 @@ constexpr StringLiteral packetPipeline =
     "func.func(materialize-cim-schedule,map-cim-schedule),"
     "materialize-cim-execution-plan,materialize-cim-static-weight-section,"
     "lower-cimframe-commands-to-packets,verify-cimframe";
-constexpr StringLiteral hostPipeline =
+constexpr StringLiteral hostBufferization =
     "convert-elementwise-to-linalg,"
     "one-shot-bufferize{bufferize-function-boundaries "
     "function-boundary-type-conversion=identity-layout-map "
     "analysis-heuristic=top-down},"
     "buffer-results-to-out-params{modify-public-functions=true},"
     "buffer-deallocation-pipeline,"
-    "convert-bufferization-to-memref,"
-    "lower-cim-host-copies,convert-linalg-to-loops,expand-strided-metadata,"
+    "convert-bufferization-to-memref,lower-cim-host-copies";
+constexpr StringLiteral hostLLVMLowering =
+    "convert-linalg-to-loops,expand-strided-metadata,"
     // Fold static descriptors and loop bounds before expanding control flow.
     "canonicalize,cse,"
     "lower-affine,"
@@ -453,7 +455,7 @@ public:
   }
   void getDependentDialects(DialectRegistry &registry) const final {
     OpPassManager pm(ModuleOp::getOperationName());
-    appendPipeline(pm, hostPipeline);
+    appendHostPipeline(pm, /*earlyFree=*/true);
     pm.getDependentDialects(registry);
   }
   void runOnOperation() final {
@@ -487,7 +489,7 @@ public:
               BoolAttr::get(host.getContext(), false));
     }
     OpPassManager pm(ModuleOp::getOperationName());
-    appendPipeline(pm, hostPipeline);
+    appendHostPipeline(pm, canReleaseAfterLastUse(host));
     if (failed(runPipeline(pm, host)))
       return signalPassFailure();
     // Do not silently claim LLVM output when an unsupported Host op survives.
@@ -500,6 +502,66 @@ public:
     });
     if (illegal)
       signalPassFailure();
+  }
+
+private:
+  static void appendHostPipeline(OpPassManager &pm, bool earlyFree) {
+    appendPipeline(pm, hostBufferization);
+    if (earlyFree)
+      appendPipeline(pm, "func.func(optimize-allocation-liveness)");
+    appendPipeline(pm, hostLLVMLowering);
+  }
+
+  // The upstream pass tracks SSA aliases, not addresses kept by opaque code.
+  // Prove that source IR has no such escapes before bufferization. Native CIM
+  // wrappers may pass numeric stack buffers to their synchronous dispatch.
+  static bool canReleaseAfterLastUse(ModuleOp host) {
+    SymbolTableCollection symbols;
+    auto numericBuffer = [](Type type) {
+      auto buffer = dyn_cast<BaseMemRefType>(type);
+      return !buffer ||
+             isa<IntegerType, FloatType, IndexType>(buffer.getElementType());
+    };
+    return !host.walk([&](Operation *op) {
+                  if (auto call = dyn_cast<func::CallOp>(op)) {
+                    auto callee = symbols.lookupNearestSymbolFrom<func::FuncOp>(
+                        call, call.getCalleeAttr());
+                    if (callee && !callee.isDeclaration())
+                      return WalkResult::advance();
+                    for (Value operand : call.getOperands()) {
+                      if (isa<IntegerType, FloatType, IndexType>(
+                              operand.getType()))
+                        continue;
+                      while (auto cast =
+                                 operand.getDefiningOp<memref::CastOp>())
+                        operand = cast.getSource();
+                      if (!operand.getDefiningOp<memref::AllocaOp>())
+                        return WalkResult::interrupt();
+                    }
+                    return llvm::all_of(
+                               call.getResultTypes(),
+                               [](Type type) {
+                                 return isa<IntegerType, FloatType, IndexType>(
+                                     type);
+                               })
+                               ? WalkResult::advance()
+                               : WalkResult::interrupt();
+                  }
+                  if (isa<ModuleOp, func::FuncOp, func::ReturnOp>(op))
+                    return WalkResult::advance();
+                  if (isa<memref::AllocOp, memref::AllocaOp, memref::CastOp,
+                          memref::CopyOp, memref::DeallocOp, memref::DimOp,
+                          memref::LoadOp, memref::StoreOp>(op) &&
+                      llvm::all_of(op->getOperandTypes(), numericBuffer) &&
+                      llvm::all_of(op->getResultTypes(), numericBuffer))
+                    return WalkResult::advance();
+                  StringRef dialect = op->getName().getDialectNamespace();
+                  return llvm::StringSwitch<WalkResult>(dialect)
+                      .Cases({"arith", "cf", "linalg", "math", "scf", "tensor"},
+                             WalkResult::advance())
+                      .Default(WalkResult::interrupt());
+                })
+                .wasInterrupted();
   }
 };
 
@@ -519,7 +581,7 @@ public:
     // before execution, while the context can still load dialect interfaces.
     OpPassManager pm(ModuleOp::getOperationName());
     appendPipeline(pm, packetPipeline);
-    appendPipeline(pm, hostPipeline);
+    pm.addPass(std::make_unique<LowerCIMHostToLLVM>());
     pm.getDependentDialects(registry);
   }
   Option<std::string> stage{*this, "stage", llvm::cl::init("packet"),
