@@ -51,7 +51,8 @@ constexpr StringLiteral packetPipeline =
 constexpr StringLiteral hostPipeline =
     "convert-elementwise-to-linalg,"
     "one-shot-bufferize{bufferize-function-boundaries "
-    "function-boundary-type-conversion=identity-layout-map},"
+    "function-boundary-type-conversion=identity-layout-map "
+    "analysis-heuristic=top-down},"
     "buffer-results-to-out-params{modify-public-functions=true},"
     "buffer-deallocation-pipeline,"
     "convert-bufferization-to-memref,"
@@ -59,7 +60,10 @@ constexpr StringLiteral hostPipeline =
     // Fold static descriptors and loop bounds before expanding control flow.
     "canonicalize,cse,"
     "lower-affine,"
-    "convert-scf-to-cf,arith-expand{include-bf16=true},"
+    // Bound SCF conversion bookkeeping to one Host function and discard
+    // rollback state on large, statically expanded graphs.
+    "func.func(convert-scf-to-cf{allow-pattern-rollback=false}),"
+    "arith-expand{include-bf16=true},"
     "convert-math-to-llvm,convert-arith-to-llvm,"
     "convert-cf-to-llvm,finalize-memref-to-llvm,convert-func-to-llvm,"
     "reconcile-unrealized-casts";
@@ -101,13 +105,26 @@ public:
   }
 };
 
-// Tiling creates Host pad/slice/concat and cross-K accumulation around the
-// transactions. Move those wrappers back to Host and outline only transactions
-// as device entry points. Thus no tensor arithmetic is delegated to runtime.
+// Move tile preparation and cross-K accumulation back to Host. Outline each
+// complete device wave behind a typed stub with its packet bindings.
 LogicalResult outlineTransactions(ModuleOp host, ModuleOp device) {
+  SymbolTable hostSymbols(host);
+  SymbolTable deviceSymbols(device);
+  // Keep resource ownership indexed while moving each wave to its own symbol.
+  // Updating a binding in place preserves packet order in the device module.
+  using PacketOwner = std::pair<StringAttr, Attribute>;
+  llvm::DenseMap<PacketOwner, SmallVector<Operation *, 1>> packets;
+  for (Operation &packet : device.getBody()->getOperations()) {
+    auto binding = packet.getAttrOfType<DictionaryAttr>("cim.plan_binding");
+    if (auto owner = binding ? binding.getAs<FlatSymbolRefAttr>("function")
+                             : FlatSymbolRefAttr())
+      packets[{owner.getAttr(), binding.get("resource")}].push_back(&packet);
+  }
   SmallVector<func::FuncOp> wrappers(device.getOps<func::FuncOp>());
   for (func::FuncOp wrapper : wrappers) {
-    auto declaration = host.lookupSymbol<func::FuncOp>(wrapper.getSymName());
+    StringAttr owner = wrapper.getSymNameAttr();
+    auto declaration =
+        dyn_cast_or_null<func::FuncOp>(hostSymbols.lookup(owner));
     if (!declaration || !declaration.isDeclaration() ||
         declaration.getFunctionType() != wrapper.getFunctionType())
       return wrapper.emitError("missing matching Host kernel declaration");
@@ -116,16 +133,16 @@ LogicalResult outlineTransactions(ModuleOp host, ModuleOp device) {
     IRRewriter rewriter(host.getContext());
     unsigned suffix = 0;
     for (cim::TransactionOp transaction : transactions) {
-      std::string name;
+      StringAttr name;
       do {
-        name = (wrapper.getSymName() + "_transaction_" + Twine(suffix++)).str();
-      } while (SymbolTable::lookupSymbolIn(host, name) ||
-               SymbolTable::lookupSymbolIn(device, name));
+        name = rewriter.getStringAttr(
+            (wrapper.getSymName() + "_transaction_" + Twine(suffix++)).str());
+      } while (hostSymbols.lookup(name) || deviceSymbols.lookup(name));
       auto type = rewriter.getFunctionType(transaction->getOperandTypes(),
                                            transaction->getResultTypes());
-      rewriter.setInsertionPointToEnd(device.getBody());
       auto kernel =
-          func::FuncOp::create(rewriter, transaction.getLoc(), name, type);
+          func::FuncOp::create(transaction.getLoc(), name.getValue(), type);
+      deviceSymbols.insert(kernel);
       kernel->setAttr("cim.kernel", rewriter.getUnitAttr());
       for (StringRef attribute :
            {"cim.target_profile", "cim.target_profile_version",
@@ -142,36 +159,37 @@ LogicalResult outlineTransactions(ModuleOp host, ModuleOp device) {
                      rewriter.getI64IntegerAttr(0));
       // Packet resources follow the outlined function. Match resource symbols
       // rather than work ids, which may be reused by separate transactions.
-      llvm::SmallDenseSet<Attribute> resources;
+      auto newOwner = FlatSymbolRefAttr::get(kernel);
       transaction.walk([&](cim::ConfigureWeightOp weight) {
-        resources.insert(weight->getAttr("resource"));
+        auto found = packets.find({owner, weight->getAttr("resource")});
+        if (found == packets.end())
+          return;
+        for (Operation *packet : found->second) {
+          NamedAttrList binding(
+              packet->getAttrOfType<DictionaryAttr>("cim.plan_binding"));
+          binding.set("function", newOwner);
+          packet->setAttr("cim.plan_binding",
+                          binding.getDictionary(host.getContext()));
+        }
+        // An already moved resource belonged to the first matching wave.
+        packets.erase(found);
       });
-      for (Operation &packet : device.getBody()->getOperations()) {
-        auto binding = packet.getAttrOfType<DictionaryAttr>("cim.plan_binding");
-        if (!binding || !resources.contains(binding.get("resource")))
-          continue;
-        auto function = binding.getAs<FlatSymbolRefAttr>("function");
-        if (!function || function.getValue() != wrapper.getSymName())
-          continue;
-        NamedAttrList updated(binding);
-        updated.set("function", FlatSymbolRefAttr::get(kernel));
-        packet.setAttr("cim.plan_binding",
-                       updated.getDictionary(host.getContext()));
-      }
       func::ReturnOp::create(rewriter, transaction.getLoc(),
                              clone->getResults());
 
-      rewriter.setInsertionPointToEnd(host.getBody());
       auto stub =
-          func::FuncOp::create(rewriter, transaction.getLoc(), name, type);
+          func::FuncOp::create(transaction.getLoc(), name.getValue(), type);
+      hostSymbols.insert(stub);
       stub.setPrivate();
       stub->setAttr("cim.kernel", rewriter.getUnitAttr());
       rewriter.setInsertionPoint(transaction);
       rewriter.replaceOpWithNewOp<func::CallOp>(transaction, stub,
                                                 transaction.getInputs());
     }
-    declaration.erase();
+    hostSymbols.erase(declaration);
+    deviceSymbols.remove(wrapper);
     wrapper->moveBefore(host.getBody(), host.getBody()->end());
+    hostSymbols.insert(wrapper);
     wrapper.setPrivate();
     wrapper->removeAttr("cim.execution_plan_schema_version");
     wrapper->removeAttr("cim.kernel");

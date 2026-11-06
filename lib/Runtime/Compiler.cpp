@@ -21,6 +21,7 @@
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
@@ -171,13 +172,16 @@ defineDispatchWrapper(func::FuncOp stub, int64_t id, func::FuncOp dispatchFunc,
   return success();
 }
 
+// Validate split packet IR and build native dispatch bindings.
+// An object path selects AOT emission. Otherwise the Session owns a JIT entry.
 LogicalResult load(Session &session, const char *path, StringRef entryName,
                    StringRef objectPath = {}) {
   DialectRegistry registry;
   registerCIM22Compiler(registry);
   registerBuiltinDialectTranslation(registry);
   registerLLVMDialectTranslation(registry);
-  MLIRContext context(registry);
+  // Limit live rewrite state during native lowering of large Host graphs.
+  MLIRContext context(registry, MLIRContext::Threading::DISABLED);
   // Dispatch wrappers introduce SCF and MemRef even when the parsed artifact
   // contains neither. Load them before constructing operations, not later when
   // the pass manager initializes dependencies.
@@ -258,31 +262,62 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
           {}));
   dispatchInt8.setPrivate();
   dispatchInt8->setAttr("llvm.emit_c_interface", builder.getUnitAttr());
+  // Index the large device module once. Keep ordinals because packet
+  // verification relies on the original adjacency within each transaction.
+  using IndexedOp = std::pair<size_t, Operation *>;
+  llvm::DenseMap<StringAttr, IndexedOp> weights;
+  llvm::DenseMap<StringAttr, SmallVector<IndexedOp>> packets;
+  SmallVector<IndexedOp> shared;
+  for (auto [index, op] : llvm::enumerate(device.getBody()->getOperations())) {
+    if (isa<func::FuncOp>(op))
+      continue;
+    IndexedOp entry{index, &op};
+    auto binding = op.getAttrOfType<DictionaryAttr>("cim.plan_binding");
+    auto function = binding ? binding.getAs<FlatSymbolRefAttr>("function")
+                            : FlatSymbolRefAttr();
+    if (auto weight = dyn_cast<cim::StaticWeightOp>(op)) {
+      weights.try_emplace(weight.getSymNameAttr(), entry);
+    } else if (function) {
+      packets[function.getAttr()].push_back(entry);
+    } else if (!binding) {
+      shared.push_back(entry);
+    }
+  }
   for (auto kernel : device.getOps<func::FuncOp>()) {
     auto stub = host.lookupSymbol<func::FuncOp>(kernel.getSymName());
     if (!stub || !stub.isDeclaration() ||
         stub.getFunctionType() != kernel.getFunctionType())
       return kernel.emitError("missing Host transaction declaration");
-    llvm::SmallDenseSet<Attribute> resources;
-    kernel.walk([&](cim::ConfigureWeightOp weight) {
-      resources.insert(weight.getResourceAttr());
+    SmallVector<IndexedOp> operations(shared);
+    StringAttr function = kernel.getSymNameAttr();
+    if (auto it = packets.find(function); it != packets.end())
+      llvm::append_range(operations, it->second);
+    llvm::SmallDenseSet<StringAttr> resources;
+    kernel.walk([&](cim::ConfigureWeightOp configuration) {
+      auto ref = dyn_cast<FlatSymbolRefAttr>(configuration.getResourceAttr());
+      if (!ref)
+        return;
+      StringAttr resource = ref.getAttr();
+      if (!resources.insert(resource).second)
+        return;
+      auto it = weights.find(resource);
+      if (it == weights.end())
+        return;
+      auto binding =
+          it->second.second->getAttrOfType<DictionaryAttr>("cim.plan_binding");
+      if (binding) {
+        auto owner = binding.getAs<FlatSymbolRefAttr>("function");
+        if (!owner || owner.getAttr() != function)
+          return;
+      }
+      operations.push_back(it->second);
+    });
+    llvm::sort(operations, [](const IndexedOp &a, const IndexedOp &b) {
+      return a.first < b.first;
     });
     OwningOpRef<ModuleOp> single(ModuleOp::create(kernel.getLoc()));
-    for (Operation &op : device.getBody()->getOperations()) {
-      if (isa<func::FuncOp>(op))
-        continue;
-      // Unrelated static weights need not be cloned and verified per kernel.
-      if (auto weight = dyn_cast<cim::StaticWeightOp>(op);
-          weight && !resources.contains(FlatSymbolRefAttr::get(weight)))
-        continue;
-      auto binding = op.getAttrOfType<DictionaryAttr>("cim.plan_binding");
-      if (binding) {
-        auto symbol = binding.getAs<FlatSymbolRefAttr>("function");
-        if (!symbol || symbol.getValue() != kernel.getSymName())
-          continue;
-      }
-      single->getBody()->push_back(op.clone());
-    }
+    for (const IndexedOp &entry : operations)
+      single->getBody()->push_back(entry.second->clone());
     single->getBody()->push_back(kernel->clone());
     auto transaction = mlir::cim22::target::compileCIMTransaction(*single);
     if (failed(transaction))
@@ -297,6 +332,9 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
     session.model.transactions.push_back(std::move(*transaction));
     session.model.kernelNames.push_back(kernel.getSymName().str());
   }
+  // Transactions own the decoded data, so device IR can be released before
+  // Host bufferization allocates its analysis state.
+  device.erase();
   entry->setAttr("llvm.emit_c_interface", builder.getUnitAttr());
   if (failed(verify(host)))
     return failure();
@@ -346,19 +384,22 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
     // AOT emits bytes directly: ExecutionEngine::dumpToObjectFile has no error
     // result and cannot report an open/write failure to the native caller.
     llvm::LLVMContext llvmContext;
-    auto module = translateModuleToLLVMIR(host, llvmContext);
-    if (!module)
+    auto llvmModule = translateModuleToLLVMIR(host, llvmContext);
+    if (!llvmModule)
       return failure();
+    // Drop Host MLIR before serialization and object emission allocate their
+    // own copies of the model data and native code.
+    module = nullptr;
     auto data = ::cim22::runtime::encodeModelData(session.model);
     if (!data) {
       session.error = llvm::toString(data.takeError());
       return failure();
     }
-    addModelDescriptor(*module, entryName, *data);
-    ExecutionEngine::setupTargetTripleAndDataLayout(module.get(),
+    addModelDescriptor(*llvmModule, entryName, *data);
+    ExecutionEngine::setupTargetTripleAndDataLayout(llvmModule.get(),
                                                     machine->get());
     llvm::orc::SimpleCompiler compiler(**machine);
-    auto object = compiler(*module);
+    auto object = compiler(*llvmModule);
     if (!object) {
       session.error = llvm::toString(object.takeError());
       return failure();
