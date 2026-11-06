@@ -7,7 +7,14 @@ from typing import Literal
 
 @dataclass(frozen=True, slots=True)
 class PLLClockSetting:
-    """Immutable target/actual MHz, MSB-first serial HEX and availability label."""
+    """A nominal clock preset from the supplier table.
+
+    Attributes:
+        target_frequency_mhz: Requested frequency used to look up the row.
+        actual_frequency_mhz: Nominal clock produced by the row, in MHz.
+        serial_hex: Six-digit hexadecimal command in MSB-first order.
+        status: Supplier availability classification.
+    """
 
     target_frequency_mhz: float
     actual_frequency_mhz: float
@@ -220,10 +227,16 @@ PLL_CLOCK_TABLE: tuple[PLLClockSetting, ...] = (
 
 
 def select_pll_clock(frequency_mhz: float) -> PLLClockSetting:
-    """Look up a listed target MHz; warn only for rows marked "maybe available".
+    """Look up an exact clock target and warn on provisional presets.
 
-    Unlisted targets raise ValueError. Neither serial commands nor nearest
-    frequencies are calculated at runtime.
+    Args:
+        frequency_mhz: Target frequency in MHz, as listed in the table.
+
+    Returns:
+        The supplier table row and its serial command.
+
+    Raises:
+        ValueError: The table contains no matching target.
     """
     setting = next(
         (

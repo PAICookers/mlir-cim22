@@ -34,17 +34,74 @@ def _is_module_input(node: torch.fx.Node) -> bool:
     return False
 
 
+def _aot_decompositions() -> dict[torch._ops.OpOverload, Callable[..., object]]:
+    """Keep static select-scatter updates local to the overwritten slice."""
+    from torch_mlir.extras.fx_decomp_util import get_decomposition_table
+
+    # torch-mlir caches its table across backends.
+    decompositions = dict(get_decomposition_table())
+    select_scatter = torch.ops.aten.select_scatter.default
+    original = decompositions.get(select_scatter)
+    if original is None:
+        return decompositions
+
+    def select_scatter_as_slice(
+        tensor: torch.Tensor,
+        source: torch.Tensor,
+        dim: int | torch.SymInt,
+        index: int | torch.SymInt,
+    ) -> torch.Tensor:
+        if (
+            isinstance(dim, int)
+            and isinstance(index, int)
+            and -tensor.ndim <= dim < tensor.ndim
+            and tensor.dtype == source.dtype
+            and all(
+                isinstance(size, int) for size in (*tensor.shape, *source.shape)
+            )
+        ):
+            axis = dim % tensor.ndim
+            extent = tensor.shape[axis]
+            if (
+                -extent <= index < extent
+                and source.shape
+                == tensor.shape[:axis] + tensor.shape[axis + 1 :]
+            ):
+                start = index % extent
+                # torch-mlir lowers slice_scatter to tensor.insert_slice.
+                return torch.ops.aten.slice_scatter.default(
+                    tensor, source.unsqueeze(axis), axis, start, start + 1, 1
+                )
+        return original(tensor, source, dim, index)
+
+    decompositions[select_scatter] = select_scatter_as_slice
+    return decompositions
+
+
 def backend(
     graph: torch.fx.GraphModule,
     example_inputs: list[torch.Tensor],
     *,
     options: BackendOptions | None = None,
 ) -> TensorCallable:
-    """Compile sequential inference; Dynamo caches the returned AOT callable.
+    """Compile a static CPU inference graph for torch.compile.
 
     Reference executes the captured graph with original CPU PyTorch operators.
-    Native modes use AOTAutograd to preserve mutations and input aliases. Parameters are
-    cloned into constants and must remain fixed for this specialization.
+    Native modes use AOTAutograd to preserve mutations and input aliases.
+    Frozen read-only parameters must remain fixed for this specialization.
+
+    Args:
+        graph: FX graph supplied by Dynamo.
+        example_inputs: Tensors that define the static specialization.
+        options: BackendOptions for runtime selection, compensation, device
+            configuration and optional output directories.
+
+    Returns:
+        A callable that Dynamo caches and uses for inference.
+
+    Raises:
+        ValueError: Gradients are enabled, options are unsupported, or
+            reference mode received non-CPU tensors.
     """
     options = options or {}
     _validate_options(options, allow_reference=True)
@@ -67,8 +124,6 @@ def backend(
         if artifact_dir is not None or debug_dir is not None:
             raise ValueError("CIM22 reference does not emit native artifacts")
         return graph.forward
-
-    from torch_mlir.extras.fx_decomp_util import get_decomposition_table
 
     parameter_sources = {
         i: node.meta["grapharg"].source
@@ -143,5 +198,5 @@ def backend(
 
     # Decompose during AOT's existing trace instead of tracing the graph again.
     return aot_autograd(
-        fw_compiler=_compiler, decompositions=get_decomposition_table()
+        fw_compiler=_compiler, decompositions=_aot_decompositions()
     )(graph, example_inputs)

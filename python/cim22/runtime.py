@@ -49,13 +49,19 @@ def _release_session(
 
 @dataclass(frozen=True, slots=True)
 class PLLConfig:
-    """Optional serial commands for Config, Work and Readback clock phases.
+    """Serial PLL commands for the configuration, work and readback phases.
 
-    Commands are six-digit HEX strings; native configuration checks PLL limits
-    before opening USB.
-    On Linux, a missing serial device uses the manually configured clock;
-    an available device must return an exact echo. Windows serial control is
-    unsupported: omit PLLConfig and pll_port and configure the clock manually.
+    The native runtime checks PLL limits before opening USB. On Linux, a
+    missing serial device uses the manually configured clock. A present
+    device must echo the command exactly. An echoed word can be reused
+    across phases and transactions within the open USB session. Configure
+    the clock manually on Windows.
+
+    Attributes:
+        port: Linux serial device path.
+        config_hex: Six-digit hexadecimal word for the configuration phase.
+        work_hex: Six-digit hexadecimal word for the WorkOnce phase.
+        readback_hex: Six-digit hexadecimal word for the readback phase.
     """
 
     port: str
@@ -79,7 +85,17 @@ class PLLConfig:
 
 @dataclass(frozen=True, slots=True)
 class CIMTimingConfig:
-    """Board startup and per-operation delays, in milliseconds."""
+    """Nonnegative USB board delays in milliseconds.
+
+    Attributes:
+        startup_delay_ms: Wait after opening the bridge.
+        cache_write_delay_ms: Wait after each input Cache write.
+        weight_write_delay_ms: Wait after each actual weight write.
+        work_delay_ms: Wait after the full WorkOnce batch for computation and
+            output Cache writeback to finish.
+        readback_select_delay_ms: Wait after selecting the Macros in a batch
+            and before requesting their output Cache rows.
+    """
 
     startup_delay_ms: int = 20
     cache_write_delay_ms: int = 1
@@ -103,12 +119,33 @@ class CIMTimingConfig:
 
 @dataclass(frozen=True, slots=True)
 class UsbConfig:
-    """Platform USB bridge settings and optional supplier PLL selection.
+    """Platform USB bridge selection, transport limits and board timing.
 
-    clock_frequency_mhz selects the same clock in all three phases. Without
-    pll_port the caller configures that clock manually; clock_setting records
-    the selected table frequency, not a measured or verified hardware clock.
-    ``timing`` controls board startup and per-operation waits.
+    Attributes:
+        vendor_id: USB vendor ID.
+        product_id: USB product ID.
+        bulk_in_endpoint: Bulk receive endpoint address, including IN bit.
+        bulk_out_endpoint: Bulk transmit endpoint address.
+        bus_number: Linux bus selector. 0xFF means unspecified. Supply it
+            together with device_address on Linux.
+        device_address: Device selector. 0xFF means unspecified.
+        interface_number: USB interface to claim.
+        alternate_setting: Alternate setting on the selected interface.
+        physical_link: Bridge physical-link index (0–3).
+        logical_channel: Bridge transmit-channel index (0–7).
+        word_byte_order: Record word order, 0 for big-endian and 1 for
+            little-endian.
+        transfer_timeout_ms: Timeout for a USB write transfer.
+        receive_poll_timeout_ms: Poll timeout for the USB receive loop.
+        response_timeout_ms: Deadline for collecting one Macro readback batch.
+        pll: Optional serial PLL words, one per phase.
+        clock_frequency_mhz: Optional table target in MHz for all three phases.
+            Mutually exclusive with pll.
+        pll_port: Optional Linux serial path for clock_frequency_mhz. Without
+            it the caller sets the clock manually.
+        timing: Board startup and operation pacing.
+        clock_setting: Resolved table entry, if requested. It records nominal
+            table settings. Readback timing still uses the configured delays.
     """
 
     vendor_id: int
@@ -183,7 +220,18 @@ class UsbConfig:
 
 
 def runtime_library(library: Path | None = None) -> Path:
-    """Resolve the installed execution library without loading compiler code."""
+    """Resolve the native execution library.
+
+    Args:
+        library: Explicit library path. None uses CIM22_RUNTIME_LIBRARY or
+            the packaged library.
+
+    Returns:
+        The resolved absolute path.
+
+    Raises:
+        FileNotFoundError: The selected library is missing.
+    """
     if library is None:
         configured = os.environ.get("CIM22_RUNTIME_LIBRARY")
         library = (
@@ -210,7 +258,18 @@ def runtime_library(library: Path | None = None) -> Path:
 
 
 def compiler_library(library: Path) -> Path:
-    """The compilation adapter is required at build time, never for model loading."""
+    """Resolve the compiler adapter used for compilation and raw packet loads.
+
+    Args:
+        library: Runtime library path. The compiler is adjacent unless
+            CIM22_COMPILER_LIBRARY selects a different path.
+
+    Returns:
+        The resolved absolute path.
+
+    Raises:
+        FileNotFoundError: The selected compiler adapter is missing.
+    """
     configured = os.environ.get("CIM22_COMPILER_LIBRARY")
     path = (
         Path(configured)
@@ -232,12 +291,32 @@ class Session:
     Inputs must match the compiled static shapes and FP32/INT8/INT32 dtypes.
     All arrays must be contiguous and aligned in CPU memory.
     Every call allocates independent output arrays owned by Python. Loading and
-    inference never invoke PyTorch or a substitute for the native CIM runner.
+    inference use the native CIM runner. Use the context manager or close()
+    to release the loaded model and any USB resources.
+
+    Attributes:
+        input_shapes: Input shapes in flat signature order.
+        input_dtypes: NumPy dtypes in flat input order.
+        output_shapes: Output shapes in flat result order.
+        output_dtypes: NumPy dtypes in flat result order.
+        num_transactions: Number of static CIM transactions in the model.
     """
 
     def __init__(
         self, artifact: Path, library: Path | None = None, entry: str = "main"
     ) -> None:
+        """Open a native model or a diagnostic packet artifact.
+
+        Args:
+            artifact: Compiled .so/.dll or textual packet IR.
+            library: Optional override for the native execution library.
+            entry: Function name for raw packet IR. A native model supplies
+                its own entry.
+
+        Raises:
+            FileNotFoundError: The artifact or a required library is missing.
+            RuntimeError: Native loading rejected the artifact.
+        """
         library = runtime_library(library)
         self._library = _load_library(library)
         self._lock = threading.RLock()
@@ -317,7 +396,16 @@ class Session:
         self.num_transactions = lib.cim22_session_num_transactions(self._handle)
 
     def configure_usb(self, config: UsbConfig) -> None:
-        """Open USB with optional PLL control or a manually configured clock."""
+        """Open or replace the bridge for a loaded USB model.
+
+        Args:
+            config: Bridge identity, transport settings, timing and PLL
+                settings. Reopening starts a fresh device state.
+
+        Raises:
+            RuntimeError: The Session is closed, the runtime rejects USB
+                configuration, or bridge setup fails.
+        """
         with self._lock:
             self._require_open()
             native_config = _UsbConfig.from_config(config)
@@ -359,10 +447,21 @@ class Session:
     ) -> NDArray[np.uint64]:
         """Capture raw output flits for one transaction, without Host execution.
 
-        Inputs are contiguous uint16 BF16 bit patterns shaped (bindings, 64),
-        in dynamic-binding order. Returns (readbacks, 7) uint64 flits: header,
-        then six body flits. This diagnostic preserves the response unchanged
-        for protocol inspection; use normal invocation for tensor outputs.
+        Capture writes all weights and invalidates cached weight residency.
+
+        Args:
+            transaction: Zero-based index into the artifact's transactions.
+            inputs: Aligned contiguous uint16 BF16 bit patterns of shape
+                (bindings, 64), in dynamic-binding order.
+
+        Returns:
+            uint64 array shaped (readbacks, 7) in binding order. Each row
+            contains the raw header and six raw body flits.
+
+        Raises:
+            TypeError: The index or input dtype is invalid.
+            ValueError: The index is out of range or input layout is invalid.
+            RuntimeError: The Session is closed or the native capture fails.
         """
         with self._lock:
             self._require_open()
@@ -423,7 +522,20 @@ class Session:
             raise RuntimeError("CIM22 session is closed")
 
     def __call__(self, *inputs: TensorArray) -> tuple[TensorArray, ...]:
-        """Execute synchronously, raising on shape, type or native runner errors."""
+        """Execute one synchronous inference.
+
+        Args:
+            *inputs: Aligned, C-contiguous NumPy arrays matching the static
+                input shapes, dtypes and flat signature order.
+
+        Returns:
+            Independent NumPy arrays in the model's flat result order.
+
+        Raises:
+            TypeError: An input is not a NumPy array of the required dtype.
+            ValueError: The input count, shape, alignment or layout is invalid.
+            RuntimeError: The Session is closed or native execution fails.
+        """
         with self._lock:
             self._require_open()
             if len(inputs) != len(self.input_shapes):

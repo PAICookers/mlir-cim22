@@ -15,6 +15,11 @@
 #include "mlir/Pass/Pass.h"
 
 namespace mlir::cim {
+/// Track the source Linear across BF16 sign splitting and kernel outlining.
+/// This temporary attribute scopes dispatch reordering to one source operator.
+inline constexpr llvm::StringLiteral kResidencyLinearAttr =
+    "cim.residency_linear";
+
 #define GEN_PASS_DECL
 #include "CIM22/Conversion/LinalgToCIM/Passes.h.inc"
 

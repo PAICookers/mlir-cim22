@@ -40,17 +40,22 @@ struct UsbCIMDeviceConfig {
   // The supplier Host program supports both orders; select the deployed FX3
   // firmware's per-32-bit-word representation in the board profile.
   UsbWordByteOrder wordByteOrder = UsbWordByteOrder::BigEndian;
+  // Allow the receive path to settle before open() returns.
   uint32_t startupDelayMs = 20;
+  // Transfer timeout and receive polling interval, both in milliseconds.
   uint32_t transferTimeoutMs = 5000;
   uint32_t receivePollTimeoutMs = 200;
+  // One response deadline per Macro batch, measured after its requests.
   uint32_t responseTimeoutMs = 7000;
+  // OUT transfer cap and IN buffer size, in bytes.
   size_t maxTransferBytes = 512;
   size_t receiveChunkBytes = 32 * 1024;
   // Manual clock when omitted; Linux also permits a missing optional port.
   std::optional<PLLSerialConfig> pll;
 };
 
-// Optional native transport: libusb on Linux, Cypress CyAPI on Windows.
+// Construct a closed device that owns its transport. Call open() before
+// execute(). USB uses libusb on Linux and Cypress CyAPI on Windows.
 std::unique_ptr<CIMDevice> createUsbCIMDevice(const UsbCIMDeviceConfig &config);
 
 } // namespace cim22::runtime

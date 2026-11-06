@@ -17,8 +17,9 @@
 using cim22::runtime::Session;
 using llvm::SmallVector;
 namespace {
+// Generated tile calls consult the Session bound to their invoking thread.
 thread_local Session *activeSession = nullptr;
-}
+} // namespace
 
 void cim22::runtime::copyError(llvm::StringRef message, char *buffer,
                                size_t capacity) {
@@ -80,7 +81,9 @@ extern "C" void *cim22_session_load_shared(const char *path, char *error,
 }
 
 namespace {
-// Share descriptor validation and error propagation across the two tile ABIs.
+// Share descriptor validation and error propagation across INT8 and BF16
+// tile ABIs. The id indexes immutable transaction metadata, independent of
+// which backend consumes it.
 template <typename Input, typename Output>
 void dispatch(int64_t id, StridedMemRefType<Input, 2> *input,
               StridedMemRefType<Output, 2> *output,
@@ -144,10 +147,37 @@ void dispatch(int64_t id, StridedMemRefType<Input, 2> *input,
   ::cim22::execution::CIMRunOutputs runOutputs{outputs};
   ++session.dispatches;
   auto error = [&]() -> llvm::Error {
+    llvm::ArrayRef<::cim22::execution::CIMWeightIdentity> weights;
+    if (session.enableWeightResidency) {
+      // Intern once per transaction. Matching later uses identity rather
+      // than hashing the full payload on each dynamic dispatch.
+      if (session.weightPlans.empty())
+        session.weightPlans.resize(session.model.transactions.size());
+      auto &prepared = session.weightPlans[id];
+      if (prepared.empty()) {
+        prepared.reserve(transaction.getStaticWeights().size());
+        for (const auto &weight : transaction.getStaticWeights())
+          prepared.push_back(session.weightCatalog.intern(weight));
+      }
+      weights = prepared;
+    }
     if (usb)
-      return session.runner->run(transaction, {inputs}, runOutputs, mode);
+      return session.runner->run(transaction, {inputs}, runOutputs, mode,
+                                 nullptr, weights);
+    if (session.softwarePlans.empty())
+      session.softwarePlans.resize(session.model.transactions.size());
+    auto &plan = session.softwarePlans[id];
+    if (!plan)
+      plan.emplace(transaction, /*batchReadbacks=*/true);
     ::cim22::execution::CIMSoftwareRunner runner(mode);
-    return runner.run(transaction, {inputs}, runOutputs);
+    if (session.enableWeightResidency)
+      return runner.run(*plan, {inputs}, runOutputs, session.softwareWeights,
+                        weights);
+    if (auto error = runner.run(*plan, {inputs}, runOutputs))
+      return error;
+    session.softwareWeights.stats.writes +=
+        transaction.getStaticWeights().size();
+    return llvm::Error::success();
   }();
   if (error)
     session.error =
@@ -271,6 +301,8 @@ extern "C" int cim22_session_invoke(void *handle, void **buffers,
   activeSession = &s;
   s.invoke(packed.data());
   activeSession = previous;
+  if (!s.error.empty())
+    s.softwareWeights.clear();
   return s.error.empty() ? 0 : 1;
 }
 

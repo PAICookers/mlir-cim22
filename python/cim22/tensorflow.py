@@ -32,12 +32,33 @@ class CompiledModel:
     """
 
     def __init__(self, session: Session, output_specs: object) -> None:
-        """Store the Session and an already validated TensorSpec output tree."""
+        """Take ownership of a loaded Session and its TensorFlow output spec.
+
+        Args:
+            session: Loaded native Session, closed with this model.
+            output_specs: Validated nested TensorSpec structure used to
+                reconstruct outputs from the Session's flat result order.
+        """
         self.session = session
         self._outputs = output_specs
 
     def __call__(self, *inputs: tf.Tensor | tf.Variable) -> TensorOutputs:
-        """Infer from eager TF tensors without dtype conversion or gradients."""
+        """Run eager inference using the native Session.
+
+        Args:
+            *inputs: Dense eager tensors or variables matching the compiled
+                positional input order, shapes and dtypes.
+
+        Returns:
+            TensorFlow tensors arranged in the compiled output structure.
+
+        Raises:
+            TypeError: An input is not a dense tensor or variable, or its
+                dtype does not match the signature.
+            ValueError: Execution is outside eager mode or an input does
+                not match the compiled signature.
+            RuntimeError: Native execution fails or the model is closed.
+        """
         if not tf.executing_eagerly():
             raise ValueError(
                 "CIM22 TensorFlow inference requires eager tensors"

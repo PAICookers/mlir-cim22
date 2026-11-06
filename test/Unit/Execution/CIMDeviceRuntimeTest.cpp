@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -69,24 +70,28 @@ public:
     ++executeCount;
     program = value;
     response.readbacks.clear();
-    for (const CIMDeviceReadbackCommand &command : program.readbacks) {
-      CIMDeviceReadback readback;
-      readback.outputIndex = command.outputIndex;
-      const uint64_t outputCacheRead = command.request.flits.back();
-      const int64_t coreSlot =
-          outputCoreSlots.empty() ? 3 : outputCoreSlots[command.outputIndex];
-      readback.headerFlit = (uint64_t{5} << 60) |
-                            (static_cast<uint64_t>(coreSlot) << 18) |
-                            (((outputCacheRead >> 14) & 0xf) << 14) | 6;
-      readback.bodyFlits =
-          command.dataType == CIMDataType::BF16 ? bf16Response : kResponse;
-      if (corruptResponsePadding &&
-          command.outputIndex + 1 == program.readbacks.size())
-        readback.bodyFlits[5] = 1;
-      response.readbacks.push_back(readback);
+    for (const auto &batch : program.readbackBatches) {
+      const bool bf16Batch = std::all_of(
+          batch.selection.flits.begin(), batch.selection.flits.end(),
+          [](uint64_t flit) { return (flit & 2) != 0; });
+      const size_t first = response.readbacks.size();
+      for (const auto &target : batch.targets) {
+        CIMDeviceReadback readback;
+        readback.outputIndex = target.outputIndex;
+        readback.headerFlit = (uint64_t{5} << 60) |
+                              (uint64_t{target.coreIndex} << 18) |
+                              (uint64_t{target.cacheAddress} << 14) | 6;
+        readback.bodyFlits = bf16Batch || mixedBF16Output == target.outputIndex
+                                 ? bf16Response
+                                 : kResponse;
+        response.readbacks.push_back(readback);
+      }
+      if (reverseReadbacks)
+        std::reverse(response.readbacks.begin() + first,
+                     response.readbacks.end());
     }
-    if (reverseReadbacks)
-      std::reverse(response.readbacks.begin(), response.readbacks.end());
+    if (corruptResponsePadding)
+      response.readbacks.back().bodyFlits[5] = 1;
     switch (responseFault) {
     case ResponseFault::None:
       break;
@@ -112,7 +117,7 @@ public:
 
   bool opened = false;
   std::array<uint64_t, 6> bf16Response = kBF16Response;
-  std::vector<int64_t> outputCoreSlots;
+  std::optional<size_t> mixedBF16Output;
   CIMDeviceProgram program;
   size_t executeCount = 0;
   bool corruptResponsePadding = false;
@@ -286,18 +291,18 @@ void testBoardRunner() {
   CHECK(device.program.operations[4].flits.front() == 0x9000000000000001ULL);
   CHECK(device.program.operations[4].postDelayMs == 10);
   CHECK(device.program.operations[4].phase == CIMDevicePhase::Work);
-  CHECK(device.program.readbacks.size() == 1);
-  CHECK(device.program.readbacks.front().selection.flits.size() == 1);
-  CHECK(device.program.readbacks.front().selection.postDelayMs == 40);
-  CHECK(device.program.readbacks.front().request.flits.size() == 1);
-  CHECK(device.program.readbacks.front().request.flits.back() ==
+  CHECK(device.program.readbackBatches.size() == 1);
+  CHECK(device.program.readbackBatches.front().selection.flits.size() == 1);
+  CHECK(device.program.readbackBatches.front().selection.postDelayMs == 40);
+  CHECK(device.program.readbackBatches.front().request.flits.size() == 1);
+  CHECK(device.program.readbackBatches.front().request.flits.back() ==
         0x500000000081c000ULL);
   CIMBoardRunner tuned(device, {0, 3, 4, 5, 6});
   expectSuccess(tuned.run(executable, inputs, outputs));
   CHECK(device.program.operations[2].postDelayMs == 3);
   CHECK(device.program.operations[3].postDelayMs == 4);
   CHECK(device.program.operations[4].postDelayMs == 5);
-  CHECK(device.program.readbacks.front().selection.postDelayMs == 6);
+  CHECK(device.program.readbackBatches.front().selection.postDelayMs == 6);
   CHECK(outputStorage == kExpected);
   device.close();
 }
@@ -307,7 +312,6 @@ void testGroupExecutionOrder() {
   expectSuccess(device.open());
   CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
   CIMTransaction executable = makeTwoGroupTransaction();
-  device.outputCoreSlots = {3, 4};
 
   std::array<std::array<int8_t, 64>, 2> inputStorage{};
   std::array<CIMInputView, 2> inputViews{CIMInputView{inputStorage[0], {}},
@@ -329,7 +333,81 @@ void testGroupExecutionOrder() {
   CHECK(device.program.operations[7].phase == CIMDevicePhase::Work);
   CHECK(device.program.operations[7].flits[0] == 0x9000000000000001ULL);
   CHECK(device.program.operations[7].flits[1] == 0x9000000000000001ULL);
+  CHECK(device.program.readbackBatches.size() == 1);
+  const auto &batch = device.program.readbackBatches.front();
+  CHECK(batch.selection.flits.size() == 2);
+  CHECK(batch.selection.postDelayMs == 40);
+  CHECK(batch.request.flits.size() == 2);
+  CHECK(batch.targets.size() == 2);
   device.close();
+}
+
+void testFullArrayReadbackBatches() {
+  FakeCIMDevice device;
+  device.reverseReadbacks = true;
+  expectSuccess(device.open());
+  CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
+  std::vector<CIMGroup> groups;
+  std::vector<StaticWeightSection> weights;
+  std::vector<DynamicInputBinding> inputs;
+  std::vector<ReadbackBinding> readbacks;
+  for (int32_t core = 0; core < 20; ++core) {
+    const int32_t x = core % 5;
+    const int32_t y = core / 5;
+    const int32_t diagonal = std::min(x, y);
+    const std::array<int32_t, 6> route{
+        diagonal, x - diagonal, y - diagonal, 0, 0, 0};
+    CIMGroup group{core, {}};
+    for (int64_t macro = 0; macro < 2; ++macro) {
+      const int64_t id = core * 2 + macro;
+      group.works.push_back({id, core, macro, route});
+      StaticWeightSection weight;
+      weight.groupId = weight.coreSlot = core;
+      weight.workId = id;
+      weight.macroSlot = macro;
+      weight.route = route;
+      weight.words.resize(256, 0);
+      weights.push_back(std::move(weight));
+      inputs.push_back({core, id, macro, id});
+      for (int64_t row = 0; row < 8; ++row)
+        readbacks.push_back({core, id, macro, row, route, {}});
+    }
+    groups.push_back(std::move(group));
+  }
+  std::array<int8_t, 64> data{};
+  std::vector<CIMInputView> views(40, {data, {}});
+
+  auto capture = [&](std::vector<ReadbackBinding> bindings) {
+    CIMTransaction executable("cim22-4x5-v1", 1, 1, groups, weights, {}, inputs,
+                              std::move(bindings), {});
+    return runner.capture(executable, {views});
+  };
+  auto response = capture(readbacks);
+  CHECK(response && response->readbacks.size() == 320);
+  CHECK(device.program.readbackBatches.size() == 2);
+  for (size_t macro = 0; macro < 2; ++macro) {
+    const auto &batch = device.program.readbackBatches[macro];
+    CHECK(batch.selection.flits.size() == 1);
+    CHECK(batch.selection.flits.front() == 0x8000000103000000ULL + macro);
+    CHECK(batch.request.flits.size() == 8);
+    CHECK(batch.targets.size() == 160);
+    for (size_t row = 0; row < 8; ++row)
+      CHECK(batch.request.flits[row] == 0x5000000103800000ULL + (row << 14));
+  }
+
+  readbacks.pop_back();
+  response = capture(readbacks);
+  CHECK(response && response->readbacks.size() == 319);
+  const auto &sparse = device.program.readbackBatches[1];
+  CHECK(sparse.targets.size() == 159);
+  CHECK(sparse.request.flits.size() == 7 + 19);
+  readbacks.push_back(readbacks.back());
+  auto duplicate = capture(readbacks);
+  CHECK(!duplicate);
+  CHECK(
+      llvm::toString(duplicate.takeError()).find("duplicate Core/Cache row") !=
+      std::string::npos);
+  CHECK(device.executeCount == 2);
 }
 
 void testTwoMacrosShareReturnRouteAndOnce() {
@@ -338,7 +416,6 @@ void testTwoMacrosShareReturnRouteAndOnce() {
   CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
   const std::array<int32_t, 6> route{};
   CIMTransaction executable = makeTwoMacroTransaction();
-  device.outputCoreSlots = {3, 3};
 
   std::array<std::array<int8_t, 64>, 2> inputStorage{};
   std::array<CIMInputView, 2> inputViews{CIMInputView{inputStorage[0], {}},
@@ -359,13 +436,13 @@ void testTwoMacrosShareReturnRouteAndOnce() {
   CHECK(device.program.operations[1].flits[3] == 0);
   CHECK(device.program.operations[7].flits.size() == 1);
   CHECK(device.program.operations[7].flits.front() == 0x9000000000000001ULL);
-  CHECK(device.program.readbacks.size() == 2);
-  CHECK(device.program.readbacks[0].selection.postDelayMs == 40);
-  CHECK(device.program.readbacks[0].selection.flits.size() == 1);
-  CHECK(device.program.readbacks[0].request.flits.size() == 1);
-  CHECK(device.program.readbacks[0].request.flits.back() ==
+  CHECK(device.program.readbackBatches.size() == 2);
+  CHECK(device.program.readbackBatches[0].selection.postDelayMs == 40);
+  CHECK(device.program.readbackBatches[0].selection.flits.size() == 1);
+  CHECK(device.program.readbackBatches[0].request.flits.size() == 1);
+  CHECK(device.program.readbackBatches[0].request.flits.back() ==
         encodeCIMOutputCacheReadFlit(route, 6));
-  CHECK(device.program.readbacks[1].request.flits.back() ==
+  CHECK(device.program.readbackBatches[1].request.flits.back() ==
         encodeCIMOutputCacheReadFlit(route, 7));
   device.close();
 }
@@ -374,7 +451,9 @@ void testBF16RawCaptureKeepsPrefixAndBody() {
   FakeCIMDevice device;
   device.corruptResponsePadding = true;
   expectSuccess(device.open());
-  CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
+  auto hardware = defaultCIM22HardwareConfig();
+  hardware.work_delay_ms = 37;
+  CIMBoardRunner runner(device, hardware);
   CIMTransaction executable = makeBF16Transaction();
 
   std::array<uint16_t, 64> inputStorage{};
@@ -389,15 +468,19 @@ void testBF16RawCaptureKeepsPrefixAndBody() {
   expectedBody[5] = 1;
   CHECK(response->readbacks[0].bodyFlits == expectedBody);
   CHECK(device.executeCount == 1);
-  CHECK(device.program.operations.size() == 6);
+  CHECK(device.program.operations.size() == 5);
   const CIMDeviceOperation &prefix = device.program.operations[1];
   CHECK(prefix.flits.size() == 4);
   CHECK((prefix.flits[0] >> 60) == 0x8);
   CHECK((prefix.flits[1] >> 60) == 0x3);
   CHECK((prefix.flits[1] & 0x3fff) == 2);
   const std::array<int32_t, 6> route{};
-  CHECK(device.program.operations[5].flits.front() ==
-        encodeCIMWorkIdleFlit(route));
+  const auto &startWork = device.program.operations.back();
+  CHECK(startWork.phase == CIMDevicePhase::Work);
+  CHECK(startWork.postDelayMs == hardware.work_delay_ms);
+  CHECK(startWork.flits.size() == 1);
+  CHECK(startWork.flits.front() == encodeCIMWorkOnceFlit(route));
+  CHECK(device.program.readbackBatches.size() == 1);
   device.close();
 }
 
@@ -538,7 +621,7 @@ void testBF16BoardReadbackPreservesBits() {
     CHECK(outputStorage == kBF16Expected);
   }
   CHECK(device.executeCount == 2);
-  CHECK(device.program.readbacks[0].dataType == CIMDataType::BF16);
+  CHECK((device.program.readbackBatches[0].selection.flits.front() & 2) != 0);
 
   // Reject short destinations before touching the device.
   outputViews[0].bf16Values =
@@ -750,7 +833,7 @@ void testBF16CompensationWorkIsolation() {
 void testMixedModeReadbacks() {
   for (bool corruptPadding : {false, true}) {
     FakeCIMDevice device;
-    device.outputCoreSlots = {3, 4};
+    device.mixedBF16Output = 1;
     // Valid replies arrive out of order; malformed replies fail only after
     // one valid reply has decoded, checking publication remains atomic.
     device.reverseReadbacks = !corruptPadding;
@@ -855,6 +938,7 @@ int main() {
   testPacketCodec();
   testBoardRunner();
   testGroupExecutionOrder();
+  testFullArrayReadbackBatches();
   testTwoMacrosShareReturnRouteAndOnce();
   testBF16RawCaptureKeepsPrefixAndBody();
   testRawCaptureValidatesInputsBeforeDeviceExecution();

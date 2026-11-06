@@ -28,7 +28,19 @@ type BF16Compensation = Literal["sign-split", "legacy", "none"]
 
 
 class BackendOptions(TypedDict, total=False):
-    """Application options shared by the PyTorch and TensorFlow frontends."""
+    """Options for a static inference specialization.
+
+    Attributes:
+        runtime: USB by default. Use "simulator" to execute the CIM plan in
+            software. PyTorch also accepts "reference" for the CPU graph.
+        bf16_compensation: "sign-split" by default. "legacy" and "none" are
+            available for numeric diagnostics. This option applies to native
+            BF16 kernels.
+        usb_config: Bridge, timing and optional PLL settings for the USB
+            Session. Required to open the bridge before USB execution.
+        artifact_dir: Directory in which to keep each native model library.
+        debug_dir: Directory in which to keep the IR for each specialization.
+    """
 
     runtime: RuntimeBackend | Literal["reference"]
     bf16_compensation: BF16Compensation
@@ -65,6 +77,17 @@ def _emit_object(
     library: Path,
     runtime: RuntimeBackend = "usb",
 ) -> None:
+    """Emit a native object from packet-stage IR.
+
+    Args:
+        packet: Lowered packet IR file with the Host/device split.
+        object_file: Destination object file.
+        library: Execution library used to locate the compiler adapter.
+        runtime: Backend embedded in the emitted model descriptor.
+
+    Raises:
+        RuntimeError: The native compiler failed to emit the object.
+    """
     native = _load_library(compiler_library(library))
     emit = native.cim22_compile_object
     emit.argtypes = [
@@ -104,10 +127,18 @@ def _compile(
     runtime: RuntimeBackend = "usb",
     bf16_compensation: BF16Compensation = "sign-split",
 ) -> Session:
-    """Compile a functional ATen graph; return its internal flat runtime.
+    """Compile a functional ATen graph to its internal flat runtime.
 
-    The loaded Session owns the code and any files needed until it closes.
-    Optional artifact/debug paths retain diagnostics for this specialization.
+    Args:
+        graph: Functional ATen graph from AOTAutograd.
+        *example_inputs: Example tensors in the graph's input order.
+        artifact_path: New destination for the native model library, if kept.
+        debug_dir: Optional destination for the captured and lowered IR.
+        runtime: Backend encoded into the compiled artifact.
+        bf16_compensation: Numeric mode for native BF16 kernels.
+
+    Returns:
+        A loaded Session that owns its temporary files until it closes.
     """
     # Check before importing FX: LLVM's duplicate registration aborts Python.
     if (
@@ -149,8 +180,35 @@ def _compile_linalg(
     debug_dir: Path | None = None,
     runtime: RuntimeBackend = "usb",
     bf16_compensation: BF16Compensation = "sign-split",
+    max_kernel_columns: int | Literal["auto"] | None = None,
+    weight_residency_schedule: bool = True,
 ) -> Session:
-    """Share native lowering, linking and artifact ownership across frontends."""
+    """Lower Linalg IR, link the native model, and load it into a Session.
+
+    Args:
+        linalg_ir: Textual Linalg module with a static inference entry.
+        artifact_path: New path ending in the platform's model suffix. If
+            omitted, the model library lives in the Session's temporary area.
+        debug_dir: Optional new directory for Linalg IR, packet IR and the
+            native object file.
+        runtime: Backend encoded into the artifact. USB needs a configured
+            bridge before execution.
+        bf16_compensation: Numeric mode for native BF16 kernels.
+        max_kernel_columns: None or "auto" selects a width by wave count and
+            static Work budget. A positive integer fixes the block width
+            limit. Use 32 for fixed blocking or 1 for a per-column baseline.
+        weight_residency_schedule: Group independent FC/Linear transactions
+            that reuse weights when legal. False preserves the original order
+            and leaves runtime residency enabled.
+
+    Returns:
+        The loaded Session, which owns any temporary files.
+
+    Raises:
+        ValueError: The artifact suffix or local tool configuration is invalid.
+        FileExistsError: The destination artifact already exists.
+        RuntimeError: Lowering, object emission, linking, or loading failed.
+    """
     library = runtime_library()
     executable = os.environ.get("CIM22_OPT") or str(
         files("cim22")
@@ -172,6 +230,11 @@ def _compile_linalg(
         if artifact_path.exists() or artifact_path.is_symlink():
             raise FileExistsError(f"Artifact already exists: {artifact_path}")
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    pipeline = f"--cim-bf16-pipeline=stage=packet bf16-compensation={bf16_compensation}"
+    if max_kernel_columns is not None:
+        pipeline += f" max-kernel-columns={max_kernel_columns}"
+    if not weight_residency_schedule:
+        pipeline += " weight-residency-schedule=false"
     with ExitStack() as cleanup:
         folder = Path(
             cleanup.enter_context(
@@ -194,8 +257,7 @@ def _compile_linalg(
                 [
                     executable,
                     str(linalg),
-                    "--cim-bf16-pipeline=stage=packet max-kernel-columns=1 "
-                    f"bf16-compensation={bf16_compensation}",
+                    pipeline,
                     "-o",
                     str(packet),
                 ],

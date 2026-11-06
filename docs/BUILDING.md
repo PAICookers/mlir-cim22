@@ -105,7 +105,7 @@ build/bin/mlir-cim22-onnx-import --help
 
 | 选项                   | 默认值     | 作用                                                                                                  |
 | ---------------------- | ---------- | ----------------------------------------------------------------------------------------------------- |
-| `max-kernel-columns` | `32`     | 正整数；矩阵列数超过阈值时，由 Host 按单列循环调用 CIM kernel                                         |
+| `max-kernel-columns` | `auto`   | 按 CIM 波次数和静态 Work 预算选宽。设为 `32` 可采用固定 32 列上限，尾块使用实际列数。 |
 | `require-cim`        | `false`  | 设为 `true` 时，要求存在 CIM kernel，并拒绝仍留在 Host 的命名矩阵乘或卷积运算，用于检查卸载是否完成 |
 | `stage`              | `packet` | 在 `split`、`vmm`、`packet` 或 `llvm` 阶段结束；`llvm` 还会将 Host 部分降到 LLVM 方言       |
 
@@ -126,7 +126,7 @@ build/bin/mlir-cim22-opt \
 | `--normalize-cim-conv`                             | `allow-bias-epilogue=false` | 将符合条件的 FP32 通道广播初值移到 Host bias 后处理；BF16 流水线已设为 `true`            |
 | `--fold-cim-int8-bias`                             | `allow-extra-k-tile=true`   | 在满足条件的已标记 INT8 MatMul 中折叠 bias；设为 `false` 可避免因折叠额外增加一个 K tile |
 
-这些是优化器 CLI 选项。当前 PyTorch 后端固定使用 `stage=packet max-kernel-columns=1`，未通过 `BackendOptions` 开放上述参数，也不自动运行 INT8 bias 折叠。FP32 转 BF16 会改变精度，调整后需重新做数值对照；阈值大小不直接代表性能优劣。
+PyTorch 后端使用 `stage=packet` 和自动列宽。上述参数由优化器 CLI 提供。可通过单独的 pass 启用 INT8 bias 折叠。FP32 转 BF16 会改变精度，调整后需重新做数值对照。
 
 ## PyTorch 编译后端
 

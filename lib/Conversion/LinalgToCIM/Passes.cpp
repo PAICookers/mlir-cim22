@@ -434,6 +434,9 @@ bool hasCanonicalMatmulIndexingMaps(linalg::MatmulOp op) {
 
 constexpr int64_t kOutputTileSize = 16;
 constexpr int64_t kReductionTileSize = 64;
+constexpr int64_t kCoresPerWave = 20;
+constexpr int64_t kWorksPerWave = 2 * kCoresPerWave;
+constexpr int64_t kBaselineColumnWidth = 32;
 
 // BF16 Linalg lowering uses the project's conventional-BF16 deployment
 // assumption. Multi-K reductions extend each BF16 tile result to f32 and sum
@@ -2275,6 +2278,8 @@ bool isNonnegativeFloat(Value value, DenseMap<Value, bool> &known) {
     result = prove(view.getSrc());
   } else if (auto view = value.getDefiningOp<tensor::ExtractSliceOp>()) {
     result = prove(view.getSource());
+  } else if (auto insert = value.getDefiningOp<tensor::InsertSliceOp>()) {
+    result = prove(insert.getSource()) && prove(insert.getDest());
   } else if (auto view = value.getDefiningOp<linalg::TransposeOp>()) {
     result = prove(view.getInput());
   } else if (auto pad = value.getDefiningOp<tensor::PadOp>()) {
@@ -2460,6 +2465,8 @@ public:
       if (op->hasAttr("cim.bf16_branch"))
         result.getDefiningOp()->setAttr("cim.bf16_branch",
                                         rewriter.getUnitAttr());
+      if (Attribute origin = op->getAttr(kResidencyLinearAttr))
+        result.getDefiningOp()->setAttr(kResidencyLinearAttr, origin);
       // Keep FP32 bias, residuals and shared activation users in their original
       // precision. Invoking this pass explicitly opts the contraction into
       // BF16.
@@ -2468,14 +2475,57 @@ public:
   }
 };
 
+static int64_t selectColumnWidth(int64_t columns, int64_t reduction,
+                                 int64_t outputs) {
+  int64_t width = std::min(columns, kBaselineColumnWidth);
+  if (columns <= 0 || reduction <= 0 || outputs <= 0)
+    return kBaselineColumnWidth;
+
+  const auto kTiles = llvm::divideCeil(reduction, kReductionTileSize);
+  const auto nTiles = llvm::divideCeil(outputs, kOutputTileSize);
+  // shortcut: keep the fixed width for multi-wave columns until their IR
+  // growth is measured. The guard also bounds the arithmetic below.
+  if (nTiles > kWorksPerWave / kTiles)
+    return width;
+  const int64_t worksPerColumn = nTiles * kTiles;
+  auto waves = [&](int64_t block) -> int64_t {
+    return (columns / block) *
+               llvm::divideCeil(block * worksPerColumn, kWorksPerWave) +
+           llvm::divideCeil((columns % block) * worksPerColumn, kWorksPerWave);
+  };
+  const int64_t baselineWaves = waves(width);
+  const int64_t baselineStaticColumns = width + columns % width;
+  int64_t bestWaves = baselineWaves;
+  int64_t bestStaticColumns = baselineStaticColumns;
+  for (int64_t block = std::min(columns, kWorksPerWave); block > 0; --block) {
+    const int64_t staticColumns = block + columns % block;
+    // Charge only the full and tail templates. Full blocks share one kernel.
+    if ((staticColumns - baselineStaticColumns) * worksPerColumn >
+        kWorksPerWave)
+      continue;
+    const int64_t count = waves(block);
+    if (count < bestWaves || (count == bestWaves && count < baselineWaves &&
+                              staticColumns < bestStaticColumns)) {
+      width = block;
+      bestWaves = count;
+      bestStaticColumns = staticColumns;
+    }
+  }
+  return width;
+}
+
 class OutlineCIMBF16 final : public impl::OutlineCIMBF16Base<OutlineCIMBF16> {
 public:
   using Base::Base;
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    if (maxKernelColumns < 1) {
-      module.emitError("max-kernel-columns must be positive");
+    StringRef columnOption = maxKernelColumns.getValue();
+    const bool autoWidth = columnOption == "auto";
+    int64_t fixedWidth = 0;
+    if (!autoWidth &&
+        (columnOption.getAsInteger(0, fixedWidth) || fixedWidth < 1)) {
+      module.emitError("max-kernel-columns must be positive or auto");
       return signalPassFailure();
     }
     if (module->hasAttr("cim.split_program")) {
@@ -2542,81 +2592,109 @@ public:
       Value input = op.getDpsInputs()[1];
       auto inputType = cast<RankedTensorType>(input.getType());
       auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
-      bool stream = inputType.getRank() == 2 &&
-                    inputType.getDimSize(1) > maxKernelColumns;
-      auto kernelInputType =
-          stream ? RankedTensorType::get({inputType.getDimSize(0), 1},
-                                         inputType.getElementType())
-                 : inputType;
-      auto kernelResultType =
-          stream ? RankedTensorType::get({resultType.getDimSize(0), 1},
-                                         resultType.getElementType())
-                 : resultType;
-      auto type = builder.getFunctionType(TypeRange{kernelInputType},
-                                          TypeRange{kernelResultType});
-      builder.setInsertionPointToEnd(device.getBody());
-      auto kernel = func::FuncOp::create(builder, op.getLoc(), name, type);
-      kernel->setAttr("cim.kernel", builder.getUnitAttr());
-      auto sourceFunction = op->getParentOfType<func::FuncOp>();
-      for (StringRef attribute :
-           {"cim.target_profile", "cim.target_profile_version",
-            "cim.placement_policy", "cim.route_policy"})
-        if (Attribute value = sourceFunction->getAttr(attribute))
-          kernel->setAttr(attribute, value);
-      Block *entry = kernel.addEntryBlock();
-      builder.setInsertionPointToStart(entry);
-      auto weight = arith::ConstantOp::create(
-          builder, op.getLoc(), *evaluateDenseTensor(op.getDpsInputs()[0]));
-      auto zero = arith::ConstantOp::create(
-          builder, op.getLoc(),
-          DenseElementsAttr::get(
-              kernelResultType,
-              builder.getZeroAttr(kernelResultType.getElementType())));
-      Operation *body = builder.clone(*op);
-      body->getResult(0).setType(kernelResultType);
-      // Assign operands by position: input and weight may share one constant.
-      body->setOperands(ValueRange{weight, entry->getArgument(0), zero});
-      body->removeAttr(CIMDialect::getTransactionIdxAttrName());
-      func::ReturnOp::create(builder, op.getLoc(), body->getResults());
+      auto outline = [&](StringRef symbol, RankedTensorType kernelInputType,
+                         RankedTensorType kernelResultType) {
+        auto type = builder.getFunctionType(TypeRange{kernelInputType},
+                                            TypeRange{kernelResultType});
+        builder.setInsertionPointToEnd(device.getBody());
+        auto kernel = func::FuncOp::create(builder, op.getLoc(), symbol, type);
+        kernel->setAttr("cim.kernel", builder.getUnitAttr());
+        if (Attribute origin = op->getAttr(kResidencyLinearAttr))
+          kernel->setAttr(kResidencyLinearAttr, origin);
+        auto sourceFunction = op->getParentOfType<func::FuncOp>();
+        for (StringRef attribute :
+             {"cim.target_profile", "cim.target_profile_version",
+              "cim.placement_policy", "cim.route_policy"})
+          if (Attribute value = sourceFunction->getAttr(attribute))
+            kernel->setAttr(attribute, value);
+        Block *entry = kernel.addEntryBlock();
+        builder.setInsertionPointToStart(entry);
+        auto weight = arith::ConstantOp::create(
+            builder, op.getLoc(), *evaluateDenseTensor(op.getDpsInputs()[0]));
+        auto zero = arith::ConstantOp::create(
+            builder, op.getLoc(),
+            DenseElementsAttr::get(
+                kernelResultType,
+                builder.getZeroAttr(kernelResultType.getElementType())));
+        Operation *body = builder.clone(*op);
+        body->getResult(0).setType(kernelResultType);
+        // Assign operands by position: input and weight may share one constant.
+        body->setOperands(ValueRange{weight, entry->getArgument(0), zero});
+        body->removeAttr(CIMDialect::getTransactionIdxAttrName());
+        func::ReturnOp::create(builder, op.getLoc(), body->getResults());
 
-      builder.setInsertionPointToEnd(host.getBody());
-      auto declaration = func::FuncOp::create(builder, op.getLoc(), name, type);
-      declaration.setPrivate();
-      declaration->setAttr("cim.kernel", builder.getUnitAttr());
+        builder.setInsertionPointToEnd(host.getBody());
+        auto declaration =
+            func::FuncOp::create(builder, op.getLoc(), symbol, type);
+        declaration.setPrivate();
+        declaration->setAttr("cim.kernel", builder.getUnitAttr());
+        return declaration;
+      };
       rewriter.setInsertionPoint(op);
-      if (!stream) {
+      const int64_t columns =
+          inputType.getRank() == 2 ? inputType.getDimSize(1) : 1;
+      const int64_t width =
+          autoWidth ? selectColumnWidth(columns, inputType.getDimSize(0),
+                                        resultType.getDimSize(0))
+                    : fixedWidth;
+      if (columns <= width) {
+        auto declaration = outline(name, inputType, resultType);
         rewriter.replaceOpWithNewOp<func::CallOp>(op, declaration,
                                                   ValueRange{input});
         continue;
       }
-      // Spatial/time columns can be enormous. Reuse one static device kernel
-      // from a Host loop instead of unrolling millions of VMMs in the compiler.
+
+      auto outlineColumns = [&](StringRef symbol, int64_t columns) {
+        return outline(symbol,
+                       inputType.clone({inputType.getDimSize(0), columns}),
+                       resultType.clone({resultType.getDimSize(0), columns}));
+      };
+      // Reuse one outlined kernel for all full blocks to bound IR size. Pass
+      // the exact tail width to avoid dispatching padded columns.
+      const int64_t tail = columns % width;
+      auto declaration = outlineColumns(name, width);
       Location loc = op.getLoc();
       Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
-      Value upper = arith::ConstantIndexOp::create(rewriter, loc,
-                                                   inputType.getDimSize(1));
-      Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
+      Value upper =
+          arith::ConstantIndexOp::create(rewriter, loc, columns - tail);
+      Value step = arith::ConstantIndexOp::create(rewriter, loc, width);
       Value initial = tensor::EmptyOp::create(
           rewriter, loc, resultType.getShape(), resultType.getElementType());
+      auto emitBlock = [&](OpBuilder &b, func::FuncOp callee,
+                           OpFoldResult column, Value output) -> Value {
+        auto type = callee.getFunctionType();
+        auto blockInput = cast<RankedTensorType>(type.getInput(0));
+        auto blockOutput = cast<RankedTensorType>(type.getResult(0));
+        SmallVector<OpFoldResult> offsets{b.getIndexAttr(0), column};
+        SmallVector<OpFoldResult> sizes{
+            b.getIndexAttr(blockInput.getDimSize(0)),
+            b.getIndexAttr(blockInput.getDimSize(1))};
+        SmallVector<OpFoldResult> strides(2, b.getIndexAttr(1));
+        Value slice = tensor::ExtractSliceOp::create(b, loc, blockInput, input,
+                                                     offsets, sizes, strides);
+        Value result = func::CallOp::create(b, loc, callee, ValueRange{slice})
+                           .getResult(0);
+        // Use the input column offset to restore the logical output range.
+        sizes[0] = b.getIndexAttr(blockOutput.getDimSize(0));
+        return tensor::InsertSliceOp::create(b, loc, result, output, offsets,
+                                             sizes, strides);
+      };
       auto loop = scf::ForOp::create(
           rewriter, loc, lower, upper, step, ValueRange{initial},
           [&](OpBuilder &b, Location l, Value column, ValueRange carried) {
-            SmallVector<OpFoldResult> offsets{b.getIndexAttr(0), column};
-            SmallVector<OpFoldResult> sizes{
-                b.getIndexAttr(inputType.getDimSize(0)), b.getIndexAttr(1)};
-            SmallVector<OpFoldResult> strides{b.getIndexAttr(1),
-                                              b.getIndexAttr(1)};
-            Value slice = tensor::ExtractSliceOp::create(
-                b, l, kernelInputType, input, offsets, sizes, strides);
-            Value output =
-                func::CallOp::create(b, l, declaration, ValueRange{slice})
-                    .getResult(0);
-            sizes[0] = b.getIndexAttr(resultType.getDimSize(0));
-            Value next = tensor::InsertSliceOp::create(b, l, output, carried[0],
-                                                       offsets, sizes, strides);
-            scf::YieldOp::create(b, l, next);
+            scf::YieldOp::create(b, l,
+                                 emitBlock(b, declaration, column, carried[0]));
           });
-      rewriter.replaceOp(op, loop.getResults());
+      Value result = loop.getResult(0);
+      if (tail) {
+        std::string tailName;
+        do {
+          tailName = (Twine("__cim_kernel_") + Twine(nextId++)).str();
+        } while (SymbolTable::lookupSymbolIn(host, tailName));
+        result = emitBlock(rewriter, outlineColumns(tailName, tail),
+                           rewriter.getIndexAttr(columns - tail), result);
+      }
+      rewriter.replaceOp(op, result);
     }
   }
 };
@@ -2951,10 +3029,10 @@ public:
                               *coreIdx, *macroIdx});
       }
 
-      // A logical schedule may reuse the 20 physical cores for later groups.
-      // Materialize those groups as successive runtime transactions so each
-      // transaction can configure all of its cores before the shared work
-      // phase.  Group and work identities are local to the resulting wave.
+      // Each wave can configure up to 20 independent Core groups, each with
+      // up to two Macro slots, before the shared work phase. Start a new
+      // transaction before any Core is reused and rebase its group and work
+      // IDs so readbacks resolve against the current wave.
       Builder identityBuilder(function.getContext());
       int64_t nextTransactionIdx = 0;
       for (size_t sourceBegin = 0; sourceBegin < plan.works.size();) {
@@ -2974,7 +3052,8 @@ public:
                  plan.works[groupEnd].groupId == plan.works[groupBegin].groupId)
             ++groupEnd;
           int64_t coreIdx = plan.works[groupBegin].coreIdx;
-          if (activeCores.contains(coreIdx) || activeCores.size() == 20) {
+          if (activeCores.contains(coreIdx) ||
+              activeCores.size() == kCoresPerWave) {
             transactionIdx = ++nextTransactionIdx;
             activeCores.clear();
             localGroupId = 0;

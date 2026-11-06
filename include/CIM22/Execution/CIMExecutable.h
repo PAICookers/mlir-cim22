@@ -43,6 +43,9 @@ struct CIMFramePacket {
   CIMDataType dataType = CIMDataType::Int8;
 };
 
+/// Weight tile bound to one Work. The packed words serve the board encoder,
+/// and the decoded values serve the simulator. BF16 uses one exponent per
+/// output lane.
 struct StaticWeightSection {
   int64_t groupId = -1;
   int64_t workId = -1;
@@ -56,6 +59,7 @@ struct StaticWeightSection {
   CIMDataType dataType = CIMDataType::Int8;
 };
 
+/// Map one logical input slot to a Work and its physical Macro Cache row.
 struct DynamicInputBinding {
   int64_t groupId = -1;
   int64_t workId = -1;
@@ -65,6 +69,8 @@ struct DynamicInputBinding {
   int64_t inputCacheAddress = 0;
 };
 
+/// Describe a Work's output row and its reply route. The binding order is the
+/// logical result order, independent of USB packet completion order.
 struct ReadbackBinding {
   int64_t groupId = -1;
   int64_t workId = -1;
@@ -75,6 +81,7 @@ struct ReadbackBinding {
   CIMDataType dataType = CIMDataType::Int8;
 };
 
+/// One tile computation at a physical Core/Macro placement.
 struct CIMWork {
   int64_t workId = -1;
   int64_t coreSlot = -1;
@@ -87,6 +94,9 @@ struct CIMGroup {
   std::vector<CIMWork> works;
 };
 
+/// Own the static groups, weights, bindings and frame data for one dispatch.
+/// Accessors return borrowed views. Keep the transaction alive and at a
+/// stable address while a prepared software plan refers to it.
 class CIMTransaction final {
 public:
   CIMTransaction(std::string targetProfile, int64_t targetProfileVersion,

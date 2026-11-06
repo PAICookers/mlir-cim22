@@ -6,6 +6,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <memory>
 #include <set>
 
 using namespace cim22::execution;
@@ -340,8 +341,14 @@ CIMTransaction decodeTransaction(const pb::Transaction &from) {
   std::vector<CIMFramePacket> packets;
   std::vector<DynamicInputBinding> inputs;
   std::vector<ReadbackBinding> readbacks;
+  groups.reserve(from.groups_size());
+  weights.reserve(from.weights_size());
+  packets.reserve(from.packets_size());
+  inputs.reserve(from.inputs_size());
+  readbacks.reserve(from.readbacks_size());
   for (const auto &g : from.groups()) {
     CIMGroup group{g.group_id(), {}};
+    group.works.reserve(g.works_size());
     for (const auto &w : g.works()) {
       CIMWork work{w.work_id(), w.core_slot(), w.macro_slot()};
       decodeArray(w.route(), work.route);
@@ -446,6 +453,10 @@ llvm::Error decodeModelData(llvm::StringRef bytes, ModelData &model) {
   decoded.backend = artifact.backend() == pb::USB ? RuntimeBackend::USB
                                                   : RuntimeBackend::Software;
   decoded.numInputs = artifact.inputs_size();
+  const size_t tensorCount =
+      static_cast<size_t>(artifact.inputs_size()) + artifact.outputs_size();
+  decoded.shapes.reserve(tensorCount);
+  decoded.types.reserve(tensorCount);
   for (const auto *tensors : {&artifact.inputs(), &artifact.outputs()})
     for (const auto &tensor : *tensors) {
       decoded.shapes.emplace_back(tensor.dimensions().begin(),
@@ -453,9 +464,14 @@ llvm::Error decodeModelData(llvm::StringRef bytes, ModelData &model) {
       decoded.types.push_back(
           static_cast<BoundaryDataType>(tensor.data_type()));
     }
-  for (const auto &kernel : artifact.kernels()) {
+  decoded.kernelNames.reserve(artifact.kernels_size());
+  decoded.transactions.reserve(artifact.kernels_size());
+  for (auto &kernel : *artifact.mutable_kernels()) {
     decoded.kernelNames.push_back(kernel.kernel_name());
-    decoded.transactions.push_back(decodeTransaction(kernel.transaction()));
+    // Validation is complete. Release each wire transaction as soon as its
+    // native representation owns the data.
+    std::unique_ptr<pb::Transaction> transaction(kernel.release_transaction());
+    decoded.transactions.push_back(decodeTransaction(*transaction));
   }
   model = std::move(decoded);
   return llvm::Error::success();
