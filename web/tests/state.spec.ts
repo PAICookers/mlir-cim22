@@ -116,6 +116,10 @@ test("framework verification starts the fixed example with simulator by default"
   await expect(page.getByText("CIM 软件仿真", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "开始编译验证" }).click();
   await expect.poll(() => payload).toEqual({ framework: "tensorflow", runtime: "simulator" });
+  await page.evaluate((task) => {
+    window.dispatchEvent(new CustomEvent("test:example-snapshot", { detail: { task } }));
+  }, { framework: "tensorflow", runtime: "simulator", status: "interrupted", log_text: "ImportError: tensorflow is not installed" });
+  await expect(page.getByText("ImportError: tensorflow is not installed")).toBeVisible();
 });
 
 test("framework verification exposes the USB configuration", async ({

@@ -278,6 +278,16 @@ def test_example_usb_config_reuses_runtime_validation() -> None:
         )
 
 
+def test_example_log_tail_is_bounded(tmp_path: Path) -> None:
+    from cim22.web.example_manager import ExampleManager
+
+    path = tmp_path / "compile.log"
+    path.write_text("x" * 12_010, encoding="utf-8")
+    log = ExampleManager._log_tail(path)
+    assert log.startswith("[日志过长，仅显示最后 12 KB]\n")
+    assert len(log) > 12_000
+
+
 def test_failed_atomic_replace_preserves_previous_csv(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

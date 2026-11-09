@@ -77,6 +77,24 @@ class ExampleManager:
             )
         save_json(self.current / "state.json", state)
 
+    @staticmethod
+    def _log_tail(path: Path, limit: int = 12_000) -> str:
+        """Return a bounded UTF-8 tail so SSE snapshots stay small."""
+        try:
+            with path.open("rb") as stream:
+                stream.seek(0, 2)
+                size = stream.tell()
+                stream.seek(max(0, size - limit))
+                data = stream.read()
+        except OSError:
+            return ""
+        text = data.decode("utf-8", errors="replace")
+        return (
+            "[日志过长，仅显示最后 12 KB]\n" + text
+            if size > limit
+            else text
+        )
+
     def snapshot(self) -> Document:
         with self.lock:
             self._reap()
@@ -88,6 +106,7 @@ class ExampleManager:
                 debug_url=self._url_for(state, "ir_dir"),
                 log_url=self._url_for(state, "log_path"),
                 result_url=self._url_for(state, "result_json"),
+                log_text=self._log_tail(Path(str(state["log_path"]))),
             )
             return {"task": state}
 
@@ -175,6 +194,7 @@ class ExampleManager:
             save_json(self.root / "current.json", {"id": task_id})
             command = [
                 sys.executable,
+                "-u",
                 str(script),
                 "--runtime",
                 runtime,
