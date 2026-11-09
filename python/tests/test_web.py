@@ -200,7 +200,9 @@ def test_exclusive_service_and_active_task_guard(
 def test_api_validation_and_local_origin(
     tmp_path: Path, inputs: Inputs
 ) -> None:
-    app = create_app(tmp_path / "results", inputs[0])
+    app = create_app(
+        tmp_path / "results", inputs[0], examples_dir=tmp_path / "examples"
+    )
     with TestClient(app, base_url="http://127.0.0.1") as client:
         assert client.get("/api/state").json() == {"task": None}
         assert (
@@ -231,6 +233,49 @@ def test_api_validation_and_local_origin(
             == 400
         )
         assert client.post("/api/cancel", json={}).status_code == 409
+        assert client.get("/api/examples/state").json() == {"task": None}
+        assert (
+            client.post(
+                "/api/examples/run",
+                json={"framework": "tensorflow", "runtime": "usb"},
+            ).status_code
+            == 409
+        )
+        assert (
+            client.post(
+                "/api/examples/run",
+                json={"framework": "tensorflow", "runtime": "simulator"},
+            ).status_code
+            == 409
+        )
+
+
+def test_example_usb_config_reuses_runtime_validation() -> None:
+    from cim22.web.example_manager import ExampleManager
+
+    config = ExampleManager._parse_usb_config(
+        {
+            "vendor_id": 1204,
+            "product_id": 241,
+            "bulk_in_endpoint": 129,
+            "bulk_out_endpoint": 1,
+            "timing": {"work_delay_ms": 10},
+        }
+    )
+    assert config.vendor_id == 1204
+    assert config.timing.work_delay_ms == 10
+    with pytest.raises(ValueError, match="JSON 对象"):
+        ExampleManager._parse_usb_config([])
+    with pytest.raises(ValueError, match="timing"):
+        ExampleManager._parse_usb_config(
+            {
+                "vendor_id": 1204,
+                "product_id": 241,
+                "bulk_in_endpoint": 129,
+                "bulk_out_endpoint": 1,
+                "timing": [],
+            }
+        )
 
 
 def test_failed_atomic_replace_preserves_previous_csv(

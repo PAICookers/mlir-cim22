@@ -19,10 +19,21 @@ def main() -> None:
     parser.add_argument(
         "--data-dir", type=Path, default=Path.home() / ".local/share/cim22-web"
     )
+    parser.add_argument(
+        "--examples-dir",
+        type=Path,
+        help="固定 TensorFlow/PyTorch 示例目录（默认使用源码树 python/examples）",
+    )
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
     uvicorn.run(
-        create_app(args.data_dir, args.model_dir.expanduser().resolve()),
+        create_app(
+            args.data_dir,
+            args.model_dir.expanduser().resolve(),
+            args.examples_dir.expanduser().resolve()
+            if args.examples_dir is not None
+            else None,
+        ),
         host="127.0.0.1",
         port=args.port,
         workers=1,
