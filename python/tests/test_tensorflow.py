@@ -611,6 +611,7 @@ def test_example_keeps_artifacts(
     example = (
         Path(__file__).resolve().parents[1] / "examples/tensorflow_compile.py"
     )
+    monkeypatch.setattr(sys, "argv", [str(example)])
     runpy.run_path(str(example), run_name="__main__")
     runs = list((tmp_path / "outputs/tensorflow").iterdir())
     assert len(runs) == 1
