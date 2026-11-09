@@ -1,5 +1,5 @@
-#ifndef CIM22_COMPILER_COMPILER_H
-#define CIM22_COMPILER_COMPILER_H
+#ifndef CIM22_COMPILER_REGISTER_ALL_H
+#define CIM22_COMPILER_REGISTER_ALL_H
 
 #include "mlir/IR/BuiltinOps.h"
 #include <utility>
@@ -8,10 +8,14 @@ namespace mlir {
 class DialectRegistry;
 }
 
-/// Install CIM22 compiler dialects and interfaces in the caller's registry.
-/// Optimizer and native compiler callers share one process-wide registration
-/// of the passes and pipelines.
-void registerCIM22Compiler(mlir::DialectRegistry &registry);
+/// Register CIM22 and required upstream dialects in the caller's registry.
+void registerCIM22Dialects(mlir::DialectRegistry &registry);
+
+/// Register external interface models used by CIM22 lowering.
+void registerCIM22Extensions(mlir::DialectRegistry &registry);
+
+/// Register CIM22 and upstream passes once per process.
+void registerCIM22Passes();
 
 /// Register the CIM22 pass pipelines and their named compiler stages.
 void registerCIM22Pipelines();

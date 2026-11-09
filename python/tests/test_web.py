@@ -477,7 +477,9 @@ def test_resume_rejects_changed_python_backend(
         engine, "runtime_library", lambda: tmp_path / "runtime.so"
     )
     monkeypatch.setattr(
-        engine, "compiler_library", lambda _: tmp_path / "compiler.so"
+        engine,
+        "native_compiler_library",
+        lambda _: tmp_path / "native_compiler.so",
     )
     monkeypatch.setattr(
         engine, "digest", lambda path: revisions.get(path.name, "unchanged")

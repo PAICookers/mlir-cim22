@@ -19,12 +19,12 @@
 | 环节 | 实现与职责 |
 | --- | --- |
 | 生成执行计划 | [CIMExecutable.cpp](../lib/Target/CIMExecutable.cpp)：生成 `CIMTransaction`、静态 packet 与 flit 数据 |
-| 内存表示 | [CIMExecutable.h](../include/CIM22/Execution/CIMExecutable.h)、[ModelData.h](../lib/Runtime/ModelData.h)：拥有静态数据，不保存活动设备或输入缓冲区 |
-| 编解码与加载检查 | [ModelData.cpp](../lib/Runtime/ModelData.cpp)：`encodeModelData` / `decodeModelData`、`validate` / `validateTransaction` |
-| 嵌入模型 | [Compiler.cpp](../lib/Runtime/Compiler.cpp)：生成 dispatch wrapper，嵌入数据和描述符 |
-| 原生 ABI 与加载 | [ModelABI.h](../include/CIM22/Execution/ModelABI.h)、[Runtime.cpp](../lib/Runtime/Runtime.cpp)：检查 ABI，解码数据，按 backend 创建或配置 runner |
-| 执行 | [CIMSoftwareRunner.cpp](../lib/Execution/CIMSoftwareRunner.cpp)、[CIMBoardRunner.cpp](../lib/Runtime/CIMBoardRunner.cpp)：执行语义或组装实际板端程序，并施加额外约束 |
-| 代码生成 | [Runtime/CMakeLists.txt](../lib/Runtime/CMakeLists.txt)：生成 C++ 与 Python 测试绑定 |
+| 内存表示 | [CIMExecutable.h](../include/CIM22/Execution/CIMExecutable.h)、[ModelData.h](../runtime/ModelData.h)：拥有静态数据，不保存活动设备或输入缓冲区 |
+| 编解码与加载检查 | [ModelData.cpp](../runtime/ModelData.cpp)：`encodeModelData` / `decodeModelData`、`validate` / `validateTransaction` |
+| 嵌入模型 | [NativeCompiler.cpp](../compiler/NativeCompiler.cpp)：生成 dispatch wrapper，嵌入数据和描述符 |
+| 原生 ABI 与加载 | [ModelABI.h](../include/CIM22/Execution/ModelABI.h)、[Runtime.cpp](../runtime/Runtime.cpp)：检查 ABI，解码数据，按 backend 创建或配置 runner |
+| 执行 | [CIMSoftwareRunner.cpp](../lib/Execution/CIMSoftwareRunner.cpp)、[CIMBoardRunner.cpp](../runtime/CIMBoardRunner.cpp)：执行语义或组装实际板端程序，并施加额外约束 |
+| 代码生成 | [runtime/CMakeLists.txt](../runtime/CMakeLists.txt)：生成 C++ 与 Python 测试绑定 |
 
 Schema 不保存活动张量、设备句柄、USB 配置、线程/锁或会话执行状态。
 它也不定义 USB record 格式、NoC 位域编码或 Host 函数调用约定。
@@ -221,7 +221,7 @@ schema 本身没有 stride/device 字段。
 依赖由 [MLIRCIM22Dependencies.cmake](../cmake/modules/MLIRCIM22Dependencies.cmake)
 固定为 Protobuf/protoc 31.1 配对，runtime 链接 `protobuf::libprotobuf-lite`。
 不要切换成系统 `protoc` 或另加 Buf/gRPC 等构建路径。
-C++ 和 Python 绑定生成在所选 CMake build 目录的 `lib/Runtime/generated/` 下；
+C++ 和 Python 绑定生成在所选 CMake build 目录的 `runtime/generated/` 下；
 Python 仓库副本只用于测试，位于
 [`python/tests/_generated/cim22_model_pb2.py`](../python/tests/_generated/cim22_model_pb2.py)，
 由目标复制更新，不手改。Python 测试依赖见

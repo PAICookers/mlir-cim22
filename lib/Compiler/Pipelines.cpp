@@ -1,6 +1,6 @@
 //===- Pipelines.cpp - Mixed BF16 CIM and Host pipelines ------*- C++ -*-===//
 
-#include "CIM22/Compiler/Compiler.h"
+#include "CIM22/Compiler/RegisterAll.h"
 #include "CIM22/Conversion/LinalgToCIM/Passes.h"
 #include "CIM22/Dialect/CIM/IR/CIMDialect.h"
 #include "CIM22/Dialect/CIM/IR/CIMOps.h"
@@ -21,6 +21,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
+#include <mutex>
 
 using namespace mlir;
 
@@ -658,41 +659,44 @@ struct BF16PipelineOptions : PassPipelineOptions<BF16PipelineOptions> {
 } // namespace
 
 void registerCIM22Pipelines() {
-  PassRegistration<LowerHostCopiesPass>();
-  PassRegistration<LowerCIMHostToLLVM>();
-  PassRegistration<CompileCIMParts>();
-  PassPipelineRegistration<>(
-      "cim-bf16-prepare",
-      "Normalize floating geometry and insert BF16 boundaries",
-      [](OpPassManager &pm) {
-        appendPipeline(pm, prepareLinear);
-        appendPipeline(pm, prepareConv);
-        appendPipeline(pm, "prepare-cim-bf16");
-      });
-  PassPipelineRegistration<BF16PipelineOptions>(
-      "cim-bf16-pipeline",
-      "Compile mixed Linalg into separate CIM and Host modules",
-      [](OpPassManager &pm, const BF16PipelineOptions &options) {
-        appendPipeline(pm, prepareLinear);
-        if (options.weightResidencySchedule)
-          pm.addPass(std::make_unique<MarkResidencyLinear>());
-        appendPipeline(pm, prepareConv);
-        cim::SplitCIMBF16SignsOptions splitOptions;
-        splitOptions.compensation = options.bf16Compensation;
-        pm.addPass(cim::createSplitCIMBF16Signs(splitOptions));
-        appendPipeline(pm, "prepare-cim-bf16");
-        cim::OutlineCIMBF16Options outlineOptions;
-        outlineOptions.maxKernelColumns = options.maxKernelColumns;
-        pm.addPass(cim::createOutlineCIMBF16(outlineOptions));
-        auto compile = std::make_unique<CompileCIMParts>();
-        compile->stage = options.stage;
-        compile->requireCIM = options.requireCIM;
-        compile->weightResidencySchedule = options.weightResidencySchedule;
-        pm.addPass(std::move(compile));
-      });
-  PassPipelineRegistration<>(
-      "cim-host-to-llvm", "Lower Host Linalg/Tensor/Arith to LLVM",
-      [](OpPassManager &pm) {
-        pm.addPass(std::make_unique<LowerCIMHostToLLVM>());
-      });
+  static std::once_flag registration;
+  std::call_once(registration, [] {
+    PassRegistration<LowerHostCopiesPass>();
+    PassRegistration<LowerCIMHostToLLVM>();
+    PassRegistration<CompileCIMParts>();
+    PassPipelineRegistration<>(
+        "cim-bf16-prepare",
+        "Normalize floating geometry and insert BF16 boundaries",
+        [](OpPassManager &pm) {
+          appendPipeline(pm, prepareLinear);
+          appendPipeline(pm, prepareConv);
+          appendPipeline(pm, "prepare-cim-bf16");
+        });
+    PassPipelineRegistration<BF16PipelineOptions>(
+        "cim-bf16-pipeline",
+        "Compile mixed Linalg into separate CIM and Host modules",
+        [](OpPassManager &pm, const BF16PipelineOptions &options) {
+          appendPipeline(pm, prepareLinear);
+          if (options.weightResidencySchedule)
+            pm.addPass(std::make_unique<MarkResidencyLinear>());
+          appendPipeline(pm, prepareConv);
+          cim::SplitCIMBF16SignsOptions splitOptions;
+          splitOptions.compensation = options.bf16Compensation;
+          pm.addPass(cim::createSplitCIMBF16Signs(splitOptions));
+          appendPipeline(pm, "prepare-cim-bf16");
+          cim::OutlineCIMBF16Options outlineOptions;
+          outlineOptions.maxKernelColumns = options.maxKernelColumns;
+          pm.addPass(cim::createOutlineCIMBF16(outlineOptions));
+          auto compile = std::make_unique<CompileCIMParts>();
+          compile->stage = options.stage;
+          compile->requireCIM = options.requireCIM;
+          compile->weightResidencySchedule = options.weightResidencySchedule;
+          pm.addPass(std::move(compile));
+        });
+    PassPipelineRegistration<>(
+        "cim-host-to-llvm", "Lower Host Linalg/Tensor/Arith to LLVM",
+        [](OpPassManager &pm) {
+          pm.addPass(std::make_unique<LowerCIMHostToLLVM>());
+        });
+  });
 }

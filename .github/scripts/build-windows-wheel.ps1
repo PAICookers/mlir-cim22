@@ -99,8 +99,8 @@ with ZipFile(path) as wheel:
         "cim22/bin/mlir-cim22-opt.exe",
         "cim22/lib/cim22_runtime.dll",
         "cim22/lib/cim22_runtime.lib",
-        "cim22/lib/cim22_compiler.dll",
-        "cim22/lib/cim22_compiler.lib",
+        "cim22/lib/cim22_native_compiler.dll",
+        "cim22/lib/cim22_native_compiler.lib",
         "cim22/share/licenses/cyapi/license.rtf",
     ):
         if name not in wheel.namelist():
@@ -125,7 +125,7 @@ from pathlib import Path
 
 libraries = Path(sys.argv[1])
 with os.add_dll_directory(str(libraries)):
-    for name in ("cim22_runtime.dll", "cim22_compiler.dll"):
+    for name in ("cim22_runtime.dll", "cim22_native_compiler.dll"):
         ctypes.CDLL(str(libraries / name))
         print(f"Loaded: {name}")
 '@ | python - "$stageDir/installed/cim22/lib"

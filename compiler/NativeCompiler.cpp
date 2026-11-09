@@ -1,5 +1,6 @@
-//===- Compiler.cpp - Native Host code and embedded CIM model data --------===//
-#include "CIM22/Compiler/Compiler.h"
+//===- NativeCompiler.cpp - Native Host code and embedded CIM model data
+//--------===//
+#include "CIM22/Compiler/RegisterAll.h"
 #include "CIM22/Dialect/CIM/IR/CIMOps.h"
 #include "CIM22/Execution/CIMRunner.h"
 #include "CIM22/Execution/Runtime.h"
@@ -177,7 +178,10 @@ defineDispatchWrapper(func::FuncOp stub, int64_t id, func::FuncOp dispatchFunc,
 LogicalResult load(Session &session, const char *path, StringRef entryName,
                    StringRef objectPath = {}) {
   DialectRegistry registry;
-  registerCIM22Compiler(registry);
+  registerCIM22Dialects(registry);
+  registerCIM22Extensions(registry);
+  registerCIM22Passes();
+  registerCIM22Pipelines();
   registerBuiltinDialectTranslation(registry);
   registerLLVMDialectTranslation(registry);
   // Limit live rewrite state during native lowering of large Host graphs.
@@ -477,9 +481,10 @@ extern "C" void *cim22_session_load_packet(const char *path, const char *entry,
   return session.release();
 }
 
-extern "C" int cim22_compile_object(const char *path, const char *objectPath,
-                                    const char *backend, char *error,
-                                    size_t capacity) {
+extern "C" int cim22_native_compile_object(const char *path,
+                                           const char *objectPath,
+                                           const char *backend, char *error,
+                                           size_t capacity) {
   Session session;
   if (backend && llvm::StringRef(backend) == "simulator")
     session.model.backend = ::cim22::runtime::RuntimeBackend::Software;

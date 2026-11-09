@@ -313,7 +313,7 @@ const char *LIBUSB_CALL libusb_error_name(int code) {
 } // extern "C"
 
 // Compile the actual platform implementation against only the fake C API.
-#include "../../../lib/Runtime/LibusbUsbDriver.cpp"
+#include "../../../runtime/LibusbUsbDriver.cpp"
 
 namespace {
 using cim22::runtime::UsbCIMDeviceConfig;

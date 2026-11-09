@@ -134,7 +134,7 @@ def guarded_import(name, *args, **kwargs):
     return original_import(name, *args, **kwargs)
 builtins.__import__ = guarded_import
 os.environ['CIM22_RUNTIME_LIBRARY'] = '/missing/cim22-reference-runtime'
-os.environ['CIM22_COMPILER_LIBRARY'] = '/missing/cim22-reference-compiler'
+os.environ['CIM22_NATIVE_COMPILER_LIBRARY'] = '/missing/cim22-reference-compiler'
 from cim22 import backend
 compiled = torch.compile(torch.relu, backend='cim22', fullgraph=True,
                          dynamic=False, options={'runtime': 'reference'})

@@ -1,4 +1,5 @@
-//===- Compiler.cpp - Shared compiler registration ------------*- C++ -*-===//
+//===- RegisterAll.cpp - Shared compiler registration ------------*- C++
+//-*-===//
 //
 // Licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,7 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "CIM22/Compiler/Compiler.h"
+#include "CIM22/Compiler/RegisterAll.h"
 #include "CIM22/Conversion/LinalgToCIM/Passes.h"
 #include "CIM22/Dialect/CIM/IR/CIMDialect.h"
 #include "CIM22/Dialect/CIMFrame/IR/CIMFrameDialect.h"
@@ -33,15 +34,7 @@
 #include "mlir/InitAllPasses.h"
 #include <mutex>
 
-void registerCIM22Compiler(mlir::DialectRegistry &registry) {
-  static std::once_flag registration;
-  std::call_once(registration, [] {
-    mlir::cim::registerPasses();
-    mlir::cimframe::registerPasses();
-    mlir::cim22::target::registerPasses();
-    mlir::registerAllPasses();
-    registerCIM22Pipelines();
-  });
+void registerCIM22Dialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::arith::ArithDialect,
                   mlir::bufferization::BufferizationDialect,
                   mlir::cf::ControlFlowDialect, mlir::cim::CIMDialect,
@@ -49,6 +42,9 @@ void registerCIM22Compiler(mlir::DialectRegistry &registry) {
                   mlir::linalg::LinalgDialect, mlir::LLVM::LLVMDialect,
                   mlir::memref::MemRefDialect, mlir::math::MathDialect,
                   mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
+}
+
+void registerCIM22Extensions(mlir::DialectRegistry &registry) {
   mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::arith::registerBufferDeallocationOpInterfaceExternalModels(registry);
   mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
@@ -57,4 +53,14 @@ void registerCIM22Compiler(mlir::DialectRegistry &registry) {
   mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::tensor::registerInferTypeOpInterfaceExternalModels(registry);
+}
+
+void registerCIM22Passes() {
+  static std::once_flag registration;
+  std::call_once(registration, [] {
+    mlir::cim::registerPasses();
+    mlir::cimframe::registerPasses();
+    mlir::cim22::target::registerPasses();
+    mlir::registerAllPasses();
+  });
 }

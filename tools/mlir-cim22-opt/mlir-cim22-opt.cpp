@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "CIM22/Compiler/Compiler.h"
+#include "CIM22/Compiler/RegisterAll.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #ifdef _WIN32
@@ -29,7 +29,10 @@ int main(int argc, char **argv) {
   argv = const_cast<char **>(arguments.data());
 #endif
   mlir::DialectRegistry registry;
-  registerCIM22Compiler(registry);
+  registerCIM22Dialects(registry);
+  registerCIM22Extensions(registry);
+  registerCIM22Passes();
+  registerCIM22Pipelines();
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, "mlir-cim22 optimizer driver\n", registry));
 }

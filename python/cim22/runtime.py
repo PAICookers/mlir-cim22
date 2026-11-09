@@ -257,12 +257,12 @@ def runtime_library(library: Path | None = None) -> Path:
     return library.resolve(strict=True)
 
 
-def compiler_library(library: Path) -> Path:
+def native_compiler_library(library: Path) -> Path:
     """Resolve the compiler adapter used for compilation and raw packet loads.
 
     Args:
         library: Runtime library path. The compiler is adjacent unless
-            CIM22_COMPILER_LIBRARY selects a different path.
+            CIM22_NATIVE_COMPILER_LIBRARY selects a different path.
 
     Returns:
         The resolved absolute path.
@@ -270,17 +270,19 @@ def compiler_library(library: Path) -> Path:
     Raises:
         FileNotFoundError: The selected compiler adapter is missing.
     """
-    configured = os.environ.get("CIM22_COMPILER_LIBRARY")
+    configured = os.environ.get("CIM22_NATIVE_COMPILER_LIBRARY")
     path = (
         Path(configured)
         if configured
         else library.with_name(
-            "cim22_compiler.dll" if os.name == "nt" else "libcim22_compiler.so"
+            "cim22_native_compiler.dll"
+            if os.name == "nt"
+            else "libcim22_native_compiler.so"
         )
     )
     if not path.is_file():
         raise FileNotFoundError(
-            "Build cim22_compiler or set CIM22_COMPILER_LIBRARY"
+            "Build cim22_native_compiler or set CIM22_NATIVE_COMPILER_LIBRARY"
         )
     return path.resolve(strict=True)
 
@@ -359,7 +361,7 @@ class Session:
                 ctypes.c_size_t,
             ]
         else:
-            self._compiler = _load_library(compiler_library(library))
+            self._compiler = _load_library(native_compiler_library(library))
             loader = self._compiler.cim22_session_load_packet
             loader.argtypes = [
                 ctypes.c_char_p,

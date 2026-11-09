@@ -19,7 +19,7 @@ from .runtime import (
     Session,
     UsbConfig,
     _load_library,
-    compiler_library,
+    native_compiler_library,
     runtime_library,
 )
 
@@ -88,8 +88,8 @@ def _emit_object(
     Raises:
         RuntimeError: The native compiler failed to emit the object.
     """
-    native = _load_library(compiler_library(library))
-    emit = native.cim22_compile_object
+    native = _load_library(native_compiler_library(library))
+    emit = native.cim22_native_compile_object
     emit.argtypes = [
         ctypes.c_char_p,
         ctypes.c_char_p,

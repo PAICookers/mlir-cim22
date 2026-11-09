@@ -1,5 +1,5 @@
-add_mlir_library(MLIRCIM22Compiler
-  Compiler.cpp
+add_mlir_library(MLIRCIM22RegisterAll
+  RegisterAll.cpp
   Pipelines.cpp
   LINK_LIBS PUBLIC
   MLIRCIM22LinalgToCIM
