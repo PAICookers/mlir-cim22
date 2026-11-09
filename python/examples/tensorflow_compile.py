@@ -1,4 +1,4 @@
-"""Compile a tiny deterministic TensorFlow model and record the comparison."""
+"""Compile a deterministic multi-dimensional INT8 TensorFlow model."""
 
 import argparse
 import json
@@ -45,10 +45,10 @@ def run(
     output.mkdir(parents=True, exist_ok=True)
     tf.get_logger().setLevel("ERROR")
     rng = np.random.default_rng(42)
-    w1 = rng.integers(-3, 4, (8, 8), dtype=np.int8)
-    w2 = rng.integers(-3, 4, (8, 4), dtype=np.int8)
+    w1 = rng.integers(-3, 4, (16, 32), dtype=np.int8)
+    w2 = rng.integers(-3, 4, (32, 16), dtype=np.int8)
 
-    @tf.function(input_signature=[tf.TensorSpec([1, 8], tf.int8)])
+    @tf.function(input_signature=[tf.TensorSpec([1, 4, 16], tf.int8)])
     def model(x: tf.Tensor) -> tf.Tensor:
         hidden = tf.raw_ops.BatchMatMulV3(
             x=x, y=tf.constant(w1), Tout=tf.int32
@@ -58,7 +58,7 @@ def run(
             x=hidden, y=tf.constant(w2), Tout=tf.int32
         )
 
-    value = rng.integers(-4, 5, (1, 8), dtype=np.int8)
+    value = rng.integers(-4, 5, (1, 4, 16), dtype=np.int8)
     inputs = tf.constant(value)
     reference = model(inputs).numpy()
     options: dict[str, object] = {
@@ -98,7 +98,7 @@ def run(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    print("Compiling: INT8 Linear(8,8) -> clipped ReLU -> Linear(8,4); seed=42")
+    print("Compiling: INT8 BatchMatMul(1x4x16,16x32) -> clipped ReLU -> BatchMatMul(32x16); seed=42")
     print(f"CIM {runtime} calls: {dispatch_count}")
     print(f"TensorFlow: {reference.tolist()}")
     print(f"CIM:        {actual.tolist()}")

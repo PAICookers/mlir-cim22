@@ -1,4 +1,4 @@
-"""Compile the fixed PyTorch model and record reference/CIM comparisons."""
+"""Compile a deterministic BF16 Conv2d/ReLU/Linear model."""
 
 import argparse
 import json
@@ -11,16 +11,19 @@ from torch import nn
 
 
 class SimpleModel(nn.Module):
-    """Apply a learned affine transform followed by ReLU."""
+    """Run BF16 convolution and linear layers with an FP32 public boundary."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.linear = nn.Linear(64, 16)
+        self.conv = nn.Conv2d(3, 4, kernel_size=3, padding=1).bfloat16()
         self.relu = nn.ReLU()
+        self.linear = nn.Linear(4 * 8 * 8, 8).bfloat16()
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        """Map contiguous CPU FP32 inputs from 64 features to 16."""
-        return self.relu(self.linear(inputs))
+        """Return the final linear activation as FP32 for Session ABI support."""
+        hidden = inputs.to(torch.bfloat16)
+        hidden = self.relu(self.conv(hidden))
+        return self.linear(hidden.flatten(1)).float()
 
 
 def _usb_config(path: Path | None) -> object | None:
@@ -39,6 +42,26 @@ def _usb_config(path: Path | None) -> object | None:
     return UsbConfig(**fields)
 
 
+def _cases() -> tuple[tuple[str, torch.Tensor], ...]:
+    ramp = torch.linspace(-0.5, 0.5, 3 * 8 * 8).reshape(1, 3, 8, 8)
+    checker = torch.tensor([[-0.25, 0.5] * 4] * 8).repeat(1, 3, 1, 1)
+    channel_bias = torch.cat(
+        (
+            torch.full((1, 1, 8, 8), 0.1),
+            torch.full((1, 1, 8, 8), 0.2),
+            torch.full((1, 1, 8, 8), 0.3),
+        ),
+        dim=1,
+    )
+    return (
+        ("constant_positive", torch.full((1, 3, 8, 8), 0.25)),
+        ("constant_negative", torch.full((1, 3, 8, 8), -0.25)),
+        ("ramp", ramp),
+        ("checkerboard", checker),
+        ("channel_bias", channel_bias),
+    )
+
+
 def run(
     output: Path,
     *,
@@ -46,14 +69,16 @@ def run(
     usb_config: object | None = None,
     result_json: Path | None = None,
 ) -> dict[str, Any]:
-    """Run all deterministic cases through PyTorch and the CIM backend."""
+    """Run deterministic BF16 internal cases through PyTorch and CIM."""
     if runtime not in {"simulator", "usb"}:
         raise ValueError("runtime must be simulator or usb")
     output.mkdir(parents=True, exist_ok=True)
     model = SimpleModel().cpu().eval()
     with torch.no_grad():
-        model.linear.weight.fill_(0.5)
-        model.linear.bias.fill_(1)
+        model.conv.weight.fill_(0.125)
+        model.conv.bias.fill_(0.05)
+        model.linear.weight.fill_(0.0625)
+        model.linear.bias.fill_(0.1)
     options: dict[str, object] = {
         "runtime": runtime,
         "artifact_dir": output,
@@ -69,18 +94,9 @@ def run(
         dynamic=False,
         options=options,
     )
-    cases = (
-        ("negative_relu", -1.0, -1.0),
-        ("positive", 1.0, 1.0),
-        ("double_input", 2.0, 2.0),
-        ("quadruple_input", 4.0, 4.0),
-        ("mixed_sign", -1.0, 2.0),
-    )
     rows: list[dict[str, Any]] = []
     with torch.inference_mode():
-        for case_name, first, other in cases:
-            inputs = torch.full((1, 64), other)
-            inputs[0, 0] = first
+        for case_name, inputs in _cases():
             reference = model(inputs)
             actual = compiled(inputs)
             torch.testing.assert_close(
@@ -106,6 +122,9 @@ def run(
     result: dict[str, Any] = {
         "framework": "pytorch",
         "runtime": runtime,
+        "model": "BF16 Conv2d(3,4,3x3) -> ReLU -> Linear(256,8)",
+        "compute_dtype": "bfloat16",
+        "output_kind": "final_linear_activation",
         "compile_seconds": compile_seconds,
         "dispatch_count": dispatch_count,
         "cases": rows,
@@ -118,7 +137,7 @@ def run(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    print(f"CIM22 torch.compile {runtime} checks passed.")
+    print(f"CIM22 torch.compile {runtime} BF16 Conv2d/ReLU/Linear checks passed.")
     print(f"Cases: {len(rows)}; dispatches: {dispatch_count}")
     print(f"Model, debug IR and result.json: {output.resolve()}")
     return result

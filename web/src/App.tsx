@@ -96,8 +96,8 @@ function FrameworkPage({ framework, connected, error, pending, task, busy, opera
   const [usb, setUsb] = useState<UsbConfig>(initialUsb);
   const active = !!task && activeStates.has(task.status); const disabled = active || busy || pending || !connected;
   const title = framework === "tensorflow" ? "TensorFlow" : "PyTorch";
-  const description = framework === "tensorflow" ? "固定运行 examples/tensorflow_compile.py，验证 TensorFlow tf.function 到 CIM22 的编译与执行。" : "固定运行 examples/torch_compile.py，验证 torch.compile 到 CIM22 的编译与执行。";
-  const structure = framework === "tensorflow" ? "INT8 BatchMatMul(8×8) → 截断 ReLU → INT8 BatchMatMul(8×4)" : "Linear(64,16) → ReLU · 5 个确定性输入 case";
+  const description = framework === "tensorflow" ? "固定运行 examples/tensorflow_compile.py，验证 TensorFlow tf.function 到 CIM22 的编译与执行。" : "固定运行 examples/torch_compile.py，验证 torch.compile 下 BF16 卷积、激活和全连接的编译与执行。";
+  const structure = framework === "tensorflow" ? "INT8 BatchMatMul(1×4×16,16×32) → 截断 ReLU → BatchMatMul(32×16)" : "BF16 Conv2d(3→4,3×3) → ReLU → Linear(256,8) · 5 个确定性输入 case";
   const status = task ? names[task.status] ?? task.status : "等待开始";
   const updateUsb = <K extends keyof UsbConfig>(key: K, value: number) => setUsb((current) => ({ ...current, [key]: value }));
   const updateTiming = (key: keyof UsbConfig["timing"], value: number) => setUsb((current) => ({ ...current, timing: { ...current.timing, [key]: value } }));

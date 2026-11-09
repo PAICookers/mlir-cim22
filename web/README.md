@@ -3,9 +3,9 @@
 这是一个面向 Linux x86-64 的本地 Web 界面，提供三个独立入口：
 
 - **TensorFlow**：固定运行 `python/examples/tensorflow_compile.py`，验证
-  `tf.function` 编译和执行。
+  `tf.function` 编译和执行，使用多维 INT8 BatchMatMul 用例。
 - **PyTorch**：固定运行 `python/examples/torch_compile.py`，验证
-  `torch.compile` 编译和执行。
+  `torch.compile` 编译和执行 BF16 Conv2d、ReLU、Linear 用例。
 - **DVS 应用**：导入固定 DVS 模型和测试集，对比纯软件参考与 CIM 软件结果。
 
 TensorFlow 和 PyTorch 页面在开始编译前选择 `CIM 软件仿真` 或 `CIM USB
