@@ -79,3 +79,79 @@ test("a delayed action response cannot replace a newer SSE state", async ({
   ).toBeEnabled();
   await expect(page.getByText("已完成", { exact: true })).toBeVisible();
 });
+
+test("framework verification starts the fixed example with simulator by default", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const streams = new Set<{
+      onopen?: (event: Event) => void;
+      onmessage?: (event: MessageEvent) => void;
+    }>();
+    window.EventSource = class {
+      onopen?: (event: Event) => void;
+      onmessage?: (event: MessageEvent) => void;
+      constructor() {
+        streams.add(this);
+        queueMicrotask(() => this.onopen?.(new Event("open")));
+      }
+      close() {
+        streams.delete(this);
+      }
+    } as unknown as typeof EventSource;
+    window.addEventListener("test:example-snapshot", (event) => {
+      const data = JSON.stringify((event as CustomEvent).detail);
+      for (const stream of streams) {
+        stream.onmessage?.(new MessageEvent("message", { data }));
+      }
+    });
+  });
+  let payload: unknown;
+  await page.route("**/api/examples/run", async (route) => {
+    payload = route.request().postDataJSON();
+    await route.fulfill({ json: { task: { framework: "tensorflow", runtime: "simulator", status: "starting" } } });
+  });
+  await page.goto("/#tensorflow");
+  await expect(page.getByRole("heading", { name: "TensorFlow 编译验证" })).toBeVisible();
+  await expect(page.getByText("CIM 软件仿真", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "开始编译验证" }).click();
+  await expect.poll(() => payload).toEqual({ framework: "tensorflow", runtime: "simulator" });
+});
+
+test("framework verification exposes the USB configuration", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const streams = new Set<{ onopen?: (event: Event) => void }>();
+    window.EventSource = class {
+      onopen?: (event: Event) => void;
+      constructor() {
+        streams.add(this);
+        queueMicrotask(() => this.onopen?.(new Event("open")));
+      }
+      close() {
+        streams.delete(this);
+      }
+    } as unknown as typeof EventSource;
+  });
+  let payload: Record<string, unknown> | undefined;
+  await page.route("**/api/examples/run", async (route) => {
+    payload = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      json: {
+        task: { framework: "tensorflow", runtime: "usb", status: "starting" },
+      },
+    });
+  });
+  await page.goto("/#tensorflow");
+  await page.getByRole("button", { name: "CIM USB 板卡" }).click();
+  await expect(page.getByText("USB 板卡配置", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "开始编译验证" }).click();
+  await expect.poll(() => payload?.runtime).toBe("usb");
+  expect(payload?.usb_config).toMatchObject({
+    vendor_id: 1204,
+    product_id: 241,
+    bulk_in_endpoint: 129,
+    bulk_out_endpoint: 1,
+  });
+});
