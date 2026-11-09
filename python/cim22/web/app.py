@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from .example_manager import ExampleManager
 from .manager import TaskManager
 from .storage import Document
 
@@ -35,18 +36,37 @@ class ActionRequest(BaseModel):
     action: Literal["compile", "single", "full"]
 
 
-def create_app(root: Path, model_dir: Path) -> FastAPI:
+class ExampleRunRequest(BaseModel):
+    """Fixed framework example and native execution backend."""
+
+    framework: Literal["tensorflow", "pytorch"]
+    runtime: Literal["simulator", "usb"] = "simulator"
+    usb_config: dict[str, object] | None = None
+
+
+def create_app(
+    root: Path, model_dir: Path, examples_dir: Path | None = None
+) -> FastAPI:
     """Create one local service. Its lifespan owns the exclusive worker lock."""
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.manager = TaskManager(root, model_dir)
+        selected_examples = examples_dir or Path(__file__).resolve().parents[2] / "examples"
+        app.state.examples = ExampleManager(
+            root,
+            selected_examples,
+            app.state.manager.lock,
+            app.state.manager.ensure_dvs_idle,
+        )
+        app.state.manager.external_idle = app.state.examples.ensure_idle
         try:
             yield
         finally:
+            app.state.examples.close()
             app.state.manager.close()
 
-    app = FastAPI(title="CIM22 · DVS 本地对比", lifespan=lifespan)
+    app = FastAPI(title="CIM22 · 编译验证工作台", lifespan=lifespan)
     app.add_middleware(
         TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]"]
     )
@@ -103,6 +123,44 @@ def create_app(root: Path, model_dir: Path) -> FastAPI:
     def cancel() -> Document:
         return app.state.manager.cancel()
 
+    @app.get("/api/examples/state")
+    def example_state() -> Document:
+        return app.state.examples.snapshot()
+
+    @app.post("/api/examples/run")
+    def example_run(body: ExampleRunRequest) -> Document:
+        return app.state.examples.start(
+            body.framework, body.runtime, body.usb_config
+        )
+
+    @app.post("/api/examples/cancel")
+    def example_cancel() -> Document:
+        return app.state.examples.cancel()
+
+    @app.get("/api/examples/file")
+    def example_file(task_id: str, name: str) -> Response:
+        """Serve only files from one persisted example result directory."""
+        from fastapi.responses import FileResponse
+
+        base = app.state.examples.root / task_id
+        path = (base / name).resolve()
+        if base.resolve() not in path.parents or not path.is_file():
+            raise HTTPException(404, "示例产物不存在")
+        return FileResponse(path)
+
+    @app.get("/api/examples/ir")
+    def example_ir(task_id: str) -> JSONResponse:
+        directory = (app.state.examples.root / task_id / "ir").resolve()
+        root = app.state.examples.root.resolve()
+        if root not in directory.parents or not directory.is_dir():
+            raise HTTPException(404, "示例 IR 不存在")
+        files = [
+            str(path.relative_to(directory))
+            for path in sorted(directory.rglob("*"))
+            if path.is_file()
+        ]
+        return JSONResponse({"task_id": task_id, "files": files})
+
     @app.get("/api/results.csv")
     def results() -> Response:
         manager = app.state.manager
@@ -128,6 +186,28 @@ def create_app(root: Path, model_dir: Path) -> FastAPI:
             previous = None
             while not await request.is_disconnected():
                 snapshot = await asyncio.to_thread(app.state.manager.snapshot)
+                data = json.dumps(snapshot, ensure_ascii=False)
+                if data != previous:
+                    yield f"data: {data}\n\n"
+                    previous = data
+                else:
+                    yield ": keepalive\n\n"
+                await asyncio.sleep(1)
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/api/examples/events")
+    async def example_events(request: Request) -> StreamingResponse:
+        async def stream() -> AsyncIterator[str]:
+            previous = None
+            while not await request.is_disconnected():
+                snapshot = await asyncio.to_thread(
+                    app.state.examples.snapshot
+                )
                 data = json.dumps(snapshot, ensure_ascii=False)
                 if data != previous:
                     yield f"data: {data}\n\n"

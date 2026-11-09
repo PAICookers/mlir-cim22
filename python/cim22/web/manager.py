@@ -39,6 +39,7 @@ class TaskManager:
         self.commands = None
         self.cancel_event = None
         self.current: Path | None = None
+        self.external_idle = None
         pointer = self.root / "current.json"
         if pointer.exists():
             self.current = self.root / read_json(pointer)["id"]
@@ -131,6 +132,13 @@ class TaskManager:
             return self.snapshot()
 
     def _ensure_idle(self) -> None:
+        self._reap()
+        if self.external_idle is not None:
+            self.external_idle()
+        self.ensure_dvs_idle()
+
+    def ensure_dvs_idle(self) -> None:
+        """Reject DVS mutations while the DVS worker itself is active."""
         self._reap()
         if self.current is not None:
             state = read_json(self.current / "state.json")

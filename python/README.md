@@ -87,11 +87,13 @@ with compile_tf(infer, options={"runtime": "simulator"}) as compiled:
 - `MLIRCIM22_ENABLE_ONNX` 控制原生 ONNX 诊断工具的构建。TF 编译入口使用上面的 worker 路径。
 - 当前接口面向 eager 推理。在另一个 `tf.function` 中嵌入调用及训练不在此接口范围内。Linux 已加载 TensorFlow 时，CIM22 会拒绝首次在同一进程加载 PyTorch 路径的 torch-mlir FX 绑定。
 
-完整的 [TF INT8 示例](examples/tensorflow_compile.py) 使用两层 Linear 和截断 ReLU。每次运行将 `compile.log`、`graph-<id>.so/.dll` 和 `ir/graph-<id>/` 调试文件保存在当前工作目录的 `outputs/tensorflow/<时间戳>/`，并打印 CIM 调用次数和输出误差。
+完整的 [TF INT8 示例](examples/tensorflow_compile.py) 使用多维输入的两层 BatchMatMul 和截断 ReLU；[PyTorch 示例](examples/torch_compile.py) 使用 BF16 Conv2d、ReLU 和 Linear，并输出最终激活值。每次运行将 `compile.log`、`graph-<id>.so/.dll` 和 `ir/graph-<id>/` 调试文件保存在当前工作目录的示例输出目录，并打印 CIM 调用次数和输出误差。
 
 ## Session 与产物
 
 用 `cim22.Session(Path(...))` 重新加载已保存的同平台模型动态库。按 `input_shapes` 和 `input_dtypes` 顺序传入连续、对齐的 NumPy 数组，结果为平坦 tuple。框架输出结构由各自的适配层恢复。模型所需的原生运行库应与产物配套。
+
+当前公共 Session 边界支持 FP32、INT8 和 INT32；BF16 算子可在编译器内部执行，但原生 BF16 Tensor 作为直接输入或输出的公共 ABI 仍待后续工作树实现。BF16 示例因此将 BF16 计算放在模型内部，并输出当前 Session ABI 可承载的激活结果。
 
 未设置 `artifact_dir` 时，临时模型随 Session 生命周期清理。PyTorch 编译后的 callable 持有 Session，TF callable 可显式关闭。Windows 上应在 Session 关闭后清理其加载的 DLL。
 
