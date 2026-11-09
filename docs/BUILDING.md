@@ -11,9 +11,11 @@
 
 ## 环境与依赖
 
-需要 Git、C++17 编译器、**CMake >=3.28**、Ninja，以及默认 USB 构建需要的 `pkg-config` 和 libusb 开发文件。Python 后端和测试还需 Python 3.12 与 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
+需要 Git、C++17 编译器、**CMake >=3.28**、Ninja，以及 Python 后端和测试所需的 Python 3.12 与 [uv](https://docs.astral.sh/uv/getting-started/installation/)。默认 Linux USB 构建还需要 Cypress CyUSB Linux 1.0.5 SDK 的 `cyusb.h` 和 `libcyusb.so`，以及系统 `libusb-1.0` 开发文件。
 
-Linux USB 后端直接使用系统 libusb，无需安装 Cypress `cyusb_linux` SDK。CMake 通过 `pkg-config` 获取 libusb 的头文件与链接配置。设备访问权限和板卡配套的 FX3 固件需另行准备；安装主机库不会下载设备固件。
+Linux USB 后端通过 `libcyusb` 使用系统 libusb。配置时设置 `-DCYUSB_ROOT=/path/to/cyusb_linux_1.0.5`，或分别设置 `CYUSB_INCLUDE_DIR` 和 `CYUSB_LIBRARY`；不需要执行 SDK 的 `install.sh`。设备访问权限和板卡配套的 FX3 固件需另行准备；构建主机库不会下载设备固件。
+
+运行构建出的程序时，动态加载器还必须能找到 `libcyusb.so`；如果 SDK 不在系统库目录中，请设置 `LD_LIBRARY_PATH`，或使用发行版/部署系统提供的等效库路径。项目不会自动复制或安装供应方 SDK。
 
 PLL 自动串口控制仅支持 Linux，使用 POSIX 接口，不需要 PyUSB 或 pyserial。Linux 上未提供串口或指定设备不存在时，使用用户手动设置的时钟，不计为程序已配置或校验 PLL。Windows 保留 CyAPI USB 支持，省略串口选项并手动设钟；请求自动串口控制会报错。设备权限及可选串口的使用方法见 [USB 与 PLL 配置](../python/README.md#usb-与-pll-配置)。
 
@@ -77,7 +79,8 @@ cmake -G Ninja -S . -B build -DMLIR_DIR=/path/to/llvm-build/lib/cmake/mlir
 
 ```sh
 cmake -G Ninja -S . -B build \
-  -DCMAKE_BUILD_TYPE=Release -DMLIR_DIR="$MLIR_DIR"
+  -DCMAKE_BUILD_TYPE=Release -DMLIR_DIR="$MLIR_DIR" \
+  -DCYUSB_ROOT=/path/to/cyusb_linux_1.0.5
 cmake --build build --parallel 4
 build/bin/mlir-cim22-opt --help
 ```

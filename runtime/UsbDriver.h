@@ -28,8 +28,9 @@ class UsbDriver {
 public:
   virtual ~UsbDriver() = default;
 
-  // Success means the initial IN request is already submitted, before any OUT.
-  // Driver-owned buffers remain valid through their completion callback.
+  // Success means the receive path is ready before any OUT. Asynchronous
+  // drivers may submit an IN request here; synchronous drivers may issue it
+  // from read().
   virtual llvm::Error open(const UsbCIMDeviceConfig &config) = 0;
   virtual llvm::Expected<size_t> write(llvm::ArrayRef<uint8_t> bytes) = 0;
   virtual llvm::Expected<size_t> read(llvm::MutableArrayRef<uint8_t> bytes) = 0;

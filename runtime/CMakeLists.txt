@@ -60,15 +60,37 @@ if(CIM22_ENABLE_USB)
     set(_cim22_usb_driver_source CyApiUsbDriver.cpp)
   else()
     find_package(PkgConfig REQUIRED)
-    pkg_check_modules(LIBUSB QUIET IMPORTED_TARGET GLOBAL libusb-1.0)
-    if(NOT LIBUSB_FOUND)
-      message(FATAL_ERROR
-        "Linux USB support requires libusb-1.0 development files, not the Cypress "
-        "SDK. Install libusb-1.0-0-dev (Debian/Ubuntu), libusb (Arch), or "
-        "libusb1-devel (Fedora), or set CIM22_ENABLE_USB=OFF for software only.")
+    pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET GLOBAL libusb-1.0)
+    set(CYUSB_ROOT "" CACHE PATH
+      "Root of the Cypress CyUSB Linux SDK (contains include/ and lib/)")
+    set(CYUSB_INCLUDE_DIR "" CACHE PATH
+      "Directory containing cyusb.h")
+    set(CYUSB_LIBRARY "" CACHE FILEPATH
+      "Path to the CyUSB Linux libcyusb shared library")
+    if(NOT CYUSB_INCLUDE_DIR)
+      unset(CYUSB_INCLUDE_DIR CACHE)
     endif()
-    add_library(cim22_usb_driver ALIAS PkgConfig::LIBUSB)
-    set(_cim22_usb_driver_source LibusbUsbDriver.cpp)
+    if(NOT CYUSB_LIBRARY)
+      unset(CYUSB_LIBRARY CACHE)
+    endif()
+    find_path(CYUSB_INCLUDE_DIR cyusb.h
+      HINTS "${CYUSB_ROOT}"
+      PATH_SUFFIXES include)
+    find_library(CYUSB_LIBRARY NAMES cyusb libcyusb
+      HINTS "${CYUSB_ROOT}"
+      PATH_SUFFIXES lib)
+    if(NOT CYUSB_INCLUDE_DIR OR NOT CYUSB_LIBRARY)
+      message(FATAL_ERROR
+        "Linux USB support requires the Cypress CyUSB Linux SDK (libcyusb). "
+        "Set CYUSB_ROOT, or set CYUSB_INCLUDE_DIR and CYUSB_LIBRARY explicitly; "
+        "do not run the SDK install.sh. Set CIM22_ENABLE_USB=OFF for software only.")
+    endif()
+    add_library(cim22_usb_driver SHARED IMPORTED GLOBAL)
+    set_target_properties(cim22_usb_driver PROPERTIES
+      IMPORTED_LOCATION "${CYUSB_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "${CYUSB_INCLUDE_DIR}"
+      INTERFACE_LINK_LIBRARIES "PkgConfig::LIBUSB")
+    set(_cim22_usb_driver_source LibcyusbUsbDriver.cpp)
   endif()
 endif()
 
@@ -110,6 +132,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set_property(TARGET ${_cim22_library} APPEND PROPERTY LINK_DEPENDS
       "${CMAKE_CURRENT_SOURCE_DIR}/cim22.exports")
   endforeach()
+  # Do not embed the developer's absolute SDK path in build artifacts.
+  set_target_properties(cim22_runtime PROPERTIES
+    SKIP_BUILD_RPATH TRUE)
   unset(_cim22_library)
 endif()
 
