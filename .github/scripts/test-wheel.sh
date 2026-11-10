@@ -11,7 +11,7 @@ if (( ${#wheels[@]} != 1 )); then
 fi
 work_dir=$(mktemp -d)
 trap 'rm -rf -- "$work_dir"' EXIT
-unset PYTHONPATH CIM22_OPT CIM22_NATIVE_COMPILER_LIBRARY CIM22_RUNTIME_LIBRARY LD_LIBRARY_PATH
+unset PYTHONPATH CIM22_OPT CIM22_COMPILER_LIBRARY CIM22_RUNTIME_LIBRARY LD_LIBRARY_PATH
 
 python -m venv "$work_dir/venv"
 py="$work_dir/venv/bin/python"

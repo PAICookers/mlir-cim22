@@ -478,7 +478,7 @@ def test_resume_rejects_changed_python_backend(
     )
     monkeypatch.setattr(
         engine,
-        "native_compiler_library",
+        "compiler_library",
         lambda _: tmp_path / "native_compiler.so",
     )
     monkeypatch.setattr(

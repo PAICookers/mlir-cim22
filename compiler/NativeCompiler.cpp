@@ -481,7 +481,7 @@ extern "C" void *cim22_session_load_packet(const char *path, const char *entry,
   return session.release();
 }
 
-extern "C" int cim22_native_compile_object(const char *path,
+extern "C" int cim22_compile_object(const char *path,
                                            const char *objectPath,
                                            const char *backend, char *error,
                                            size_t capacity) {

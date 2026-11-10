@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from spikingjelly.activation_based import functional, neuron, surrogate
 
-from cim22.runtime import native_compiler_library, runtime_library
+from cim22.runtime import compiler_library, runtime_library
 
 from .storage import Document, digest, read_json, save_json
 
@@ -32,7 +32,7 @@ class DvsEngine:
             "torch_mlir": version("torch-mlir"),
             "spikingjelly": version("spikingjelly"),
             "runtime": digest(runtime_library()),
-            "compiler": digest(native_compiler_library(runtime_library())),
+            "compiler": digest(compiler_library(runtime_library())),
             "adapter": digest(Path(__file__)),
             "python_backend": {
                 name: digest(Path(__file__).parents[1] / name)

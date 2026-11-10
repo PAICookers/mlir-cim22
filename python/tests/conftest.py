@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from cim22.runtime import native_compiler_library, runtime_library
+from cim22.runtime import compiler_library, runtime_library
 
 from ._generated import cim22_model_pb2 as proto
 
@@ -59,7 +59,7 @@ def native_toolchain(native_runtime: Path) -> None:
     )
     if shutil.which(optimizer) is None:
         pytest.fail("Set CIM22_OPT to the built mlir-cim22-opt executable")
-    native_compiler_library(native_runtime)
+    compiler_library(native_runtime)
 
 
 @pytest.fixture

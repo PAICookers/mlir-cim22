@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from cim22.compiler import _compile_linalg, _emit_object
-from cim22.runtime import MODEL_SUFFIX, Session, native_compiler_library
+from cim22.runtime import MODEL_SUFFIX, Session, compiler_library
 
 from ._generated import cim22_model_pb2 as proto
 
@@ -34,7 +34,7 @@ def test_native_export_boundary(native_runtime: Path) -> None:
         "llvm::ErrorList::ID",
         "llvm::StringError::ID",
     }
-    for library in (native_runtime, native_compiler_library(native_runtime)):
+    for library in (native_runtime, compiler_library(native_runtime)):
         output = subprocess.run(
             ["nm", "-D", "-C", "--defined-only", str(library)],
             capture_output=True,
@@ -47,7 +47,7 @@ def test_native_export_boundary(native_runtime: Path) -> None:
             s.startswith(("google::protobuf::", "absl::", "mlir::cl::"))
             for s in symbols
         )
-        assert "cim22_native_compile_object" in symbols or (
+        assert "cim22_compile_object" in symbols or (
             "cim22_session_load_shared" in symbols
         )
 

@@ -87,7 +87,7 @@ import sys
 from pathlib import Path
 
 libraries = Path(sys.argv[1])
-for name in ("libcim22_runtime.so", "libcim22_native_compiler.so"):
+for name in ("libcim22_runtime.so", "libcim22_compiler.so"):
     ctypes.CDLL(str(libraries / name))
     print(f"Loaded: {name}")
 PY

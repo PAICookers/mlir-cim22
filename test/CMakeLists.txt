@@ -178,7 +178,7 @@ if(TARGET PkgConfig::LIBUSB)
   target_compile_options(mlir-cim22-libusb-driver-test PRIVATE -fno-rtti)
 endif()
 set(MLIRCIM22_TEST_DEPENDS
-  cim22_native_compiler
+  cim22_compiler
   check-cim22-protobuf
   mlir-cim22-model-data-test
   FileCheck

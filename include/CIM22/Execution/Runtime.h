@@ -47,7 +47,7 @@ typedef struct CIM22HardwareConfig {
   uint32_t readback_select_delay_ms;
 } CIM22HardwareConfig;
 // Shared models need only the execution runtime. Packet loading and object
-// emission are compiler-only functions in libcim22_native_compiler.
+// emission are compiler-only functions in libcim22_compiler.
 // Both loaders return a session owned by the caller, or NULL on failure.
 // Load, compile and configure calls accept an optional error buffer; its
 // capacity is in bytes and includes the terminating NUL.
@@ -56,7 +56,7 @@ void *cim22_session_load_shared(const char *model_file, char *error,
 void *cim22_session_load_packet(const char *packet_file, const char *entry,
                                 char *error, size_t error_capacity);
 // Native backend is "simulator" or "usb". BF16 semantics come from the IR.
-int cim22_native_compile_object(const char *packet_file, const char *object_file,
+int cim22_compile_object(const char *packet_file, const char *object_file,
                          const char *backend, char *error,
                          size_t error_capacity);
 void cim22_session_destroy(void *session);
