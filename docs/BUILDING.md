@@ -11,9 +11,11 @@
 
 ## 环境与依赖
 
-需要 Git、C++17 编译器、**CMake >=3.28**、Ninja，以及默认 USB 构建需要的 `pkg-config` 和 libusb 开发文件。Python 后端和测试还需 Python 3.12 与 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
+需要 Git、C++17 编译器、**CMake >=3.28**、Ninja，以及 Python 后端和测试所需的 Python 3.12 与 [uv](https://docs.astral.sh/uv/getting-started/installation/)。USB 构建按需开启；默认关闭时不需要 CyUSB SDK。开启 Linux USB 时需要仓库 `third_party/cyusb-linux` 中的最小依赖（或外部 SDK）以及系统 `libusb-1.0` 开发文件。
 
-Linux USB 后端直接使用系统 libusb，无需安装 Cypress `cyusb_linux` SDK。CMake 通过 `pkg-config` 获取 libusb 的头文件与链接配置。设备访问权限和板卡配套的 FX3 固件需另行准备；安装主机库不会下载设备固件。
+Linux USB 后端通过 `libcyusb` 使用系统 libusb。设置 `-DCIM22_ENABLE_USB=ON` 后，CMake 默认使用仓库的 [third_party/cyusb-linux](../third_party/cyusb-linux/README.md)；也可设置 `-DCYUSB_ROOT=/path/to/cyusb_linux_1.0.5`，或分别设置 `CYUSB_INCLUDE_DIR` 和 `CYUSB_LIBRARY`。仓库 bundle 会自动安装许可证；使用外部 SDK 构建私有 wheel 时许可证文件可省略，分发该 wheel 时应通过 `CYUSB_LICENSE_FILE` 保留对应许可证文本。不需要执行 SDK 的 `install.sh`。设备访问权限和板卡配套的 FX3 固件需另行准备；构建主机库不会下载设备固件。
+
+运行源码构建出的程序时，动态加载器还必须能找到 `libcyusb.so`；如果 SDK 不在系统库目录中，请设置 `LD_LIBRARY_PATH`，或使用发行版/部署系统提供的等效库路径。wheel 会将仓库或指定 SDK 的 `libcyusb.so` 安装到 `cim22/lib`，并保留第三方许可证。
 
 PLL 自动串口控制仅支持 Linux，使用 POSIX 接口，不需要 PyUSB 或 pyserial。Linux 上未提供串口或指定设备不存在时，使用用户手动设置的时钟，不计为程序已配置或校验 PLL。Windows 保留 CyAPI USB 支持，省略串口选项并手动设钟；请求自动串口控制会报错。设备权限及可选串口的使用方法见 [USB 与 PLL 配置](../python/README.md#usb-与-pll-配置)。
 
@@ -77,7 +79,8 @@ cmake -G Ninja -S . -B build -DMLIR_DIR=/path/to/llvm-build/lib/cmake/mlir
 
 ```sh
 cmake -G Ninja -S . -B build \
-  -DCMAKE_BUILD_TYPE=Release -DMLIR_DIR="$MLIR_DIR"
+  -DCMAKE_BUILD_TYPE=Release -DMLIR_DIR="$MLIR_DIR" \
+  -DCIM22_ENABLE_USB=ON
 cmake --build build --parallel 4
 build/bin/mlir-cim22-opt --help
 ```
@@ -139,12 +142,13 @@ PyTorch 后端使用 `stage=packet` 和自动列宽。上述参数由优化器 C
 ```sh
 export MLIR_DIR="/path/to/llvm-build/lib/cmake/mlir"
 CMAKE_BUILD_PARALLEL_LEVEL=4 uv build --python 3.12 python \
-  --wheel --out-dir python/dist -Ccmake.define.MLIR_DIR="$MLIR_DIR"
+  --wheel --out-dir python/dist -Ccmake.define.MLIR_DIR="$MLIR_DIR" \
+  -Ccmake.define.CIM22_ENABLE_USB=ON
 ```
 
 本体使用的 `build/` 与打包使用的 `python/build/` 各自保存 CMake 缓存；即使本体刚编译成功，wheel 也不会自动读取 `build/CMakeCache.txt`。
 
-scikit-build-core 调用根 CMake 工程，默认构建 **Release、USB 开启、测试和 ONNX 关闭**。构建 wheel 本身不需要安装 PyTorch 或 torch-mlir。产物为 `python/dist/mlir_cim22-1.0.0-py3-none-linux_x86_64.whl`，包含：
+scikit-build-core 调用根 CMake 工程；上面的发行命令显式构建 **Release、USB 开启、测试和 ONNX 关闭**。构建 wheel 本身不需要安装 PyTorch 或 torch-mlir。产物为 `python/dist/mlir_cim22-1.0.0-py3-none-linux_x86_64.whl`，包含：
 
 ```text
 cim22/
@@ -152,6 +156,8 @@ cim22/
   bin/mlir-cim22-opt
   lib/libcim22_compiler.so
   lib/libcim22_runtime.so
+  lib/libcyusb.so
+  share/licenses/cyusb-linux/license.txt
   web/static/index.html
   web/static/assets/
 ```
@@ -212,6 +218,7 @@ cmake --build ../llvm-build --target \
   FileCheck split-file mlir-runner mlir_c_runner_utils --parallel 4
 cmake -G Ninja -S . -B build/test \
   -DCMAKE_BUILD_TYPE=Debug -DMLIR_DIR="$MLIR_DIR" \
+  -DCIM22_ENABLE_USB=ON \
   -DMLIRCIM22_INCLUDE_TESTS=ON -DMLIRCIM22_ENABLE_ONNX=ON \
   -DPython3_EXECUTABLE="$PWD/python/.venv/bin/python"
 cmake --build build/test --target check-mlir-cim22 --parallel 4
@@ -238,22 +245,18 @@ ruff format --check --config python/pyproject.toml python test/python test/lit.c
 uv lock --project python --check
 ```
 
-## 源码包与离线构建
+## 源码构建与离线构建
 
-在仓库根目录生成源码包，包含测试、示例和构建文件：
-
-```sh
-uv build --python 3.12 python --sdist --out-dir python/dist
-```
-
-解包到全新目录后，在解包目录构建 wheel；同样需要配置 `MLIR_DIR`。重新验收修改过的 sdist 时不要复用旧解包/构建目录：归一化的文件时间戳可能使增量构建错误地沿用旧目标文件。
+项目发布预编译 wheel，不发布 sdist。需要从源码构建时，请直接克隆仓库并按本文件准备 LLVM/MLIR、Python 和平台 USB 依赖；Git checkout 是源码构建的完整输入。
 
 ```sh
-uv build --python 3.12 --wheel
+export MLIR_DIR="/path/to/llvm-build/lib/cmake/mlir"
+CMAKE_BUILD_PARALLEL_LEVEL=4 uv build --python 3.12 python \
+  --wheel --out-dir python/dist -Ccmake.define.MLIR_DIR="$MLIR_DIR" \
+  -Ccmake.define.CIM22_ENABLE_USB=ON
 ```
 
-源码包内 C++ 源码位于 `native/`，由构建配置自动定位。
-`tools/` 仅打包其 CMake 文件和两个编译工具源码：`mlir-cim22-opt` 由正常的 `torch.compile` lowering 调用；`mlir-cim22-onnx-import` 随 `MLIRCIM22_ENABLE_ONNX` 启用，用于 ONNX 诊断和测试。源码包保留两者以支持可选构建；wheel 的安装内容由 CMake 安装目标决定。
+默认 USB 关闭时，源码构建不需要 CyUSB SDK。启用 Linux 或 Windows USB 时，分别通过 `CYUSB_ROOT` 或 `CYAPI_ROOT` 指向本地供应方 SDK；GitHub Actions 的预编译 wheel 直接使用 checkout 中的 `third_party` 依赖。
 
 `uv --offline` 只限制 Python 下载，不能阻止 CMake FetchContent 访问网络。离线构建应预先准备固定版本及其传递依赖源码，并通过以下构建参数指定本地路径；仅启用 ONNX 时需要最后一项：
 
@@ -301,7 +304,7 @@ cmake --build build/windows --parallel 2
 
 已验证 FX3 SDK **1.3.5** 的官方 x64 CyAPI 库与 MSVC 2022 可完成链接。wheel 会携带 SDK 的 `license/license.rtf`（可通过 `CYAPI_LICENSE_FILE` 指定位置），不打包 SDK 源码或安装板卡驱动。
 
-Windows 驱动的无硬件测试使用项目自有 SDK 替身，可在启用原生测试、关闭 USB 构建时运行 `mlir-cim22-cyapi-driver-test`，不需要 CyAPI 库。它验证接口控制流程，不能替代真实 SDK 链接和板卡验收。Linux 继续使用 libusb。
+Windows 驱动的无硬件测试使用项目自有 SDK 替身，可在启用原生测试、关闭 USB 构建时运行 `mlir-cim22-cyapi-driver-test`，不需要 CyAPI 库。它验证接口控制流程，不能替代真实 SDK 链接和板卡验收。Linux 运行时通过 libcyusb 使用系统 libusb。
 
 可用现有打包入口生成包含 Windows 原生组件的 wheel：
 

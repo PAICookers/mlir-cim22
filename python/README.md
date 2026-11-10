@@ -189,7 +189,7 @@ uv build --python 3.12 python --wheel --out-dir python/dist `
 
 本机构建产物为 `mlir_cim22-<version>-py3-none-win_amd64.whl`。平台工具、编译器库、运行库及模型链接所需的导入库随包安装。
 
-在各平台用干净的 Python 环境安装生成的 wheel 和匹配的 torch-mlir wheel，从源码目录之外运行本文的 PyTorch 最小示例。验证 TF extra 时也运行 TF 片段。发行构建和源码包验收见 [BUILDING](../docs/BUILDING.md#源码包与离线构建)。
+在各平台用干净的 Python 环境安装生成的 wheel 和匹配的 torch-mlir wheel，从源码目录之外运行本文的 PyTorch 最小示例。验证 TF extra 时也运行 TF 片段。发行构建和源码构建见 [BUILDING](../docs/BUILDING.md#源码构建与离线构建)。
 
 ## 开发与验证
 

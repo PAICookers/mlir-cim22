@@ -1,4 +1,4 @@
-"""Set the CI release or development version before building the sdist."""
+"""Set the CI release or development version before building wheels."""
 
 import os
 import re

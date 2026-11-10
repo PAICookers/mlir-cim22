@@ -14,16 +14,15 @@ if [[ ! -f "$MLIR_DIR/MLIRConfig.cmake" ]] ||
   exit 1
 fi
 
-# Fresh extraction avoids stale objects from normalized sdist timestamps.
+# Build directly from the checkout; the workflow provides the pinned LLVM SDK
+# and the reviewed CyUSB bundle as separate inputs.
 stage_dir=$(mktemp -d /work/release.XXXXXX)
 trap 'rm -rf -- "$stage_dir"' EXIT
 uv build --python /opt/python/cp312-cp312/bin/python /io/python \
-  --sdist --out-dir "$stage_dir/sdist"
-mkdir "$stage_dir/source"
-tar -xzf "$stage_dir"/sdist/*.tar.gz --strip-components=1 -C "$stage_dir/source"
-uv build --python /opt/python/cp312-cp312/bin/python "$stage_dir/source" \
   --wheel --out-dir "$stage_dir/wheel" \
   -Ccmake.build-type=Release \
+  -Ccmake.define.CIM22_ENABLE_USB=ON \
+  -Ccmake.define.CYUSB_ROOT=/io/third_party/cyusb-linux \
   -Ccmake.define.CMAKE_JOB_POOLS=link=1 \
   -Ccmake.define.CMAKE_JOB_POOL_LINK=link
 
@@ -31,10 +30,10 @@ uv build --python /opt/python/cp312-cp312/bin/python "$stage_dir/source" \
 licenses_dir="$stage_dir/licenses"
 mkdir "$licenses_dir"
 cp /opt/llvm/share/cim22-licenses/*.txt "$licenses_dir/"
-cp "$stage_dir/source/build/_deps/protobuf-src/LICENSE" "$licenses_dir/PROTOBUF.txt"
-cp "$stage_dir/source/build/_deps/protobuf-src/third_party/utf8_range/LICENSE" \
+cp /io/python/build/_deps/protobuf-src/LICENSE "$licenses_dir/PROTOBUF.txt"
+cp /io/python/build/_deps/protobuf-src/third_party/utf8_range/LICENSE \
   "$licenses_dir/UTF8_RANGE.txt"
-cp "$stage_dir/source/build/_deps/absl-src/LICENSE" "$licenses_dir/ABSEIL.txt"
+cp /io/python/build/_deps/absl-src/LICENSE "$licenses_dir/ABSEIL.txt"
 # AlmaLinux provides libusb1 through the package named libusbx.
 rpm -qL libusbx systemd-libs | tee "$stage_dir/license-files.txt"
 license_count=0
@@ -76,6 +75,11 @@ uv pip install --python /opt/python/cp312-cp312/bin/python --no-deps \
   --target "$stage_dir/installed" /out/*.whl
 readelf -d "$stage_dir/installed/cim22/bin/mlir-cim22-opt" \
   "$stage_dir/installed/cim22/lib/"*.so > "$stage_dir/native-dynamic.txt"
+if [[ ! -f "$stage_dir/installed/cim22/lib/libcyusb.so" ]] ||
+   [[ ! -f "$stage_dir/installed/cim22/share/licenses/cyusb-linux/license.txt" ]]; then
+  echo "Linux wheel is missing the CyUSB runtime or license" >&2
+  exit 1
+fi
 if grep -E 'NEEDED.*lib(LLVM|MLIR)' "$stage_dir/native-dynamic.txt"; then
   echo "Expected LLVM/MLIR to be linked statically into the wheel" >&2
   exit 1

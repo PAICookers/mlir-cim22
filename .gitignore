@@ -69,3 +69,7 @@ skills-lock.json
 
 # Reviewed prebuilt Windows USB dependency.
 !/third_party/cyapi/library/cpp/lib/x64/CyAPI.lib
+
+# Reviewed prebuilt Linux USB dependency.
+!/third_party/cyusb-linux/lib/libcyusb.so
+!/third_party/cyusb-linux/lib/libcyusb.so.1

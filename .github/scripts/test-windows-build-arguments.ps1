@@ -16,7 +16,7 @@ $commands = @($ast.FindAll({
 }, $true))
 if ($commands.Count -ne 1) { throw 'Expected one production uv wheel command' }
 
-$source = [pscustomobject]@{ FullName = 'C:\Source tree\unpacked' }
+$projectDir = 'C:\Source tree\python'
 $stageDir = 'C:\Build stage'
 $CyapiRoot = 'C:\CyAPI SDK'
 $previousMlirDir = $env:MLIR_DIR
@@ -29,7 +29,7 @@ try {
     $command = $commands[0].Extent.Text -replace '^uv\s+', "python `"$probe`" "
     $actual = @(& ([scriptblock]::Create($command)) | ConvertFrom-Json)
     $expected = @(
-        'build', '--python', '3.12', $source.FullName, '--wheel', '--out-dir', "$stageDir/wheel",
+        'build', '--python', '3.12', $projectDir, '--wheel', '--out-dir', "$stageDir/wheel",
         '-Ccmake.build-type=Release', "-Ccmake.define.MLIR_DIR=$env:MLIR_DIR",
         '-Ccmake.define.CIM22_ENABLE_USB=ON', "-Ccmake.define.CYAPI_ROOT=$CyapiRoot",
         '-Ccmake.define.CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL',

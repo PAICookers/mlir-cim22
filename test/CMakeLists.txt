@@ -177,6 +177,18 @@ if(TARGET PkgConfig::LIBUSB)
     Threads::Threads)
   target_compile_options(mlir-cim22-libusb-driver-test PRIVATE -fno-rtti)
 endif()
+if(TARGET cim22_usb_driver AND NOT WIN32)
+  add_executable(mlir-cim22-libcyusb-driver-test EXCLUDE_FROM_ALL
+    Unit/Execution/LibcyusbUsbDriverTest.cpp)
+  llvm_update_compile_flags(mlir-cim22-libcyusb-driver-test)
+  target_include_directories(mlir-cim22-libcyusb-driver-test PRIVATE
+    "${PROJECT_SOURCE_DIR}/runtime"
+    "${CYUSB_INCLUDE_DIR}"
+    $<TARGET_PROPERTY:PkgConfig::LIBUSB,INTERFACE_INCLUDE_DIRECTORIES>)
+  target_link_libraries(mlir-cim22-libcyusb-driver-test PRIVATE LLVMSupport
+    Threads::Threads)
+  target_compile_options(mlir-cim22-libcyusb-driver-test PRIVATE -fno-rtti)
+endif()
 set(MLIRCIM22_TEST_DEPENDS
   cim22_compiler
   check-cim22-protobuf
@@ -204,6 +216,9 @@ if(TARGET mlir-cim22-pll-serial-test)
 endif()
 if(TARGET mlir-cim22-libusb-driver-test)
   list(APPEND MLIRCIM22_TEST_DEPENDS mlir-cim22-libusb-driver-test)
+endif()
+if(TARGET mlir-cim22-libcyusb-driver-test)
+  list(APPEND MLIRCIM22_TEST_DEPENDS mlir-cim22-libcyusb-driver-test)
 endif()
 if(TARGET mlir-cim22-cyapi-driver-test)
   list(APPEND MLIRCIM22_TEST_DEPENDS mlir-cim22-cyapi-driver-test)
