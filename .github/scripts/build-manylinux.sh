@@ -24,6 +24,8 @@ tar -xzf "$stage_dir"/sdist/*.tar.gz --strip-components=1 -C "$stage_dir/source"
 uv build --python /opt/python/cp312-cp312/bin/python "$stage_dir/source" \
   --wheel --out-dir "$stage_dir/wheel" \
   -Ccmake.build-type=Release \
+  -Ccmake.define.CIM22_ENABLE_USB=ON \
+  -Ccmake.define.CYUSB_ROOT="$stage_dir/source/third_party/cyusb-linux" \
   -Ccmake.define.CMAKE_JOB_POOLS=link=1 \
   -Ccmake.define.CMAKE_JOB_POOL_LINK=link
 
@@ -76,6 +78,11 @@ uv pip install --python /opt/python/cp312-cp312/bin/python --no-deps \
   --target "$stage_dir/installed" /out/*.whl
 readelf -d "$stage_dir/installed/cim22/bin/mlir-cim22-opt" \
   "$stage_dir/installed/cim22/lib/"*.so > "$stage_dir/native-dynamic.txt"
+if [[ ! -f "$stage_dir/installed/cim22/lib/libcyusb.so" ]] ||
+   [[ ! -f "$stage_dir/installed/cim22/share/licenses/cyusb-linux/license.txt" ]]; then
+  echo "Linux wheel is missing the CyUSB runtime or license" >&2
+  exit 1
+fi
 if grep -E 'NEEDED.*lib(LLVM|MLIR)' "$stage_dir/native-dynamic.txt"; then
   echo "Expected LLVM/MLIR to be linked statically into the wheel" >&2
   exit 1

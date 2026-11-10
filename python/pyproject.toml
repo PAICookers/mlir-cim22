@@ -48,6 +48,7 @@ sdist.include = ["cim22/web/static"]
 "../lib" = "native/lib"
 "../compiler" = "native/compiler"
 "../runtime" = "native/runtime"
+"../third_party/cyusb-linux" = "native/third_party/cyusb-linux"
 "../schema" = "native/schema"
 "../tools/CMakeLists.txt" = "native/tools/CMakeLists.txt"
 "../tools/mlir-cim22-opt" = "native/tools/mlir-cim22-opt"

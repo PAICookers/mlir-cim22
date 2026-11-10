@@ -19,7 +19,7 @@ add_custom_target(update-cim22-protobuf
   COMMENT "Regenerating test Python Protobuf binding" VERBATIM)
 
 # Execution-only deployment library; Protobuf lite and LLVMSupport are static.
-option(CIM22_ENABLE_USB "Build the platform USB runtime" ON)
+option(CIM22_ENABLE_USB "Build the platform USB runtime" OFF)
 if(CIM22_ENABLE_USB)
   if(WIN32)
     set(CYAPI_ROOT "" CACHE PATH "Root of the Cypress EZ-USB FX3 SDK")
@@ -61,6 +61,8 @@ if(CIM22_ENABLE_USB)
   else()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET GLOBAL libusb-1.0)
+    set(_cim22_bundled_cyusb_root
+      "${PROJECT_SOURCE_DIR}/third_party/cyusb-linux")
     set(CYUSB_ROOT "" CACHE PATH
       "Root of the Cypress CyUSB Linux SDK (contains include/ and lib/)")
     set(CYUSB_INCLUDE_DIR "" CACHE PATH
@@ -73,6 +75,12 @@ if(CIM22_ENABLE_USB)
     if(NOT CYUSB_LIBRARY)
       unset(CYUSB_LIBRARY CACHE)
     endif()
+    if(NOT CYUSB_ROOT AND EXISTS "${_cim22_bundled_cyusb_root}/include/cyusb.h"
+       AND EXISTS "${_cim22_bundled_cyusb_root}/lib/libcyusb.so")
+      set(CYUSB_ROOT "${_cim22_bundled_cyusb_root}" CACHE PATH
+        "Root of the Cypress CyUSB Linux SDK (contains include/ and lib/)
+        [repository bundle]" FORCE)
+    endif()
     find_path(CYUSB_INCLUDE_DIR cyusb.h
       HINTS "${CYUSB_ROOT}"
       PATH_SUFFIXES include)
@@ -84,6 +92,15 @@ if(CIM22_ENABLE_USB)
         "Linux USB support requires the Cypress CyUSB Linux SDK (libcyusb). "
         "Set CYUSB_ROOT, or set CYUSB_INCLUDE_DIR and CYUSB_LIBRARY explicitly; "
         "do not run the SDK install.sh. Set CIM22_ENABLE_USB=OFF for software only.")
+    endif()
+    set(CYUSB_LICENSE_FILE "" CACHE FILEPATH
+      "Path to the CyUSB Linux license text for wheel installation")
+    if(NOT CYUSB_LICENSE_FILE
+       AND CYUSB_ROOT STREQUAL "${_cim22_bundled_cyusb_root}"
+       AND EXISTS "${CYUSB_ROOT}/license/license.txt")
+      set(CYUSB_LICENSE_FILE "${CYUSB_ROOT}/license/license.txt"
+        CACHE FILEPATH "Path to the CyUSB Linux license text for wheel installation"
+        FORCE)
     endif()
     add_library(cim22_usb_driver SHARED IMPORTED GLOBAL)
     set_target_properties(cim22_usb_driver PROPERTIES
@@ -152,5 +169,12 @@ if(SKBUILD)
       PATH_SUFFIXES license REQUIRED)
     install(FILES "${CYAPI_LICENSE_FILE}"
       DESTINATION share/licenses/cyapi COMPONENT runtime)
+  elseif(UNIX AND CIM22_ENABLE_USB)
+    install(FILES "${CYUSB_LIBRARY}" DESTINATION lib COMPONENT runtime)
+    if(CYUSB_LICENSE_FILE AND EXISTS "${CYUSB_LICENSE_FILE}")
+      install(FILES "${CYUSB_LICENSE_FILE}"
+        DESTINATION share/licenses/cyusb-linux COMPONENT runtime)
+    endif()
   endif()
 endif()
+unset(_cim22_bundled_cyusb_root)
