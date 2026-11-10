@@ -1,4 +1,4 @@
-"""Start the Linux application with one command; no Node runtime required."""
+"""Start the local application with one command; no Node runtime required."""
 
 import argparse
 from pathlib import Path

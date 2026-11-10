@@ -33,10 +33,12 @@ def worker_main(
     first_action: str,
 ) -> None:
     """Retain the Dynamo callable; die with the service, not the browser."""
-    # Linux parent-death signal also covers a killed/crashed API process.
-    libc = ctypes.CDLL(None, use_errno=True)
-    if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
-        raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG) failed")
+    if os.name != "nt":
+        # Linux parent-death signal also covers a killed/crashed API process.
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
+            raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG) failed")
+    # Windows has no prctl equivalent; the manager owns normal child cleanup.
     if os.getppid() != parent_pid:
         return
     with (directory / "worker.log").open("a") as log:

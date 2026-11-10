@@ -1,12 +1,16 @@
 """Single-worker lifecycle, restart recovery, and serialized UI commands."""
 
-import fcntl
 import multiprocessing as mp
 import os
 import threading
 import time
 from pathlib import Path
 from uuid import uuid4
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 from .storage import (
     ACTIVE,
@@ -29,7 +33,15 @@ class TaskManager:
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock_file = (self.root / ".lock").open("a+")
         try:
-            fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if os.name == "nt":
+                self._lock_file.seek(0, 2)
+                if self._lock_file.tell() == 0:
+                    self._lock_file.write("\0")
+                    self._lock_file.flush()
+                self._lock_file.seek(0)
+                msvcrt.locking(self._lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             self._lock_file.close()
             raise RuntimeError("该结果目录已被另一个服务占用") from None
@@ -227,4 +239,9 @@ class TaskManager:
         with self.lock:
             self._stop()
             self._recover("服务已停止，已保存结果可以续跑")
+            if os.name == "nt":
+                self._lock_file.seek(0)
+                msvcrt.locking(self._lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(self._lock_file, fcntl.LOCK_UN)
             self._lock_file.close()

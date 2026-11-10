@@ -1,6 +1,6 @@
 # CIM22 编译验证工作台
 
-这是一个面向 Linux x86-64 的本地 Web 界面，提供三个独立入口：
+这是一个面向 Linux x86-64 和 Windows x64 的本地 Web 界面，提供三个独立入口：
 
 - **TensorFlow**：固定运行 `python/examples/tensorflow_compile.py`，验证
   `tf.function` 编译和执行，使用多维 INT8 BatchMatMul 用例。

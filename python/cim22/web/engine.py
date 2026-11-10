@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from spikingjelly.activation_based import functional, neuron, surrogate
 
-from cim22.runtime import compiler_library, runtime_library
+from cim22.runtime import MODEL_SUFFIX, compiler_library, runtime_library
 
 from .storage import Document, digest, read_json, save_json
 
@@ -136,9 +136,9 @@ class DvsEngine:
             self.prediction(output)
             functional.reset_net(self.cim)
         self.trim()
-        self.artifacts = set(artifact_dir.glob("*.so"))
+        self.artifacts = set(artifact_dir.glob(f"*{MODEL_SUFFIX}"))
         if not self.artifacts:
-            raise RuntimeError("编译未生成模型 .so")
+            raise RuntimeError(f"编译未生成模型 {MODEL_SUFFIX}")
         return elapsed
 
     @staticmethod
@@ -160,7 +160,7 @@ class DvsEngine:
             elapsed = time.perf_counter() - started
             if (
                 side == "cim"
-                and set((self.directory / "artifacts").glob("*.so"))
+                and set((self.directory / "artifacts").glob(f"*{MODEL_SUFFIX}"))
                 != self.artifacts
             ):
                 raise RuntimeError("样本触发额外编译，未计入结果；请重新导入")
