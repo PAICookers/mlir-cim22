@@ -195,12 +195,9 @@ jobs:
       - name: Validate installed wheel outside checkout
         run: bash .github/scripts/test-wheel.sh python/dist/manylinux
 
-  windows:
+  windows-sdk:
     runs-on: windows-2022
     timeout-minutes: 360
-    env:
-      CMAKE_GENERATOR: Ninja
-      CMAKE_BUILD_PARALLEL_LEVEL: '2'
     defaults:
       run:
         shell: pwsh
@@ -238,6 +235,45 @@ jobs:
         if: steps.windows-sdk.outputs.cache-hit != 'true'
         run: .github/scripts/build-llvm-sdk.ps1 -SourceDir .cache/windows/llvm-source -SdkDir .cache/windows/llvm-sdk
 
+      - uses: actions/upload-artifact@v7
+        with:
+          name: llvm-sdk-windows
+          path: .cache/windows/llvm-sdk/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  windows-build-wheel:
+    needs: windows-sdk
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      CMAKE_GENERATOR: Ninja
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: llvm-sdk-windows
+          path: .cache/windows/llvm-sdk
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install build tools
+        run: python -m pip install uv==0.13.1 ninja==1.13.2 wheel
+
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -264,11 +300,9 @@ jobs:
       - name: Build Windows wheel with USB support
         run: .github/scripts/build-windows-wheel.ps1 -SdkDir .cache/windows/llvm-sdk -CyapiRoot third_party/cyapi -DistDir python/dist/windows
 
-      - name: Validate installed Windows wheel outside checkout
-        run: .github/scripts/test-windows-wheel.ps1 -DistDir python/dist/windows
-
       - uses: actions/upload-artifact@v7
         with:
+          name: windows-wheel
           path: python/dist/windows/*.whl
           archive: false
           if-no-files-found: error
@@ -276,7 +310,45 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
+          name: windows-checksum
           path: python/dist/windows/SHA256SUMS-windows
           archive: false
           if-no-files-found: error
           retention-days: 14
+
+  windows-validate-wheel:
+    needs: windows-build-wheel
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-wheel
+          path: python/dist/windows
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-checksum
+          path: python/dist/windows
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Validate installed Windows wheel outside checkout
+        run: .github/scripts/test-windows-wheel.ps1 -DistDir python/dist/windows

@@ -166,7 +166,7 @@ cim22/
 
 ## GitHub Actions 预编译 wheel
 
-[wheel 工作流](../.github/workflows/wheels.yml) 在 `main` 更新或推送 `v*` 标签时自动构建，也支持从 Actions 页面手动运行；没有每日定时任务。Linux 使用 manylinux_2_28 x86-64，Windows 使用 Windows Server 2022 / MSVC x64；两者均为 Release、USB 开启、测试和 ONNX 导入器关闭。
+[wheel 工作流](../.github/workflows/wheels.yml) 在 `main` 更新或推送 `v*` 标签时自动构建，也支持从 Actions 页面手动运行；没有每日定时任务。Linux 使用 manylinux_2_28 x86-64，Windows 使用 Windows Server 2022 / MSVC x64；两者均为 Release、USB 开启、测试和 ONNX 导入器关闭。两平台的 validate job 都下载独立 wheel 和 checksum，在干净 Python 3.12 环境中运行相同的框架示例、focused pytest 和 Web UI smoke check。
 
 源码 `python/pyproject.toml` 的版本是当前开发目标，例如 `1.0.0`：
 
@@ -318,7 +318,7 @@ uv build --python 3.12 python --wheel --out-dir python/dist `
 
 Windows wheel 包含 `mlir-cim22-opt.exe`、`cim22_compiler.dll`、`cim22_runtime.dll` 和模型链接所需的 `.lib`。Python 后端使用 MSVC 将 COFF `.obj` 链接为模型 `.dll`，通过与 Linux 相同的模型 ABI 加载。安装及 DLL 重新加载见 [Python 安装](../python/README.md#安装)和 [Session 与产物](../python/README.md#session-与产物)。
 
-开发环境的 `pyproject.toml` / `uv.lock` 按平台选择 torch-mlir：Linux 保留主分支的 `20261001` release wheel，Windows 从官方 release 安装 `20260923.595-cp312-abi3-win_amd64.whl`。不引入 torch-mlir 源码。在配置好 MSVC x64、`MLIR_DIR` 和 SDK 后，可执行：
+开发环境的 `pyproject.toml` / `uv.lock` 按平台选择 [torch-mlir `v20261101` release wheel](https://github.com/llvm/torch-mlir/releases/tag/v20261101)：Linux 使用 `torch_mlir-20261101-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl`，Windows 使用 `torch_mlir-20261101-cp312-abi3-win_amd64.whl`。不引入 torch-mlir 源码。在配置好 MSVC x64、`MLIR_DIR` 和 SDK 后，可执行：
 
 ```powershell
 uv sync --project python --python 3.12 --locked --group dev `
@@ -328,4 +328,4 @@ uv sync --project python --python 3.12 --locked --group dev `
 uv run --directory python --no-sync pytest tests/test_artifacts.py tests/test_backend.py tests/test_convolution.py tests/test_model_format.py tests/test_native_compiler.py tests/test_usb_runtime.py
 ```
 
-这组测试覆盖原生模型编译、BF16 软件执行、Host 运算、状态更新、静态 T/B 维度、模型 ABI、USB 错误边界和 DLL 生命周期；POSIX 文件大小限制测试仅在 Linux 运行。全量 `pytest` 中的 `test_web.py` 会因 Linux 专用 `fcntl` 无法在 Windows 导入；Web UI 移植不在本次范围内。完整 DVS 数据集和真实 USB 板卡测试需要另行验收。
+这组测试覆盖原生模型编译、BF16 软件执行、Host 运算、状态更新、静态 T/B 维度、模型 ABI、USB 错误边界和 DLL 生命周期；POSIX 文件大小限制测试仅在 Linux 运行。wheel validate 还会在两平台运行 `tensorflow_compile.py`、`test_web.py` 和 Web UI 首页/静态资源/API smoke check。完整 DVS 数据集和真实 USB 板卡测试需要另行验收。

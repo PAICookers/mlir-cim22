@@ -126,7 +126,8 @@ config = UsbConfig(
 
 ## 安装
 
-Linux 和 Windows 共用 Python 3.12 与 uv 安装流程。按平台选择项目和 torch-mlir wheel，匹配版本见 [pyproject.toml](pyproject.toml)。
+Linux 和 Windows 共用 Python 3.12 与 uv 安装流程。按平台选择项目和
+torch-mlir `20261101` wheel，匹配地址见 [pyproject.toml](pyproject.toml)。
 
 | 平台         | 项目 wheel 平台标签                           | 虚拟环境解释器               | 模型编译工具                                            |
 | ------------ | --------------------------------------------- | ---------------------------- | ------------------------------------------------------- |
@@ -189,7 +190,11 @@ uv build --python 3.12 python --wheel --out-dir python/dist `
 
 本机构建产物为 `mlir_cim22-<version>-py3-none-win_amd64.whl`。平台工具、编译器库、运行库及模型链接所需的导入库随包安装。
 
-在各平台用干净的 Python 环境安装生成的 wheel 和匹配的 torch-mlir wheel，从源码目录之外运行本文的 PyTorch 最小示例。验证 TF extra 时也运行 TF 片段。发行构建和源码构建见 [BUILDING](../docs/BUILDING.md#源码构建与离线构建)。
+在各平台用干净的 Python 环境安装生成的 wheel 和匹配的 torch-mlir wheel，
+从源码目录之外依次运行 `torch_compile.py`、`tensorflow_compile.py` 和
+focused pytest；安装 `[web,tensorflow]` extra 后，再运行 `cim22-web --help`
+并检查 Web UI 首页、静态资源和 `/api/state`。发行构建和源码构建见
+[BUILDING](../docs/BUILDING.md#源码构建与离线构建)。
 
 ## 开发与验证
 
