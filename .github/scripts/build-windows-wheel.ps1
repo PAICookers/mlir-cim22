@@ -1,4 +1,4 @@
-# Build from a fresh sdist with the reviewed, vendored Windows USB SDK.
+# Build directly from the checkout with the reviewed, vendored Windows USB SDK.
 param(
     [Parameter(Mandatory)][string]$SdkDir,
     [Parameter(Mandatory)][string]$CyapiRoot,
@@ -40,12 +40,8 @@ foreach ($entry in Get-Content "$CyapiRoot/SHA256SUMS") {
 $stageDir = Join-Path ([IO.Path]::GetTempPath()) "cim22-wheel-$([Guid]::NewGuid())"
 New-Item -ItemType Directory -Force $stageDir, $DistDir | Out-Null
 try {
-    uv build --python 3.12 "$repoDir/python" --sdist --out-dir "$stageDir/sdist"
-    $source = New-Item -ItemType Directory "$stageDir/source"
-    $sdists = @(Get-ChildItem "$stageDir/sdist/*.tar.gz")
-    if ($sdists.Count -ne 1) { throw 'Expected exactly one source archive' }
-    tar -xzf $sdists[0].FullName --strip-components=1 -C $source.FullName
-    uv build --python 3.12 $source.FullName --wheel --out-dir "$stageDir/wheel" `
+    $projectDir = Join-Path $repoDir 'python'
+    uv build --python 3.12 $projectDir --wheel --out-dir "$stageDir/wheel" `
         '-Ccmake.build-type=Release' "-Ccmake.define.MLIR_DIR=$env:MLIR_DIR" `
         '-Ccmake.define.CIM22_ENABLE_USB=ON' "-Ccmake.define.CYAPI_ROOT=$CyapiRoot" `
         '-Ccmake.define.CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL' `
@@ -58,9 +54,9 @@ try {
     if ($metadata.Count -ne 1) { throw 'Expected one wheel metadata directory' }
     $licenses = New-Item -ItemType Directory -Force "$($metadata[0].FullName)/licenses/third-party"
     Copy-Item "$SdkDir/share/cim22-licenses/*.txt" $licenses.FullName
-    Copy-Item "$source/build/_deps/protobuf-src/LICENSE" "$licenses/PROTOBUF.txt"
-    Copy-Item "$source/build/_deps/protobuf-src/third_party/utf8_range/LICENSE" "$licenses/UTF8_RANGE.txt"
-    Copy-Item "$source/build/_deps/absl-src/LICENSE" "$licenses/ABSEIL.txt"
+    Copy-Item "$projectDir/build/_deps/protobuf-src/LICENSE" "$licenses/PROTOBUF.txt"
+    Copy-Item "$projectDir/build/_deps/protobuf-src/third_party/utf8_range/LICENSE" "$licenses/UTF8_RANGE.txt"
+    Copy-Item "$projectDir/build/_deps/absl-src/LICENSE" "$licenses/ABSEIL.txt"
     $cyapiLicenses = New-Item -ItemType Directory "$licenses/cyapi"
     Copy-Item "$CyapiRoot/license/license.rtf", "$CyapiRoot/license/license.txt" $cyapiLicenses.FullName
     Copy-Item "$CyapiRoot/README.md" "$cyapiLicenses/NOTICE.md"

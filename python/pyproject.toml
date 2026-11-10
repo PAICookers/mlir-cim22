@@ -35,30 +35,6 @@ wheel.install-dir = "cim22"
 wheel.py-api = "py3"
 wheel.force-include = { "LICENSE" = "${SKBUILD_METADATA_DIR}/licenses/LICENSE" }
 install.components = ["runtime", "dev"]
-# Frontend output is ignored by Git but must also survive sdist -> wheel.
-sdist.include = ["cim22/web/static"]
-
-[tool.scikit-build.sdist.force-include]
-"../CMakeLists.txt" = "native/CMakeLists.txt"
-"../LICENSE" = "LICENSE"
-"../docs/BUILDING.md" = "docs/BUILDING.md"
-"../docs/BF16.md" = "docs/BF16.md"
-"../cmake" = "native/cmake"
-"../include" = "native/include"
-"../lib" = "native/lib"
-"../compiler" = "native/compiler"
-"../runtime" = "native/runtime"
-"../third_party/cyusb-linux" = "native/third_party/cyusb-linux"
-"../schema" = "native/schema"
-"../tools/CMakeLists.txt" = "native/tools/CMakeLists.txt"
-"../tools/mlir-cim22-opt" = "native/tools/mlir-cim22-opt"
-"../tools/mlir-cim22-onnx-import" = "native/tools/mlir-cim22-onnx-import"
-"../test" = "native/test"
-"tests/_generated" = "native/python/tests/_generated"
-
-[[tool.scikit-build.overrides]]
-if.from-sdist = true
-cmake.source-dir = "native"
 
 [tool.uv]
 environments = [

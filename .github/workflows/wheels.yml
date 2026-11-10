@@ -137,7 +137,7 @@ jobs:
           mkdir -p .cache/manylinux/work python/dist/manylinux
           docker build -f .github/manylinux/Containerfile -t cim22-manylinux .github/manylinux
           docker run --rm --user "$(id -u):$(id -g)" \
-            -v "$PWD:/io:ro" \
+            -v "$PWD:/io" \
             -v "$PWD/.cache/manylinux/llvm-sdk:/opt/llvm:ro" \
             -v "$PWD/.cache/manylinux/work:/work" \
             -v "$PWD/python/dist/manylinux:/out" \

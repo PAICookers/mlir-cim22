@@ -245,22 +245,18 @@ ruff format --check --config python/pyproject.toml python test/python test/lit.c
 uv lock --project python --check
 ```
 
-## 源码包与离线构建
+## 源码构建与离线构建
 
-在仓库根目录生成源码包，包含测试、示例和构建文件：
-
-```sh
-uv build --python 3.12 python --sdist --out-dir python/dist
-```
-
-解包到全新目录后，在解包目录构建 wheel；同样需要配置 `MLIR_DIR`。重新验收修改过的 sdist 时不要复用旧解包/构建目录：归一化的文件时间戳可能使增量构建错误地沿用旧目标文件。
+项目发布预编译 wheel，不发布 sdist。需要从源码构建时，请直接克隆仓库并按本文件准备 LLVM/MLIR、Python 和平台 USB 依赖；Git checkout 是源码构建的完整输入。
 
 ```sh
-uv build --python 3.12 --wheel
+export MLIR_DIR="/path/to/llvm-build/lib/cmake/mlir"
+CMAKE_BUILD_PARALLEL_LEVEL=4 uv build --python 3.12 python \
+  --wheel --out-dir python/dist -Ccmake.define.MLIR_DIR="$MLIR_DIR" \
+  -Ccmake.define.CIM22_ENABLE_USB=ON
 ```
 
-源码包内 C++ 源码位于 `native/`，由构建配置自动定位。
-`tools/` 仅打包其 CMake 文件和两个编译工具源码：`mlir-cim22-opt` 由正常的 `torch.compile` lowering 调用；`mlir-cim22-onnx-import` 随 `MLIRCIM22_ENABLE_ONNX` 启用，用于 ONNX 诊断和测试。源码包保留两者以支持可选构建；wheel 的安装内容由 CMake 安装目标决定。
+默认 USB 关闭时，源码构建不需要 CyUSB SDK。启用 Linux 或 Windows USB 时，分别通过 `CYUSB_ROOT` 或 `CYAPI_ROOT` 指向本地供应方 SDK；GitHub Actions 的预编译 wheel 直接使用 checkout 中的 `third_party` 依赖。
 
 `uv --offline` 只限制 Python 下载，不能阻止 CMake FetchContent 访问网络。离线构建应预先准备固定版本及其传递依赖源码，并通过以下构建参数指定本地路径；仅启用 ONNX 时需要最后一项：
 
