@@ -16,6 +16,8 @@
 namespace cim22::runtime::detail {
 namespace {
 
+std::mutex cyusbSessionMutex;
+
 llvm::Error cyusbError(const llvm::Twine &operation, int code) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(), "%s: %s (%d)",
                                  operation.str().c_str(),
@@ -33,10 +35,19 @@ public:
     if (config.maxTransferBytes == 0 ||
         config.maxTransferBytes >
             static_cast<size_t>(std::numeric_limits<int>::max()) ||
-        config.transferTimeoutMs == 0)
+        config.transferTimeoutMs == 0 ||
+        config.transferTimeoutMs >
+            static_cast<uint32_t>(std::numeric_limits<int>::max()))
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "CIM CyUSB transfer size or timeout is invalid");
+
+    std::unique_lock<std::mutex> sessionLock(cyusbSessionMutex,
+                                             std::try_to_lock);
+    if (!sessionLock.owns_lock())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "another CIM CyUSB session is already active in this process");
 
     config_ = config;
     const int count = cyusb_open(config.vendorId, config.productId);
@@ -121,6 +132,7 @@ public:
       stopping_ = false;
       opened_ = true;
     }
+    sessionLock_ = std::move(sessionLock);
     return llvm::Error::success();
   }
 
@@ -195,6 +207,8 @@ public:
     std::lock_guard<std::mutex> stateLock(stateMutex_);
     if (!handle_) {
       opened_ = false;
+      if (sessionLock_.owns_lock())
+        sessionLock_.unlock();
       return;
     }
     if (claimed_)
@@ -206,6 +220,8 @@ public:
     claimed_ = false;
     detached_ = false;
     opened_ = false;
+    if (sessionLock_.owns_lock())
+      sessionLock_.unlock();
   }
 
 private:
@@ -261,6 +277,7 @@ private:
   bool detached_ = false;
   bool opened_ = false;
   bool stopping_ = true;
+  std::unique_lock<std::mutex> sessionLock_;
   mutable std::mutex stateMutex_;
   std::mutex transferMutex_;
 };

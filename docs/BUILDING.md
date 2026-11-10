@@ -13,7 +13,7 @@
 
 需要 Git、C++17 编译器、**CMake >=3.28**、Ninja，以及 Python 后端和测试所需的 Python 3.12 与 [uv](https://docs.astral.sh/uv/getting-started/installation/)。USB 构建按需开启；默认关闭时不需要 CyUSB SDK。开启 Linux USB 时需要仓库 `third_party/cyusb-linux` 中的最小依赖（或外部 SDK）以及系统 `libusb-1.0` 开发文件。
 
-Linux USB 后端通过 `libcyusb` 使用系统 libusb。设置 `-DCIM22_ENABLE_USB=ON` 后，CMake 默认使用仓库的 [third_party/cyusb-linux](../third_party/cyusb-linux/README.md)；也可设置 `-DCYUSB_ROOT=/path/to/cyusb_linux_1.0.5`，或分别设置 `CYUSB_INCLUDE_DIR` 和 `CYUSB_LIBRARY`。不需要执行 SDK 的 `install.sh`。设备访问权限和板卡配套的 FX3 固件需另行准备；构建主机库不会下载设备固件。
+Linux USB 后端通过 `libcyusb` 使用系统 libusb。设置 `-DCIM22_ENABLE_USB=ON` 后，CMake 默认使用仓库的 [third_party/cyusb-linux](../third_party/cyusb-linux/README.md)；也可设置 `-DCYUSB_ROOT=/path/to/cyusb_linux_1.0.5`，或分别设置 `CYUSB_INCLUDE_DIR` 和 `CYUSB_LIBRARY`。仓库 bundle 会自动安装许可证；使用外部 SDK 构建私有 wheel 时许可证文件可省略，分发该 wheel 时应通过 `CYUSB_LICENSE_FILE` 保留对应许可证文本。不需要执行 SDK 的 `install.sh`。设备访问权限和板卡配套的 FX3 固件需另行准备；构建主机库不会下载设备固件。
 
 运行源码构建出的程序时，动态加载器还必须能找到 `libcyusb.so`；如果 SDK 不在系统库目录中，请设置 `LD_LIBRARY_PATH`，或使用发行版/部署系统提供的等效库路径。wheel 会将仓库或指定 SDK 的 `libcyusb.so` 安装到 `cim22/lib`，并保留第三方许可证。
 

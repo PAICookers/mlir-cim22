@@ -61,9 +61,7 @@ if(CIM22_ENABLE_USB)
   else()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET GLOBAL libusb-1.0)
-    set(_cim22_bundled_cyusb_root
-      "${PROJECT_SOURCE_DIR}/third_party/cyusb-linux")
-    set(CYUSB_ROOT "" CACHE PATH
+    set(CYUSB_ROOT "${PROJECT_SOURCE_DIR}/third_party/cyusb-linux" CACHE PATH
       "Root of the Cypress CyUSB Linux SDK (contains include/ and lib/)")
     set(CYUSB_INCLUDE_DIR "" CACHE PATH
       "Directory containing cyusb.h")
@@ -74,12 +72,6 @@ if(CIM22_ENABLE_USB)
     endif()
     if(NOT CYUSB_LIBRARY)
       unset(CYUSB_LIBRARY CACHE)
-    endif()
-    if(NOT CYUSB_ROOT AND EXISTS "${_cim22_bundled_cyusb_root}/include/cyusb.h"
-       AND EXISTS "${_cim22_bundled_cyusb_root}/lib/libcyusb.so")
-      set(CYUSB_ROOT "${_cim22_bundled_cyusb_root}" CACHE PATH
-        "Root of the Cypress CyUSB Linux SDK (contains include/ and lib/)
-        [repository bundle]" FORCE)
     endif()
     find_path(CYUSB_INCLUDE_DIR cyusb.h
       HINTS "${CYUSB_ROOT}"
@@ -96,7 +88,7 @@ if(CIM22_ENABLE_USB)
     set(CYUSB_LICENSE_FILE "" CACHE FILEPATH
       "Path to the CyUSB Linux license text for wheel installation")
     if(NOT CYUSB_LICENSE_FILE
-       AND CYUSB_ROOT STREQUAL "${_cim22_bundled_cyusb_root}"
+       AND CYUSB_ROOT STREQUAL "${PROJECT_SOURCE_DIR}/third_party/cyusb-linux"
        AND EXISTS "${CYUSB_ROOT}/license/license.txt")
       set(CYUSB_LICENSE_FILE "${CYUSB_ROOT}/license/license.txt"
         CACHE FILEPATH "Path to the CyUSB Linux license text for wheel installation"
@@ -177,4 +169,3 @@ if(SKBUILD)
     endif()
   endif()
 endif()
-unset(_cim22_bundled_cyusb_root)

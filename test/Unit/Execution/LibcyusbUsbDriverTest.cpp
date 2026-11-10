@@ -4,9 +4,13 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <limits>
+#include <utility>
 #include <vector>
 
 #include <cyusb.h>
+
+#include "llvm/Support/Error.h"
 
 namespace {
 struct Fake {
@@ -149,6 +153,25 @@ int main() {
   assert(fake.releaseCalls == 1 && fake.closeCalls == 1);
 
   resetFake();
+  auto first = createPlatformUsbDriver();
+  assert(!first->open(config));
+  auto second = createPlatformUsbDriver();
+  auto secondError = second->open(config);
+  assert(secondError);
+  llvm::consumeError(std::move(secondError));
+  first->close();
+  assert(!second->open(config));
+  second->close();
+
+  resetFake();
+  config.transferTimeoutMs = std::numeric_limits<uint32_t>::max();
+  auto timeoutDriver = createPlatformUsbDriver();
+  auto timeoutError = timeoutDriver->open(config);
+  assert(timeoutError);
+  llvm::consumeError(std::move(timeoutError));
+
+  resetFake();
+  config.transferTimeoutMs = 100;
   fake.activeDriver = 1;
   driver = createPlatformUsbDriver();
   assert(!driver->open(config));
