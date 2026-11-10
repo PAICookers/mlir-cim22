@@ -275,7 +275,9 @@ def compiler_library(library: Path) -> Path:
         Path(configured)
         if configured
         else library.with_name(
-            "cim22_compiler.dll" if os.name == "nt" else "libcim22_compiler.so"
+            "cim22_compiler.dll"
+            if os.name == "nt"
+            else "libcim22_compiler.so"
         )
     )
     if not path.is_file():

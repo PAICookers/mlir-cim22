@@ -32,12 +32,12 @@ add_compile_options(-UNDEBUG)
 
 add_executable(mlir-cim22-model-data-test EXCLUDE_FROM_ALL
   Unit/Execution/ModelDataTest.cpp
-  "${PROJECT_SOURCE_DIR}/lib/Runtime/ModelData.cpp"
-  "${PROJECT_BINARY_DIR}/lib/Runtime/generated/cim22_model.pb.cc")
+  "${PROJECT_SOURCE_DIR}/runtime/ModelData.cpp"
+  "${PROJECT_BINARY_DIR}/runtime/generated/cim22_model.pb.cc")
 llvm_update_compile_flags(mlir-cim22-model-data-test)
 target_include_directories(mlir-cim22-model-data-test PRIVATE
-  "${PROJECT_SOURCE_DIR}/lib/Runtime"
-  "${PROJECT_BINARY_DIR}/lib/Runtime/generated")
+  "${PROJECT_SOURCE_DIR}/runtime"
+  "${PROJECT_BINARY_DIR}/runtime/generated")
 # Keep LLVM Error RTTI in one image: static LLVMSupport copies in a Windows
 # DLL and its test executable have distinct error-class IDs. Python integration
 # tests exercise the runtime DLL's public C ABI separately.
@@ -115,7 +115,7 @@ if(CIM22_ENABLE_USB)
     Unit/Execution/UsbCIMDeviceTest.cpp)
   llvm_update_compile_flags(mlir-cim22-usb-runtime-test)
   target_include_directories(mlir-cim22-usb-runtime-test PRIVATE
-    "${PROJECT_SOURCE_DIR}/lib/Runtime")
+    "${PROJECT_SOURCE_DIR}/runtime")
   target_link_libraries(mlir-cim22-usb-runtime-test PRIVATE
     cim22_runtime LLVMSupport)
   if(NOT WIN32)
@@ -126,9 +126,9 @@ if(CIM22_ENABLE_USB)
     # type IDs are distinct across Windows DLLs, so keep this C++ test seam
     # in one binary; calls to the runtime's C ABI still use the real DLL.
     target_sources(mlir-cim22-usb-runtime-test PRIVATE
-      "${PROJECT_SOURCE_DIR}/lib/Runtime/UsbCIMDevice.cpp"
-      "${PROJECT_SOURCE_DIR}/lib/Runtime/UsbRecordCodec.cpp"
-      "${PROJECT_SOURCE_DIR}/lib/Runtime/PLLSerial.cpp"
+      "${PROJECT_SOURCE_DIR}/runtime/UsbCIMDevice.cpp"
+      "${PROJECT_SOURCE_DIR}/runtime/UsbRecordCodec.cpp"
+      "${PROJECT_SOURCE_DIR}/runtime/PLLSerial.cpp"
       "${PROJECT_SOURCE_DIR}/lib/Support/CIMPacketCodec.cpp")
   endif()
   if(MSVC)
@@ -141,18 +141,18 @@ if(WIN32)
   # SDK double exercises the production adapter without hardware or CyAPI.lib.
   add_executable(mlir-cim22-cyapi-driver-test EXCLUDE_FROM_ALL
     Unit/Execution/CyApiUsbDriverTest.cpp
-    "${PROJECT_SOURCE_DIR}/lib/Runtime/CyApiUsbDriver.cpp")
+    "${PROJECT_SOURCE_DIR}/runtime/CyApiUsbDriver.cpp")
   llvm_update_compile_flags(mlir-cim22-cyapi-driver-test)
   target_include_directories(mlir-cim22-cyapi-driver-test BEFORE PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/Unit/Execution/fake-cyapi"
-    "${PROJECT_SOURCE_DIR}/lib/Runtime")
+    "${PROJECT_SOURCE_DIR}/runtime")
   target_compile_definitions(mlir-cim22-cyapi-driver-test PRIVATE NOMINMAX)
   target_link_libraries(mlir-cim22-cyapi-driver-test PRIVATE LLVMSupport)
 endif()
 if(CIM22_ENABLE_USB)
   add_executable(mlir-cim22-pll-serial-test EXCLUDE_FROM_ALL
     Unit/Execution/PLLSerialTest.cpp
-    "${PROJECT_SOURCE_DIR}/lib/Runtime/PLLSerial.cpp")
+    "${PROJECT_SOURCE_DIR}/runtime/PLLSerial.cpp")
   llvm_update_compile_flags(mlir-cim22-pll-serial-test)
   # Keep LLVM error objects within this executable on both platforms.
   target_link_libraries(mlir-cim22-pll-serial-test PRIVATE LLVMSupport
@@ -171,7 +171,7 @@ if(TARGET PkgConfig::LIBUSB)
     Unit/Execution/LibusbUsbDriverTest.cpp)
   llvm_update_compile_flags(mlir-cim22-libusb-driver-test)
   target_include_directories(mlir-cim22-libusb-driver-test PRIVATE
-    "${PROJECT_SOURCE_DIR}/lib/Runtime"
+    "${PROJECT_SOURCE_DIR}/runtime"
     $<TARGET_PROPERTY:PkgConfig::LIBUSB,INTERFACE_INCLUDE_DIRECTORIES>)
   target_link_libraries(mlir-cim22-libusb-driver-test PRIVATE LLVMSupport
     Threads::Threads)

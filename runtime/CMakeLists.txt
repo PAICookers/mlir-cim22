@@ -95,17 +95,8 @@ if(CIM22_ENABLE_USB)
   endif()
 endif()
 
-# ExecutionEngine is excluded from libMLIR; its exported target carries the
-# native codegen/JIT dependencies for either static or shared LLVM/MLIR builds.
-add_library(cim22_compiler SHARED Compiler.cpp)
-llvm_update_compile_flags(cim22_compiler)
-target_link_libraries(cim22_compiler PRIVATE
-  cim22_runtime MLIRCIM22Compiler MLIRExecutionEngine)
-mlir_target_link_libraries(cim22_compiler PRIVATE
-  MLIRBuiltinToLLVMIRTranslation
-  MLIRLLVMToLLVMIRTranslation
-  MLIRTargetLLVMIRExport)
-set_target_properties(cim22_runtime cim22_compiler PROPERTIES
+# Keep the device runtime independent from the native compiler adapter.
+set_target_properties(cim22_runtime PROPERTIES
   ARCHIVE_OUTPUT_DIRECTORY "${LLVM_LIBRARY_OUTPUT_INTDIR}"
   LIBRARY_OUTPUT_DIRECTORY "${LLVM_LIBRARY_OUTPUT_INTDIR}"
   RUNTIME_OUTPUT_DIRECTORY "${LLVM_LIBRARY_OUTPUT_INTDIR}"
@@ -113,7 +104,7 @@ set_target_properties(cim22_runtime cim22_compiler PROPERTIES
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # LLVM/MLIR internals must not interpose TensorFlow or other compiler wheels.
-  foreach(_cim22_library IN ITEMS cim22_runtime cim22_compiler)
+  foreach(_cim22_library IN ITEMS cim22_runtime)
     target_link_options(${_cim22_library} PRIVATE
       "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cim22.exports")
     set_property(TARGET ${_cim22_library} APPEND PROPERTY LINK_DEPENDS
@@ -124,9 +115,9 @@ endif()
 
 # Keep the compiler adapter's runtime dependency local to the wheel.
 if(SKBUILD)
-  set_target_properties(cim22_runtime cim22_compiler PROPERTIES
+  set_target_properties(cim22_runtime PROPERTIES
     INSTALL_RPATH "$ORIGIN")
-  install(TARGETS cim22_runtime cim22_compiler
+  install(TARGETS cim22_runtime
     LIBRARY DESTINATION lib COMPONENT runtime
     RUNTIME DESTINATION lib COMPONENT runtime
     ARCHIVE DESTINATION lib COMPONENT runtime)

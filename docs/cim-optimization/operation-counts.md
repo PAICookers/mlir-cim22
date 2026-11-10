@@ -6,7 +6,7 @@
 
 ### 发送与接收计数
 
-一条 USB record 为 12 字节，包含 4 字节桥接头和 8 字节 CIM flit。桥接头记录物理链路和逻辑通道。一个输出 Cache 响应包包含 1 条头 flit 和 6 条正文 flit，合计 7 条 IN record（84 字节）。USB 双向记录为整次调用的 OUT 与 IN 记录之和。 [USB 记录编码](../../lib/Runtime/UsbRecordCodec.cpp)
+一条 USB record 为 12 字节，包含 4 字节桥接头和 8 字节 CIM flit。桥接头记录物理链路和逻辑通道。一个输出 Cache 响应包包含 1 条头 flit 和 6 条正文 flit，合计 7 条 IN record（84 字节）。USB 双向记录为整次调用的 OUT 与 IN 记录之和。 [USB 记录编码](../../runtime/UsbRecordCodec.cpp)
 
 下表按一次完整调用累计。设 `A` 为计算启动批次数，`X` 为输入 Cache 写入次数，`Q` 为权重刷写次数，`M` 为回读选择批次数，`R` 为响应包数。设 `C`、`G`、`S`、`P` 分别为返回路由、启动指令、回读选择和 Cache 读请求的 flit 数。旧 BF16 路径另计 `I` 批 Idle 与 `J` 条 Idle flit。
 

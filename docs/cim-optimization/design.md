@@ -22,7 +22,7 @@ floor(C / B) × ceil(B × t / 40) + ceil((C mod B) × t / 40)
 
 模型加载先验证制品，再逐个解码并释放已消费的序列化 transaction。静态执行计划和驻留身份在首次使用时准备，借用数据的计划须在制品数据之前销毁。
 
-[编译流水线](../../lib/Compiler/Pipelines.cpp) · [原生编译入口](../../lib/Runtime/Compiler.cpp) · [模型数据加载](../../lib/Runtime/ModelData.cpp)
+[编译流水线](../../lib/Compiler/Pipelines.cpp) · [原生编译入口](../../compiler/NativeCompiler.cpp) · [模型数据加载](../../runtime/ModelData.cpp)
 
 ### 模拟器状态与静态绑定
 
@@ -66,7 +66,7 @@ Depthwise 与 Pointwise 合并后，权重可能超出 INT8 可表示范围，�
 
 设备保存最近一次回显验证成功的 PLL 字。配置、计算和回读阶段需要相同字时复用，需要异频时执行切换并重新验证。关闭、重新打开、设备故障或无法验证当前串口时清除已验证状态。计算与回读的板卡等待仍按[成本模型](operation-counts.md#耗时分项)分别计入。
 
-[板卡程序生成](../../lib/Runtime/CIMBoardRunner.cpp) · [USB 设备执行](../../lib/Runtime/UsbCIMDevice.cpp) · [Cache 响应编解码](../../lib/Support/CIMPacketCodec.cpp) · [USB 记录编码](../../lib/Runtime/UsbRecordCodec.cpp)
+[板卡程序生成](../../runtime/CIMBoardRunner.cpp) · [USB 设备执行](../../runtime/UsbCIMDevice.cpp) · [Cache 响应编解码](../../lib/Support/CIMPacketCodec.cpp) · [USB 记录编码](../../runtime/UsbRecordCodec.cpp)
 
 ## 权重驻留与 FC/Linear 重排
 
@@ -90,7 +90,7 @@ Depthwise 与 Pointwise 合并后，权重可能超出 INT8 可表示范围，�
 - BF16 配对可共享权重 tile 的 sign-split 分支，分别保存部分结果。原 FP32 归约、符号合成与舍入顺序保持不变。配对在私有 Host 函数中降低。
 - 卷积使用现有列循环产生的驻留机会。
 
-[会话驻留入口](../../lib/Runtime/Runtime.cpp) · [调度实现](../../lib/Compiler/Pipelines.cpp) · [计数结果](operation-counts.md) · [验收条件](#权重驻留与重排验收)
+[会话驻留入口](../../runtime/Runtime.cpp) · [调度实现](../../lib/Compiler/Pipelines.cpp) · [计数结果](operation-counts.md) · [验收条件](#权重驻留与重排验收)
 
 ## 验收范围
 
