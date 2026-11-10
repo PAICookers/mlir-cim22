@@ -17,7 +17,7 @@ Python 发行包名为 `mlir-cim22`，导入包和后端名为 `cim22`。一个 
 
 ## 快速上手
 
-使用 **Linux x86-64**。准备 Python 3.12、CPU PyTorch 和与当前后端兼容的 torch-mlir。Python `>=3.12,<3.13`、PyTorch `>=2.14,<3` 和 [torch-mlir](https://github.com/llvm/torch-mlir/releases/tag/v20261001) `20261001` 版本已经过验证。
+使用 **Linux x86-64**。准备 Python 3.12、CPU PyTorch 和与当前后端兼容的 torch-mlir。Python `>=3.12,<3.13`、PyTorch `>=2.14,<3` 和 [torch-mlir](https://github.com/llvm/torch-mlir/releases/tag/v20261101) `20261101` 版本是当前配置；Linux 依赖解析、`torch_mlir.ir` 导入和纯 Python 回归已验证，完整编译运行还需按下文配置 `MLIR_DIR`。
 
 1. 按[Python 安装指南](python/README.md#安装)准备虚拟环境和项目 wheel。
 2. 从仓库根目录运行最小示例：

@@ -49,6 +49,8 @@ def atomic_text(path: Path, content: str) -> None:
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temporary, path)
+    if os.name == "nt":
+        return
     descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(descriptor)

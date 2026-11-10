@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.12.*"
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
@@ -425,8 +425,8 @@ source = { editable = "." }
 dependencies = [
     { name = "numpy" },
     { name = "torch" },
-    { name = "torch-mlir", version = "20260923.595", source = { url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260923.595-cp312-abi3-win_amd64.whl" }, marker = "sys_platform == 'win32'" },
-    { name = "torch-mlir", version = "20261001", source = { url = "https://github.com/llvm/torch-mlir/releases/download/v20261001/torch_mlir-20261001-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }, marker = "sys_platform != 'win32'" },
+    { name = "torch-mlir", version = "20261101", source = { url = "https://github.com/llvm/torch-mlir/releases/download/v20261101/torch_mlir-20261101-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }, marker = "sys_platform != 'win32'" },
+    { name = "torch-mlir", version = "20261101", source = { url = "https://github.com/llvm/torch-mlir/releases/download/v20261101/torch_mlir-20261101-cp312-abi3-win_amd64.whl" }, marker = "sys_platform == 'win32'" },
 ]
 
 [package.optional-dependencies]
@@ -459,8 +459,8 @@ requires-dist = [
     { name = "tf2onnx", marker = "extra == 'tensorflow'", specifier = "==1.17.0" },
     { name = "torch", specifier = ">=2.14,<3", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch-mlir", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
-    { name = "torch-mlir", marker = "sys_platform == 'linux'", url = "https://github.com/llvm/torch-mlir/releases/download/v20261001/torch_mlir-20261001-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
-    { name = "torch-mlir", marker = "sys_platform == 'win32'", url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260923.595-cp312-abi3-win_amd64.whl" },
+    { name = "torch-mlir", marker = "sys_platform == 'linux'", url = "https://github.com/llvm/torch-mlir/releases/download/v20261101/torch_mlir-20261101-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+    { name = "torch-mlir", marker = "sys_platform == 'win32'", url = "https://github.com/llvm/torch-mlir/releases/download/v20261101/torch_mlir-20261101-cp312-abi3-win_amd64.whl" },
     { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.34,<1" },
 ]
 provides-extras = ["web", "tensorflow"]
@@ -887,17 +887,17 @@ wheels = [
 
 [[package]]
 name = "torch-mlir"
-version = "20260923.595"
-source = { url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260923.595-cp312-abi3-win_amd64.whl" }
+version = "20261101"
+source = { url = "https://github.com/llvm/torch-mlir/releases/download/v20261101/torch_mlir-20261101-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
 resolution-markers = [
-    "platform_machine == 'AMD64' and sys_platform == 'win32'",
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 dependencies = [
     { name = "numpy" },
     { name = "packaging" },
 ]
 wheels = [
-    { url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260923.595-cp312-abi3-win_amd64.whl", hash = "sha256:afd008b05ac64bc5851eb160c285bc10af3b50a909442fe34c5094b8c22673ba" },
+    { url = "https://github.com/llvm/torch-mlir/releases/download/v20261101/torch_mlir-20261101-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9864998257cac7bb159de0a5913814a54a982b8bc62971b1a1338c2c4fdfee29" },
 ]
 
 [package.metadata]
@@ -910,17 +910,17 @@ provides-extras = ["onnx"]
 
 [[package]]
 name = "torch-mlir"
-version = "20261001"
-source = { url = "https://github.com/llvm/torch-mlir/releases/download/v20261001/torch_mlir-20261001-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
+version = "20261101"
+source = { url = "https://github.com/llvm/torch-mlir/releases/download/v20261101/torch_mlir-20261101-cp312-abi3-win_amd64.whl" }
 resolution-markers = [
-    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+    "platform_machine == 'AMD64' and sys_platform == 'win32'",
 ]
 dependencies = [
     { name = "numpy" },
     { name = "packaging" },
 ]
 wheels = [
-    { url = "https://github.com/llvm/torch-mlir/releases/download/v20261001/torch_mlir-20261001-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e02ab29293ec2eba0a573ef20a154ecafd0ab1e8b305979fca2e2ac0b48e2b34" },
+    { url = "https://github.com/llvm/torch-mlir/releases/download/v20261101/torch_mlir-20261101-cp312-abi3-win_amd64.whl", hash = "sha256:de286729468f12327612f459f3457f0655dec83d991962de7c372a796fdeb60f" },
 ]
 
 [package.metadata]

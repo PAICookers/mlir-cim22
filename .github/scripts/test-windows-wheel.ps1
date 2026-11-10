@@ -23,30 +23,17 @@ try {
     python -m venv "$workDir/venv"
     $py = "$workDir/venv/Scripts/python.exe"
     & $py -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.14.1+cpu'
-    $torchMlir = 'https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260923.595-cp312-abi3-win_amd64.whl'
-    & $py -m pip install $torchMlir $wheels[0].FullName 'pytest>=8.3,<10' 'protobuf>=6.31.1'
+    $torchMlir = 'https://github.com/llvm/torch-mlir/releases/download/v20261101/torch_mlir-20261101-cp312-abi3-win_amd64.whl'
+    $projectWheel = "$($wheels[0].FullName)[web,tensorflow]"
+    & $py -m pip install $torchMlir $projectWheel 'ml_dtypes==0.6.0' 'pytest>=8.3,<10' 'httpx>=0.28,<1' 'protobuf>=6.31.1'
     & $py -m pip check
     Copy-Item -Recurse "$repoDir/python/tests" "$workDir/tests"
     Copy-Item "$repoDir/python/examples/torch_compile.py" "$workDir/torch_compile.py"
+    Copy-Item "$repoDir/python/examples/tensorflow_compile.py" "$workDir/tensorflow_compile.py"
+    Copy-Item "$repoDir/.github/scripts/validate-installed-wheel.py" "$workDir/validate-installed-wheel.py"
     Push-Location $workDir
     try {
-        @'
-import sys
-from pathlib import Path
-
-import cim22
-
-package = Path(cim22.__file__).resolve()
-if not package.is_relative_to(Path(sys.prefix).resolve()):
-    raise RuntimeError(f"Expected installed wheel, imported {package}")
-print(f"Installed package: {package}")
-'@ | & $py -
-        & $py torch_compile.py
-        & $py -m pytest --import-mode=importlib -q `
-            tests/test_artifacts.py tests/test_backend.py tests/test_convolution.py `
-            tests/test_model_format.py tests/test_native_compiler.py tests/test_usb_runtime.py
-        & $py -m pip list --format=freeze
-        Write-Host 'Windows installed software inference and focused pytest PASS; no board validation'
+        & $py validate-installed-wheel.py
     } finally {
         Pop-Location
     }
