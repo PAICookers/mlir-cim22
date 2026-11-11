@@ -10,7 +10,7 @@
 #define CIM22_RUNTIME_CIMBOARDRUNNER_H
 
 #include "CIM22/Execution/CIMRunner.h"
-#include "CIM22/Execution/Runtime.h"
+#include "CIM22/Runtime/Runtime.h"
 #include "CIM22/Runtime/CIMDevice.h"
 
 namespace cim22::runtime {

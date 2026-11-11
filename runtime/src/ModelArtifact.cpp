@@ -1,5 +1,5 @@
 // Protobuf storage for static execution fields; no arithmetic or frame codec.
-#include "ModelData.h"
+#include "CIM22/Runtime/ModelArtifact.h"
 #include "cim22_model.pb.h"
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
@@ -399,7 +399,7 @@ CIMTransaction decodeTransaction(const pb::Transaction &from) {
 }
 } // namespace
 
-llvm::Expected<std::string> encodeModelData(const ModelData &model) {
+llvm::Expected<std::string> encodeModelArtifact(const ModelArtifact &model) {
   if (model.numInputs < 0 ||
       static_cast<size_t>(model.numInputs) > model.shapes.size() ||
       model.types.size() != model.shapes.size() ||
@@ -441,7 +441,7 @@ llvm::Expected<std::string> encodeModelData(const ModelData &model) {
   return bytes;
 }
 
-llvm::Error decodeModelData(llvm::StringRef bytes, ModelData &model) {
+llvm::Error decodeModelArtifact(llvm::StringRef bytes, ModelArtifact &model) {
   pb::ModelArtifact artifact;
   if (bytes.empty() ||
       bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max()) ||
@@ -449,7 +449,7 @@ llvm::Error decodeModelData(llvm::StringRef bytes, ModelData &model) {
     return invalid("malformed data (old custom binary is unsupported)");
   if (auto error = validate(artifact))
     return error;
-  ModelData decoded;
+  ModelArtifact decoded;
   decoded.backend = artifact.backend() == pb::USB ? RuntimeBackend::USB
                                                   : RuntimeBackend::Software;
   decoded.numInputs = artifact.inputs_size();
