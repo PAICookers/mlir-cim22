@@ -15,8 +15,27 @@ TensorFlow 和 PyTorch 页面在开始编译前选择 `CIM 软件仿真` 或 `CI
 
 ## 启动
 
-请先按 [Python 安装说明](../python/README.md#安装) 安装 Python 3.12、项目
-wheel 及 `[web,tensorflow]` extra。启动服务：
+请先按 [Python 安装说明](../python/README.md#用户快速开始) 使用 uv 创建
+Python 3.12 环境，并安装项目 wheel 的 `[web,tensorflow]` extra：
+
+```sh
+uv venv --python 3.12 .venv
+uv pip install --python .venv --index-url https://download.pytorch.org/whl/cpu \
+  "torch>=2.14,<3"
+uv pip install --python .venv /path/to/torch_mlir-20261101-<platform>.whl
+uv pip install --python .venv \
+  "/path/to/mlir_cim22-<version>-<platform>.whl[web,tensorflow]"
+```
+
+`--model-dir` 指向只读的 DVS 模型包，目录至少包含以下路径：
+
+```text
+model-package/
+├── weights/dvsgesture_mobilenet_snn_qat_int8.pt
+└── data/test/
+```
+
+启动服务：
 
 ```sh
 cim22-web --model-dir /path/to/model-package
@@ -30,8 +49,21 @@ cim22-web --model-dir /path/to/model-package \
   --examples-dir /path/to/mlir-pku-cim22/python/examples
 ```
 
-打开 <http://127.0.0.1:8000>。结果、日志和调试产物写入 `--data-dir`，默认
+Windows 使用 `.venv\\Scripts\\cim22-web.exe`。打开
+<http://127.0.0.1:8000>，先在页面中确认 `/api/state` 返回成功，再选择
+PyTorch、TensorFlow 或 DVS 操作。结果、日志和调试产物写入 `--data-dir`，默认
 为 `~/.local/share/cim22-web`。同一个结果目录只能由一个服务使用。
+
+TensorFlow 和 PyTorch 页面默认使用 `simulator`。选择 USB 前，先确认板卡、
+驱动和 `UsbConfig` 字段已经按 [Python 配置说明](../python/README.md#usb-与-pll-配置)
+准备好。软件仿真结果不能替代物理板卡证据。
+
+快速检查服务和静态页面：
+
+```sh
+curl -fsS http://127.0.0.1:8000/api/state
+curl -fsS http://127.0.0.1:8000/ | head
+```
 
 ## 开发
 

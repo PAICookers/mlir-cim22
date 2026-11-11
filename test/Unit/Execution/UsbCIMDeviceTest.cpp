@@ -1,7 +1,7 @@
 //===- UsbCIMDeviceTest.cpp - CIM22 USB backend tests --------*- C++ -*-===//
 
 #include "CIM22/Runtime/UsbCIMDevice.h"
-#include "CIM22/Execution/Runtime.h"
+#include "CIM22/Runtime/Runtime.h"
 #include "CIM22/Runtime/CIMBoardRunner.h"
 #include "CIM22/Runtime/CIMPacketCodec.h"
 #include "CIM22/Runtime/UsbRecordCodec.h"

@@ -1,5 +1,5 @@
 // Native codec round-trip: preserve every transaction field and kernel order.
-#include "ModelData.h"
+#include "CIM22/Runtime/ModelArtifact.h"
 #include <iostream>
 
 using namespace cim22::execution;
@@ -95,7 +95,7 @@ static bool sameTransaction(const CIMTransaction &a, const CIMTransaction &b) {
 }
 
 int main() {
-  ModelData model;
+  ModelArtifact model;
   model.numInputs = 1;
   model.backend = RuntimeBackend::Software;
   model.shapes = {{}, {2, 3}}; // Scalar input, ordered tensor output.
@@ -103,19 +103,19 @@ int main() {
   model.kernelNames = {"int8", "bf16"};
   model.transactions = {transaction(CIMDataType::Int8),
                         transaction(CIMDataType::BF16)};
-  auto encoded = encodeModelData(model);
+  auto encoded = encodeModelArtifact(model);
   if (!encoded) {
     std::cerr << llvm::toString(encoded.takeError()) << '\n';
     return 1;
   }
-  ModelData decoded;
-  if (auto error = decodeModelData(*encoded, decoded)) {
+  ModelArtifact decoded;
+  if (auto error = decodeModelArtifact(*encoded, decoded)) {
     std::cerr << llvm::toString(std::move(error)) << '\n';
     return 1;
   }
   // Compare native fields as well as wire bytes, so a field omitted by both
   // encoder and decoder still fails. Check -1 sentinels and signed/raw bits.
-  auto reencoded = encodeModelData(decoded);
+  auto reencoded = encodeModelArtifact(decoded);
   if (!reencoded) {
     std::cerr << llvm::toString(reencoded.takeError()) << '\n';
     return 1;
@@ -131,13 +131,13 @@ int main() {
     if (!sameTransaction(model.transactions[i], decoded.transactions[i]))
       return 1;
   model.backend = RuntimeBackend::USB;
-  auto usb = encodeModelData(model);
+  auto usb = encodeModelArtifact(model);
   if (!usb) {
     std::cerr << llvm::toString(usb.takeError()) << '\n';
     return 1;
   }
-  ModelData usbDecoded;
-  if (auto error = decodeModelData(*usb, usbDecoded)) {
+  ModelArtifact usbDecoded;
+  if (auto error = decodeModelArtifact(*usb, usbDecoded)) {
     std::cerr << llvm::toString(std::move(error)) << '\n';
     return 1;
   }
@@ -146,28 +146,28 @@ int main() {
     return 1;
   // Reject unsupported native versions rather than silently dropping them.
   for (auto versions : {std::pair{2, 1}, std::pair{1, 2}}) {
-    ModelData unsupported = model;
+    ModelArtifact unsupported = model;
     unsupported.transactions[0] =
         transaction(CIMDataType::Int8, versions.first, versions.second);
-    auto invalidVersion = encodeModelData(unsupported);
+    auto invalidVersion = encodeModelArtifact(unsupported);
     if (invalidVersion)
       return 1;
     llvm::consumeError(invalidVersion.takeError());
   }
 
   // All supported boundary types survive independently of tile datatypes.
-  ModelData typed = model;
+  ModelArtifact typed = model;
   typed.numInputs = 2;
   typed.shapes = {{}, {2, 3}, {2, 3}};
   typed.types = {BoundaryDataType::Int8, BoundaryDataType::FP32,
                  BoundaryDataType::Int32};
-  auto typedBytes = encodeModelData(typed);
+  auto typedBytes = encodeModelArtifact(typed);
   if (!typedBytes) {
     std::cerr << llvm::toString(typedBytes.takeError()) << '\n';
     return 1;
   }
-  ModelData typedDecoded;
-  if (auto error = decodeModelData(*typedBytes, typedDecoded)) {
+  ModelArtifact typedDecoded;
+  if (auto error = decodeModelArtifact(*typedBytes, typedDecoded)) {
     std::cerr << llvm::toString(std::move(error)) << '\n';
     return 1;
   }
@@ -176,21 +176,21 @@ int main() {
       typedDecoded.numInputs != typed.numInputs)
     return 1;
 
-  ModelData untyped = typed;
+  ModelArtifact untyped = typed;
   untyped.types.clear();
-  auto missingTypes = encodeModelData(untyped);
+  auto missingTypes = encodeModelArtifact(untyped);
   if (missingTypes)
     return 1;
   llvm::consumeError(missingTypes.takeError());
 
   typed.types.pop_back();
-  auto invalidTypes = encodeModelData(typed);
+  auto invalidTypes = encodeModelArtifact(typed);
   if (invalidTypes)
     return 1;
   llvm::consumeError(invalidTypes.takeError());
   for (int64_t type : {0, 2, 99}) {
     typed.types.push_back(static_cast<BoundaryDataType>(type));
-    auto invalidType = encodeModelData(typed);
+    auto invalidType = encodeModelArtifact(typed);
     if (invalidType)
       return 1;
     llvm::consumeError(invalidType.takeError());
@@ -200,22 +200,22 @@ int main() {
     // boundary datatypes at the decoder trust boundary too.
     std::string invalidBytes("\x08\x01\x1a\x02\x10", 5);
     invalidBytes.push_back(static_cast<char>(type));
-    if (auto error = decodeModelData(invalidBytes, decoded))
+    if (auto error = decodeModelArtifact(invalidBytes, decoded))
       llvm::consumeError(std::move(error));
     else
       return 1;
   }
   model.numInputs = static_cast<int64_t>(model.shapes.size()) + 1;
-  auto invalidSignature = encodeModelData(model);
+  auto invalidSignature = encodeModelArtifact(model);
   if (invalidSignature)
     return 1;
   llvm::consumeError(invalidSignature.takeError());
   // Failed decoding leaves the previously owned model intact.
-  if (auto error = decodeModelData(std::string("\x02", 1), decoded))
+  if (auto error = decodeModelArtifact(std::string("\x02", 1), decoded))
     llvm::consumeError(std::move(error));
   else
     return 1;
-  auto preserved = encodeModelData(decoded);
+  auto preserved = encodeModelArtifact(decoded);
   if (!preserved) {
     std::cerr << llvm::toString(preserved.takeError()) << '\n';
     return 1;

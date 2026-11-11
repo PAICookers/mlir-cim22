@@ -1,6 +1,5 @@
 """Wheel-based torch-mlir capture followed by the native CIM22 compiler."""
 
-import ctypes
 import os
 import shutil
 import subprocess
@@ -18,8 +17,7 @@ from .runtime import (
     MODEL_SUFFIX,
     Session,
     UsbConfig,
-    _load_library,
-    compiler_library,
+    compile_tool,
     runtime_library,
 )
 
@@ -47,6 +45,22 @@ class BackendOptions(TypedDict, total=False):
     usb_config: UsbConfig
     artifact_dir: str | Path
     debug_dir: str | Path
+
+
+def _check_torch_mlir_compatibility() -> None:
+    """Reject the Linux TensorFlow/torch-mlir loader collision early."""
+    if (
+        sys.platform == "linux"
+        and "tensorflow" in sys.modules
+        and "torch_mlir.fx" not in sys.modules
+    ):
+        raise RuntimeError(
+            "CIM22 cannot first load torch-mlir FX after TensorFlow on Linux: "
+            "their bundled LLVM libraries can conflict and abort the process. "
+            "Compile the PyTorch model in a fresh Python process without "
+            "TensorFlow; save it with artifact_dir, then load the native "
+            "model with cim22.Session for inference."
+        )
 
 
 def _validate_options(
@@ -82,31 +96,23 @@ def _emit_object(
     Args:
         packet: Lowered packet IR file with the Host/device split.
         object_file: Destination object file.
-        library: Execution library used to locate the compiler adapter.
+        library: Execution library used to link the final model.
         runtime: Backend embedded in the emitted model descriptor.
 
     Raises:
         RuntimeError: The native compiler failed to emit the object.
     """
-    native = _load_library(compiler_library(library))
-    emit = native.cim22_compile_object
-    emit.argtypes = [
-        ctypes.c_char_p,
-        ctypes.c_char_p,
-        ctypes.c_char_p,
-        ctypes.c_char_p,
-        ctypes.c_size_t,
-    ]
-    emit.restype = ctypes.c_int
-    error = ctypes.create_string_buffer(16384)
-    if emit(
-        os.fsencode(packet),
-        os.fsencode(object_file),
-        runtime.encode(),
-        error,
-        len(error),
-    ):
-        raise RuntimeError(error.value.decode(errors="replace"))
+    _run(
+        [
+            str(compile_tool()),
+            str(packet),
+            "-o",
+            str(object_file),
+            "--backend",
+            runtime,
+        ],
+        "object emission",
+    )
 
 
 def _run(command: list[str], stage: str) -> None:
@@ -141,18 +147,7 @@ def _compile(
         A loaded Session that owns its temporary files until it closes.
     """
     # Check before importing FX: LLVM's duplicate registration aborts Python.
-    if (
-        sys.platform == "linux"
-        and "tensorflow" in sys.modules
-        and "torch_mlir.fx" not in sys.modules
-    ):
-        raise RuntimeError(
-            "CIM22 cannot first load torch-mlir FX after TensorFlow on Linux: "
-            "their bundled LLVM libraries can conflict and abort the process. "
-            "Compile the PyTorch model in a fresh Python process without "
-            "TensorFlow; save it with artifact_dir, then load the native "
-            "model with cim22.Session for inference."
-        )
+    _check_torch_mlir_compatibility()
     from torch_mlir import fx
     from torch_mlir.compiler_utils import OutputType
 
@@ -218,6 +213,10 @@ def _compile_linalg(
     linker = os.environ.get("CIM22_CC") or shutil.which(
         "cl" if os.name == "nt" else "cc"
     )
+    try:
+        compile_tool()
+    except FileNotFoundError as error:
+        raise ValueError(str(error)) from error
     if not Path(executable).is_file() or not linker:
         raise ValueError(
             "CIM22 compilation needs mlir-cim22-opt and a C linker "

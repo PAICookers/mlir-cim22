@@ -1,11 +1,11 @@
-//===- NativeCompiler.cpp - Native Host code and embedded CIM model data
+//===- ObjectEmitter.cpp - AOT Host code and embedded CIM model data
 //--------===//
+#include "CIM22/Compiler/ObjectEmitter.h"
 #include "CIM22/Compiler/RegisterAll.h"
 #include "CIM22/Dialect/CIM/IR/CIMOps.h"
 #include "CIM22/Execution/CIMRunner.h"
-#include "CIM22/Execution/Runtime.h"
+#include "CIM22/Runtime/ModelArtifact.h"
 #include "CIM22/Target/CIMExecutable.h"
-#include "Session.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -35,10 +35,14 @@
 #include <algorithm>
 #include <cstring>
 #include <mutex>
+#include <string>
 
 using namespace mlir;
-using ::cim22::runtime::Session;
 namespace {
+struct CompileState {
+  ::cim22::runtime::ModelArtifact model;
+  std::string error;
+};
 // Keep the existing descriptor calling convention. Embed a single versioned
 // model descriptor and binary data in the PIC object; no runtime compiler or
 // sidecar file is needed to find the entry, weights, or tensor signature.
@@ -173,10 +177,9 @@ defineDispatchWrapper(func::FuncOp stub, int64_t id, func::FuncOp dispatchFunc,
   return success();
 }
 
-// Validate split packet IR and build native dispatch bindings.
-// An object path selects AOT emission. Otherwise the Session owns a JIT entry.
-LogicalResult load(Session &session, const char *path, StringRef entryName,
-                   StringRef objectPath = {}) {
+// Validate split packet IR, build native dispatch bindings and emit an object.
+LogicalResult load(CompileState &state, StringRef path, StringRef entryName,
+                   StringRef objectPath) {
   DialectRegistry registry;
   registerCIM22Dialects(registry);
   registerCIM22Extensions(registry);
@@ -191,7 +194,7 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
   // the pass manager initializes dependencies.
   context.loadAllAvailableDialects();
   ScopedDiagnosticHandler diagnostics(&context, [&](Diagnostic &diag) {
-    llvm::raw_string_ostream stream(session.error);
+    llvm::raw_string_ostream stream(state.error);
     diag.print(stream);
     stream << '\n';
     return success();
@@ -218,7 +221,7 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
   auto entry = host.lookupSymbol<func::FuncOp>(entryName);
   if (!entry || entry.isDeclaration())
     return host.emitError("runtime entry function is missing");
-  session.model.numInputs = entry.getNumArguments();
+  state.model.numInputs = entry.getNumArguments();
   SmallVector<Type> boundary(entry.getArgumentTypes());
   llvm::append_range(boundary, entry.getResultTypes());
   for (Type type : boundary) {
@@ -230,8 +233,8 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
         llvm::any_of(tensor.getShape(), [](int64_t dim) { return dim <= 0; }))
       return entry.emitError(
           "runtime boundary requires static FP32, i8 or i32 tensors");
-    session.model.shapes.emplace_back(tensor.getShape());
-    session.model.types.push_back(
+    state.model.shapes.emplace_back(tensor.getShape());
+    state.model.types.push_back(
         tensor.getElementType().isF32()
             ? ::cim22::runtime::BoundaryDataType::FP32
         : tensor.getElementType().isInteger(8)
@@ -329,12 +332,12 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
     bool int8 = !transaction->getReadbacks().empty() &&
                 transaction->getReadbacks().front().dataType ==
                     ::cim22::execution::CIMDataType::Int8;
-    if (failed(defineDispatchWrapper(stub, session.model.transactions.size(),
+    if (failed(defineDispatchWrapper(stub, state.model.transactions.size(),
                                      int8 ? dispatchInt8 : dispatchFunc,
                                      *transaction)))
       return failure();
-    session.model.transactions.push_back(std::move(*transaction));
-    session.model.kernelNames.push_back(kernel.getSymName().str());
+    state.model.transactions.push_back(std::move(*transaction));
+    state.model.kernelNames.push_back(kernel.getSymName().str());
   }
   // Transactions own the decoded data, so device IR can be released before
   // Host bufferization allocates its analysis state.
@@ -351,156 +354,89 @@ LogicalResult load(Session &session, const char *path, StringRef entryName,
   if (!interface ||
       !isa<LLVM::LLVMVoidType>(interface.getFunctionType().getReturnType()) ||
       interface.getFunctionType().getParams().size() !=
-          session.model.shapes.size())
+      state.model.shapes.size())
     return host.emitError("runtime requires input/output descriptor arguments");
   static std::once_flag initialized;
   std::call_once(initialized, [] {
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
   });
-  ExecutionEngineOptions options;
-  // Static time unrolling can produce very large Host functions. LLVM's O2
-  // loop rotation/MemorySSA updates have excessive memory cost on these
-  // graphs. Keep the first software runtime at O0; numerical behavior and
-  // bounded compilation take priority over Host performance here.
-  options.jitCodeGenOptLevel = llvm::CodeGenOptLevel::None;
-  // Library loading should not create a process-global perf dump directory.
-  options.enablePerfNotificationListener = false;
   auto machineBuilder = llvm::orc::JITTargetMachineBuilder::detectHost();
   if (!machineBuilder) {
-    session.error = llvm::toString(machineBuilder.takeError());
+    state.error = llvm::toString(machineBuilder.takeError());
     return failure();
   }
   machineBuilder->setRelocationModel(llvm::Reloc::PIC_)
-      .setCodeGenOptLevel(llvm::CodeGenOptLevel::None);
-  // Keep the target's JIT code model: Windows JIT helpers and their state can
-  // be farther apart than the small model permits. AOT DLLs use small code.
-  if (!objectPath.empty())
-    machineBuilder->setCodeModel(llvm::CodeModel::Small)
-        .setCPU("generic")
-        .setFeatures("");
+      .setCodeGenOptLevel(llvm::CodeGenOptLevel::None)
+      .setCodeModel(llvm::CodeModel::Small)
+      .setCPU("generic")
+      .setFeatures("");
   auto machine = machineBuilder->createTargetMachine();
   if (!machine) {
-    session.error = llvm::toString(machine.takeError());
+    state.error = llvm::toString(machine.takeError());
     return failure();
   }
-  if (!objectPath.empty()) {
-    // AOT emits bytes directly: ExecutionEngine::dumpToObjectFile has no error
-    // result and cannot report an open/write failure to the native caller.
-    llvm::LLVMContext llvmContext;
-    auto llvmModule = translateModuleToLLVMIR(host, llvmContext);
-    if (!llvmModule)
-      return failure();
-    // Drop Host MLIR before serialization and object emission allocate their
-    // own copies of the model data and native code.
-    module = nullptr;
-    auto data = ::cim22::runtime::encodeModelData(session.model);
-    if (!data) {
-      session.error = llvm::toString(data.takeError());
-      return failure();
-    }
-    addModelDescriptor(*llvmModule, entryName, *data);
-    ExecutionEngine::setupTargetTripleAndDataLayout(llvmModule.get(),
-                                                    machine->get());
-    llvm::orc::SimpleCompiler compiler(**machine);
-    auto object = compiler(*llvmModule);
-    if (!object) {
-      session.error = llvm::toString(object.takeError());
-      return failure();
-    }
-    // Publish only a complete object; a failed write leaves any prior output
-    // intact. A sibling temporary also makes the final rename atomic.
-    int fd;
-    SmallString<256> temporary;
-    if (auto error = llvm::sys::fs::createUniqueFile(objectPath + ".tmp-%%%%%%",
-                                                     fd, temporary)) {
-      session.error = "cannot create object file: " + error.message();
-      return failure();
-    }
-    llvm::ToolOutputFile output(temporary, fd);
-    output.os() << (*object)->getBuffer();
-    output.os().close();
-    if (output.os().has_error()) {
-      session.error =
-          "cannot write object file: " + output.os().error().message();
-      output.os().clear_error();
-      return failure();
-    }
-    if (auto error = llvm::sys::fs::rename(temporary, objectPath)) {
-      session.error = "cannot publish object file: " + error.message();
-      return failure();
-    }
-    output.keep();
-    return success();
-  }
-  auto engine = ExecutionEngine::create(host, options, std::move(*machine));
-  if (!engine) {
-    session.error += llvm::toString(engine.takeError());
+
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = translateModuleToLLVMIR(host, llvmContext);
+  if (!llvmModule)
+    return failure();
+  module = nullptr;
+  auto data = ::cim22::runtime::encodeModelArtifact(state.model);
+  if (!data) {
+    state.error = llvm::toString(data.takeError());
     return failure();
   }
-  (*engine)->registerSymbols([](llvm::orc::MangleAndInterner mangle) {
-    return llvm::orc::SymbolMap{
-        {mangle("_mlir_ciface_cim22_dispatch"),
-         llvm::orc::ExecutorSymbolDef(
-             llvm::orc::ExecutorAddr::fromPtr(&_mlir_ciface_cim22_dispatch),
-             llvm::JITSymbolFlags::Exported)},
-        {mangle("_mlir_ciface_cim22_dispatch_sign_split"),
-         llvm::orc::ExecutorSymbolDef(
-             llvm::orc::ExecutorAddr::fromPtr(
-                 &_mlir_ciface_cim22_dispatch_sign_split),
-             llvm::JITSymbolFlags::Exported)},
-        {mangle("_mlir_ciface_cim22_dispatch_legacy"),
-         llvm::orc::ExecutorSymbolDef(llvm::orc::ExecutorAddr::fromPtr(
-                                          &_mlir_ciface_cim22_dispatch_legacy),
-                                      llvm::JITSymbolFlags::Exported)},
-        {mangle("_mlir_ciface_cim22_dispatch_int8"),
-         llvm::orc::ExecutorSymbolDef(llvm::orc::ExecutorAddr::fromPtr(
-                                          &_mlir_ciface_cim22_dispatch_int8),
-                                      llvm::JITSymbolFlags::Exported)}};
-  });
-  auto invoke = (*engine)->lookupPacked(("_mlir_ciface_" + entryName).str());
-  if (!invoke) {
-    session.error = llvm::toString(invoke.takeError());
+  addModelDescriptor(*llvmModule, entryName, *data);
+  ExecutionEngine::setupTargetTripleAndDataLayout(llvmModule.get(),
+                                                  machine->get());
+  llvm::orc::SimpleCompiler compiler(**machine);
+  auto object = compiler(*llvmModule);
+  if (!object) {
+    state.error = llvm::toString(object.takeError());
     return failure();
   }
-  session.invoke = *invoke;
-  session.code = std::move(*engine);
+  int fd;
+  SmallString<256> temporary;
+  if (auto error = llvm::sys::fs::createUniqueFile(objectPath + ".tmp-%%%%%%",
+                                                   fd, temporary)) {
+    state.error = "cannot create object file: " + error.message();
+    return failure();
+  }
+  llvm::ToolOutputFile output(temporary, fd);
+  output.os() << (*object)->getBuffer();
+  output.os().close();
+  if (output.os().has_error()) {
+    state.error = "cannot write object file: " + output.os().error().message();
+    output.os().clear_error();
+    return failure();
+  }
+  if (auto error = llvm::sys::fs::rename(temporary, objectPath)) {
+    state.error = "cannot publish object file: " + error.message();
+    return failure();
+  }
+  output.keep();
   return success();
 }
 } // namespace
 
-extern "C" void *cim22_session_load_packet(const char *path, const char *entry,
-                                           char *error, size_t capacity) {
-  auto session = std::make_unique<Session>();
-  if (!path || !entry || failed(load(*session, path, entry))) {
-    if (session->error.empty())
-      session->error = "invalid runtime load arguments";
-    ::cim22::runtime::copyError(session->error, error, capacity);
-    return nullptr;
-  }
-  return session.release();
-}
-
-extern "C" int cim22_compile_object(const char *path,
-                                           const char *objectPath,
-                                           const char *backend, char *error,
-                                           size_t capacity) {
-  Session session;
-  if (backend && llvm::StringRef(backend) == "simulator")
-    session.model.backend = ::cim22::runtime::RuntimeBackend::Software;
-  else if (backend && llvm::StringRef(backend) == "usb")
-    session.model.backend = ::cim22::runtime::RuntimeBackend::USB;
+namespace cim22::compiler {
+bool emitObject(llvm::StringRef path, llvm::StringRef objectPath,
+                llvm::StringRef backend, std::string &error) {
+  CompileState state;
+  if (backend == "simulator")
+    state.model.backend = ::cim22::runtime::RuntimeBackend::Software;
+  else if (backend == "usb")
+    state.model.backend = ::cim22::runtime::RuntimeBackend::USB;
   else {
-    ::cim22::runtime::copyError("unsupported CIM22 runtime backend", error,
-                                capacity);
-    return 1;
+    error = "unsupported CIM22 runtime backend";
+    return false;
   }
-  if (!path || !objectPath || !*objectPath ||
-      failed(load(session, path, "main", objectPath))) {
-    ::cim22::runtime::copyError(
-        session.error.empty() ? "invalid compile arguments" : session.error,
-        error, capacity);
-    return 1;
+  if (path.empty() || objectPath.empty() ||
+      failed(load(state, path, "main", objectPath))) {
+    error = state.error.empty() ? "invalid compile arguments" : state.error;
+    return false;
   }
-  return 0;
+  return true;
 }
+} // namespace cim22::compiler

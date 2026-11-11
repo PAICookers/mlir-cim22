@@ -6,57 +6,111 @@
 
 | 部分            | 位置                                      | 用途                                       |
 | --------------- | ----------------------------------------- | ------------------------------------------ |
-| 编译器          | `include/`、`lib/`、`compiler/`、`tools/` | 方言、转换、映射和 `mlir-cim22-opt` 工具 |
+| 编译器          | `include/`、`lib/`、`tools/`              | 方言、转换、映射、`mlir-cim22-opt` 和 `mlir-cim22-compile` 工具 |
 | 运行时          | `runtime/`、`lib/Execution/`      | 模型加载、CPU/CIM 执行和 Linux/Windows USB 通信 |
 | PyTorch 后端    | [python/](python/README.md)                | 将捕获的模型经 torch-mlir 交给本编译器     |
 | 本地 Web 工作台 | [web/](web/README.md)                      | 固定 DVS 模型导入、编译与软件结果对比      |
 | 模型格式        | [schema/](schema/README.md)                | 内嵌模型数据、字段约束与格式维护           |
 | 测试            | [test/](test/README.md)、`python/tests/` | 编译器、数值、接口与软件执行回归           |
 
-Python 发行包名为 `mlir-cim22`，导入包和后端名为 `cim22`。一个 wheel 包含 Python 封装、优化器以及 compiler/runtime 原生库，并声明 torch-mlir 为基础依赖。
+Python 发行包名为 `mlir-cim22`，导入包和后端名为 `cim22`。一个 wheel 包含 Python 封装、编译工具、优化器和 runtime 原生库，并声明 torch-mlir 为基础依赖。
 
 ## 快速上手
 
-使用 **Linux x86-64**。准备 Python 3.12、CPU PyTorch 和与当前后端兼容的 torch-mlir。Python `>=3.12,<3.13`、PyTorch `>=2.14,<3` 和 [torch-mlir](https://github.com/llvm/torch-mlir/releases/tag/v20261101) `20261101` 版本是当前配置；Linux 依赖解析、`torch_mlir.ir` 导入和纯 Python 回归已验证，完整编译运行还需按下文配置 `MLIR_DIR`。
+使用 **Linux x86-64 或 Windows x64**。项目要求 Python 3.12、CPU PyTorch
+和与当前后端匹配的 [torch-mlir 20261101 wheel](https://github.com/llvm/torch-mlir/releases/tag/v20261101)。下面的流程把编译器安装到你自己的 uv 虚拟环境中，模型代码不需要放在本仓库内。
 
-1. 按[Python 安装指南](python/README.md#安装)准备虚拟环境和项目 wheel。
-2. 从仓库根目录运行最小示例：
+### 在自己的应用中安装并推理
 
-   ```sh
-   .venv/bin/python python/examples/torch_compile.py
-   ```
+先准备已经取得的两个 wheel 文件。`CIM22_WHEEL` 是本项目 wheel，
+`TORCH_MLIR_WHEEL` 是对应平台的 torch-mlir wheel。
 
-   成功时输出：
+```sh
+uv venv --python 3.12 .venv
+uv pip install --python .venv --index-url https://download.pytorch.org/whl/cpu \
+  "torch>=2.14,<3"
+uv pip install --python .venv "$TORCH_MLIR_WHEEL" "$CIM22_WHEEL"
+```
 
-   ```text
-   CIM22 torch.compile sign-split BF16 checks passed.
-   ```
-3. 在自己的模型上使用同一后端：
+在应用中使用 `torch.compile`。第一次调用会捕获、编译并加载模型，后续相同静态特化会复用已生成的模型库。
 
-   ```python
-   import torch
-   from torch import nn
+```python
+import torch
+from torch import nn
 
-   model = nn.Sequential(nn.Linear(64, 16), nn.ReLU()).cpu().eval()
-   with torch.inference_mode():
-       compiled = torch.compile(
-           model,
-           backend="cim22",
-           fullgraph=True,
-           dynamic=False,
-           options={"runtime": "simulator"},
-       )
-       result = compiled(torch.ones(1, 64))
-       print(result.shape)
-   ```
+model = nn.Sequential(nn.Linear(64, 16), nn.ReLU()).cpu().eval()
+with torch.inference_mode():
+    compiled = torch.compile(
+        model,
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={
+            "runtime": "simulator",
+            "artifact_dir": "artifacts/linear",
+            "debug_dir": "artifacts/linear-ir",
+        },
+    )
+    result = compiled(torch.ones(1, 64))
+    print(result.shape)
+```
 
-   输出：
+`runtime="simulator"` 在 CPU 上执行软件仿真。连接 CIM 板卡后改为
+`runtime="usb"`，并按 [USB 与 PLL 配置](python/README.md#usb-与-pll-配置)传入
+`UsbConfig`。输入应为静态形状的连续 CPU Tensor。
 
-   ```text
-   torch.Size([1, 16])
-   ```
+### 运行仓库示例
 
-示例显式选择软件运行时；默认运行时是 USB。输入须为静态形状、连续的 CPU Tensor；浮点模型使用 FP32，显式 INT8 乘法配合 INT32 累加可走整数路径。首次调用完成编译和加载，相同特化的后续调用复用已加载代码。
+从仓库根目录进入 Python 环境后运行固定示例：
+
+```sh
+./.venv/bin/python python/examples/torch_compile.py
+```
+
+Windows 使用 `./.venv/Scripts/python.exe`。成功时会在
+`outputs/torch/` 保存 `compile.log`、模型动态库、调试 IR 和 `result.json`。
+TensorFlow 示例需要额外安装依赖：
+
+```sh
+uv pip install --python .venv "$CIM22_WHEEL[tensorflow]"
+./.venv/bin/python python/examples/tensorflow_compile.py
+```
+
+### 运行测试
+
+如果使用源码树，先按 [源码构建指南](docs/BUILDING.md) 配置 `MLIR_DIR`，然后在仓库根目录执行：
+
+```sh
+uv sync --project python --python 3.12 --locked \
+  -Ccmake.define.MLIR_DIR="$MLIR_DIR"
+uv run --project python --no-sync pytest
+```
+
+只检查编译器后端或 TensorFlow 接口时，可以缩小范围：
+
+```sh
+uv run --project python --no-sync pytest \
+  python/tests/test_backend.py python/tests/test_tensorflow.py
+```
+
+### 启动 Web UI
+
+Web UI 需要安装 `web` extra，并需要一个只读的 DVS 模型包。模型包至少包含
+`weights/dvsgesture_mobilenet_snn_qat_int8.pt` 和 `data/test/`。
+
+```sh
+uv pip install --python .venv "$CIM22_WHEEL[web,tensorflow]"
+./.venv/bin/cim22-web \
+  --model-dir /path/to/model-package \
+  --examples-dir /path/to/mlir-pku-cim22/python/examples
+```
+
+Windows 使用 `./.venv/Scripts/cim22-web.exe`。浏览器打开
+<http://127.0.0.1:8000>。结果和调试文件默认写入
+`~/.local/share/cim22-web`，可用 `--data-dir` 指定其他目录。Web 页面中的
+PyTorch 和 TensorFlow 示例默认使用软件仿真，USB 模式需要已连接并有访问权限的板卡。
+
+示例显式选择软件运行时；默认运行时是 USB。浮点模型使用 FP32，显式 INT8 乘法配合 INT32 累加可走整数路径。
 
 拿到源码后需要先安装或构建，克隆仓库本身不会提供预编译文件。只有源码时，请从[源码构建指南](docs/BUILDING.md)开始。
 

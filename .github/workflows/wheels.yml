@@ -2,7 +2,7 @@ name: Build Linux and Windows wheels
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     tags: ['v*']
   workflow_dispatch:
 
@@ -19,30 +19,61 @@ concurrency:
 
 jobs:
   sdk:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-24.04
+            artifact-path: .cache/manylinux/sdk-package
+          - platform: windows
+            runner: windows-2022
+            artifact-path: .cache/windows/llvm-sdk
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/cache@v6
-        id: sdk
+      - name: Cache Linux SDK
+        if: matrix.platform == 'linux'
+        id: sdk-cache-linux
+        uses: actions/cache@v6
         with:
           path: .cache/manylinux/sdk-package
           key: llvm-sdk-x86_64-${{ env.LLVM_COMMIT }}-${{ hashFiles('.github/manylinux/Containerfile', '.github/scripts/build-llvm-sdk.sh') }}
 
-      - uses: actions/checkout@v7
-        if: steps.sdk.outputs.cache-hit != 'true'
+      - name: Cache Windows SDK
+        if: matrix.platform == 'windows'
+        id: sdk-cache-windows
+        uses: actions/cache@v6
+        with:
+          path: .cache/windows/llvm-sdk
+          key: llvm-sdk-windows-2022-x64-${{ env.LLVM_COMMIT }}-${{ hashFiles('.github/scripts/build-llvm-sdk.ps1') }}
+
+      - name: Checkout pinned LLVM source for Linux
+        if: matrix.platform == 'linux' && steps.sdk-cache-linux.outputs.cache-hit != 'true'
+        uses: actions/checkout@v7
         with:
           repository: llvm/llvm-project
           ref: ${{ env.LLVM_COMMIT }}
           path: .cache/manylinux/llvm-source
           persist-credentials: false
 
-      - uses: actions/cache/restore@v6
-        if: steps.sdk.outputs.cache-hit != 'true'
+      - name: Checkout pinned LLVM source for Windows
+        if: matrix.platform == 'windows' && steps.sdk-cache-windows.outputs.cache-hit != 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: llvm/llvm-project
+          ref: ${{ env.LLVM_COMMIT }}
+          path: .cache/windows/llvm-source
+          persist-credentials: false
+
+      - name: Restore Linux ccache
+        if: matrix.platform == 'linux' && steps.sdk-cache-linux.outputs.cache-hit != 'true'
         id: ccache
+        uses: actions/cache/restore@v6
         with:
           path: .cache/manylinux/ccache
           key: llvm-ccache-x86_64-${{ hashFiles('.github/manylinux/Containerfile', '.github/scripts/build-llvm-sdk.sh') }}-${{ env.LLVM_COMMIT }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -50,10 +81,17 @@ jobs:
             llvm-ccache-x86_64-${{ hashFiles('.github/manylinux/Containerfile', '.github/scripts/build-llvm-sdk.sh') }}-${{ env.LLVM_COMMIT }}-
             llvm-ccache-x86_64-${{ hashFiles('.github/manylinux/Containerfile', '.github/scripts/build-llvm-sdk.sh') }}-
 
-      - name: Build static LLVM/MLIR SDK in manylinux
-        if: steps.sdk.outputs.cache-hit != 'true'
+      - name: Prepare Windows build environment
+        if: matrix.platform == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build static Linux LLVM/MLIR SDK in manylinux
+        if: matrix.platform == 'linux' && steps.sdk-cache-linux.outputs.cache-hit != 'true'
+        shell: bash
         run: |
-          # Reclaim unused hosted-runner SDKs before the first LLVM build.
+          set -euo pipefail
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           mkdir -p .cache/manylinux/{sdk-package,ccache,work}
           df -h .
@@ -69,28 +107,66 @@ jobs:
             cim22-manylinux bash /io/.github/scripts/build-llvm-sdk.sh
           df -h .
 
-      - uses: actions/cache/save@v6
-        if: ${{ always() && steps.sdk.outputs.cache-hit != 'true' && steps.ccache.outcome == 'success' }}
+      - name: Build static Windows LLVM/MLIR SDK
+        if: matrix.platform == 'windows' && steps.sdk-cache-windows.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: .github/scripts/build-llvm-sdk.ps1 -SourceDir .cache/windows/llvm-source -SdkDir .cache/windows/llvm-sdk
+
+      - name: Save Linux ccache
+        if: ${{ always() && matrix.platform == 'linux' && steps.sdk-cache-linux.outputs.cache-hit != 'true' && steps.ccache.outcome == 'success' }}
+        uses: actions/cache/save@v6
         with:
           path: .cache/manylinux/ccache
           key: ${{ steps.ccache.outputs.cache-primary-key }}
 
-      - name: Verify SDK archive
+      - name: Verify Linux SDK archive
+        if: matrix.platform == 'linux'
+        shell: bash
         working-directory: .cache/manylinux/sdk-package
         run: sha256sum --check SHA256SUMS
 
+      - name: Verify Windows SDK
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          if (!(Test-Path .cache/windows/llvm-sdk/SDK-INFO.txt)) {
+              throw 'Windows SDK is missing SDK-INFO.txt'
+          }
+          $llvmConfig = (Resolve-Path .cache/windows/llvm-sdk/bin/llvm-config.exe).Path
+          if ((& $llvmConfig --version) -ne $env:LLVM_VERSION -or
+              (& $llvmConfig --shared-mode) -ne 'static' -or
+              (& $llvmConfig --build-mode) -ne 'Release' -or
+              (& $llvmConfig --assertion-mode) -ne 'OFF') {
+              throw 'Expected the pinned static Windows LLVM/MLIR SDK'
+          }
+
       - uses: actions/upload-artifact@v7
         with:
-          name: llvm-sdk
-          path: .cache/manylinux/sdk-package/
+          name: llvm-sdk-${{ matrix.platform }}
+          path: ${{ matrix.artifact-path }}
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
 
   build-wheel:
     needs: sdk
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-24.04
+            sdk-package: .cache/manylinux/sdk-package
+            dist-dir: manylinux
+          - platform: windows
+            runner: windows-2022
+            sdk-package: .cache/windows/llvm-sdk
+            dist-dir: windows
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    env:
+      CMAKE_GENERATOR: Ninja
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -98,17 +174,22 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: llvm-sdk
-          path: .cache/manylinux/sdk-package
+          name: llvm-sdk-${{ matrix.platform }}
+          path: ${{ matrix.sdk-package }}
 
-      - name: Extract shared SDK
-        run: |
-          cd .cache/manylinux/sdk-package
-          sha256sum --check SHA256SUMS
-          mkdir ../llvm-sdk
-          tar --use-compress-program='zstd -d' -xf llvm-sdk.tar.zst -C ../llvm-sdk
-          echo "LLVM_SDK_SHA256=$(sha256sum llvm-sdk.tar.zst | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
-          rm -- llvm-sdk.tar.zst
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Prepare Windows build environment
+        if: matrix.platform == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Windows build tools
+        if: matrix.platform == 'windows'
+        run: python -m pip install uv==0.13.1 ninja==1.13.2 wheel
 
       - uses: actions/setup-node@v7
         with:
@@ -126,14 +207,35 @@ jobs:
 
       - name: Set release or development wheel version
         run: |
-          python3 .github/scripts/test_prepare_wheel.py
-          python3 .github/scripts/prepare-wheel.py
+          python .github/scripts/test_prepare_wheel.py
+          python .github/scripts/prepare-wheel.py
 
-      - name: Build native wheel in manylinux
+      - name: Extract shared Linux SDK
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .cache/manylinux/sdk-package
+          sha256sum --check SHA256SUMS
+          mkdir ../llvm-sdk
+          tar --use-compress-program='zstd -d' -xf llvm-sdk.tar.zst -C ../llvm-sdk
+          echo "LLVM_SDK_SHA256=$(sha256sum llvm-sdk.tar.zst | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+          rm -- llvm-sdk.tar.zst
+
+      - name: Verify Linux CyUSB bundle
+        if: matrix.platform == 'linux'
+        shell: bash
+        working-directory: third_party/cyusb-linux
+        run: sha256sum --check SHA256SUMS
+
+      - name: Build Linux wheel in manylinux
+        if: matrix.platform == 'linux'
+        shell: bash
         env:
           PROJECT_COMMIT: ${{ github.sha }}
           BUILD_RUNNER: ubuntu-24.04
         run: |
+          set -euo pipefail
           mkdir -p .cache/manylinux/work python/dist/manylinux
           docker build -f .github/manylinux/Containerfile -t cim22-manylinux .github/manylinux
           docker run --rm --user "$(id -u):$(id -g)" \
@@ -146,18 +248,27 @@ jobs:
             -e CMAKE_BUILD_PARALLEL_LEVEL=2 \
             cim22-manylinux bash /io/.github/scripts/build-manylinux.sh
 
-      - uses: actions/upload-artifact@v7
-        with:
-          path: python/dist/manylinux/*.whl
-          archive: false
-          if-no-files-found: error
-          retention-days: 14
+      - name: Build Windows wheel with USB support
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: .github/scripts/build-windows-wheel.ps1 -SdkDir .cache/windows/llvm-sdk -CyapiRoot third_party/cyapi -DistDir python/dist/windows
+
+      - name: Check Linux wheel contents
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: python .github/scripts/check-wheel-contents.py python/dist/manylinux/*.whl
+
+      - name: Check Windows wheel contents
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: python .github/scripts/check-wheel-contents.py (Get-ChildItem python/dist/windows/*.whl).FullName
 
       - uses: actions/upload-artifact@v7
         with:
-          path: python/dist/manylinux/SHA256SUMS-linux
-          archive: false
+          name: wheel-${{ matrix.platform }}
+          path: python/dist/${{ matrix.dist-dir }}/*
           if-no-files-found: error
+          archive: false
           retention-days: 14
 
   validate-wheel:
@@ -165,8 +276,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-26.04]
-    runs-on: ${{ matrix.os }}
+        include:
+          - platform: linux
+            runner: ubuntu-22.04
+            dist-dir: manylinux
+          - platform: linux
+            runner: ubuntu-24.04
+            dist-dir: manylinux
+          - platform: linux
+            runner: ubuntu-26.04
+            dist-dir: manylinux
+          - platform: windows
+            runner: windows-2022
+            dist-dir: windows
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
@@ -175,180 +298,43 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          pattern: mlir_cim22-*-manylinux*.whl
-          merge-multiple: true
-          path: python/dist/manylinux
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: SHA256SUMS-linux
-          path: python/dist/manylinux
+          name: wheel-${{ matrix.platform }}
+          path: python/dist/${{ matrix.dist-dir }}
 
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
-      - name: Validate checksum
+      - name: Prepare Windows validation environment
+        if: matrix.platform == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Validate Linux checksum
+        if: matrix.platform == 'linux'
+        shell: bash
         working-directory: python/dist/manylinux
         run: sha256sum --check SHA256SUMS-linux
 
-      - name: Validate installed wheel outside checkout
+      - name: Validate Windows checksum
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        working-directory: python/dist/windows
+        run: |
+          $checksum = (Get-Content -Raw SHA256SUMS-windows).Trim() -split '  ', 2
+          $wheel = @(Get-ChildItem '*.whl')
+          if ($checksum.Count -ne 2 -or $wheel.Count -ne 1 -or $checksum[1] -ne $wheel[0].Name -or
+              (Get-FileHash $wheel[0].FullName -Algorithm SHA256).Hash -ne $checksum[0]) {
+              throw 'Windows wheel checksum mismatch'
+          }
+
+      - name: Validate installed Linux wheel outside checkout
+        if: matrix.platform == 'linux'
+        shell: bash
         run: bash .github/scripts/test-wheel.sh python/dist/manylinux
 
-  windows-sdk:
-    runs-on: windows-2022
-    timeout-minutes: 360
-    defaults:
-      run:
-        shell: pwsh
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Install build tools
-        run: python -m pip install uv==0.13.1 ninja==1.13.2 wheel
-
-      - uses: actions/cache@v6
-        id: windows-sdk
-        with:
-          path: .cache/windows/llvm-sdk
-          key: llvm-sdk-windows-2022-x64-${{ env.LLVM_COMMIT }}-${{ hashFiles('.github/scripts/build-llvm-sdk.ps1') }}
-
-      - uses: actions/checkout@v7
-        if: steps.windows-sdk.outputs.cache-hit != 'true'
-        with:
-          repository: llvm/llvm-project
-          ref: ${{ env.LLVM_COMMIT }}
-          path: .cache/windows/llvm-source
-          persist-credentials: false
-
-      - name: Build static Windows LLVM/MLIR SDK
-        if: steps.windows-sdk.outputs.cache-hit != 'true'
-        run: .github/scripts/build-llvm-sdk.ps1 -SourceDir .cache/windows/llvm-source -SdkDir .cache/windows/llvm-sdk
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: llvm-sdk-windows
-          path: .cache/windows/llvm-sdk/
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
-
-  windows-build-wheel:
-    needs: windows-sdk
-    runs-on: windows-2022
-    timeout-minutes: 120
-    env:
-      CMAKE_GENERATOR: Ninja
-      CMAKE_BUILD_PARALLEL_LEVEL: '2'
-    defaults:
-      run:
-        shell: pwsh
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: llvm-sdk-windows
-          path: .cache/windows/llvm-sdk
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Install build tools
-        run: python -m pip install uv==0.13.1 ninja==1.13.2 wheel
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-
-      - uses: pnpm/action-setup@v6
-        with:
-          package_json_file: web/package.json
-
-      - name: Build frontend
-        working-directory: web
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $PSNativeCommandUseErrorActionPreference = $true
-          pnpm install --frozen-lockfile
-          pnpm build
-
-      - name: Set release or development wheel version
-        run: |
-          $PSNativeCommandUseErrorActionPreference = $true
-          .github/scripts/test-windows-build-arguments.ps1
-          python .github/scripts/test_prepare_wheel.py
-          python .github/scripts/prepare-wheel.py
-
-      - name: Build Windows wheel with USB support
-        run: .github/scripts/build-windows-wheel.ps1 -SdkDir .cache/windows/llvm-sdk -CyapiRoot third_party/cyapi -DistDir python/dist/windows
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: windows-wheel
-          path: python/dist/windows/*.whl
-          archive: false
-          if-no-files-found: error
-          retention-days: 14
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: windows-checksum
-          path: python/dist/windows/SHA256SUMS-windows
-          archive: false
-          if-no-files-found: error
-          retention-days: 14
-
-  windows-validate-wheel:
-    needs: windows-build-wheel
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-2022]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
-    defaults:
-      run:
-        shell: pwsh
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: windows-wheel
-          path: python/dist/windows
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: windows-checksum
-          path: python/dist/windows
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
       - name: Validate installed Windows wheel outside checkout
+        if: matrix.platform == 'windows'
+        shell: pwsh
         run: .github/scripts/test-windows-wheel.ps1 -DistDir python/dist/windows

@@ -478,8 +478,8 @@ def test_resume_rejects_changed_python_backend(
     )
     monkeypatch.setattr(
         engine,
-        "compiler_library",
-        lambda _: tmp_path / "native_compiler.so",
+        "compile_tool",
+        lambda: tmp_path / "mlir-cim22-compile",
     )
     monkeypatch.setattr(
         engine, "digest", lambda path: revisions.get(path.name, "unchanged")

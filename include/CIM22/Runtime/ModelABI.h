@@ -1,6 +1,6 @@
 // Linux model-library ABI. This descriptor and its data live in the model DSO.
-#ifndef CIM22_EXECUTION_MODELABI_H
-#define CIM22_EXECUTION_MODELABI_H
+#ifndef CIM22_RUNTIME_MODELABI_H
+#define CIM22_RUNTIME_MODELABI_H
 #include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
