@@ -19,7 +19,12 @@ from torch._functorch._aot_autograd.utils import make_boxed_func
 from torch._guards import TracingContext, tracing
 from torch.utils._python_dispatch import _disable_current_modes
 
-from .compiler import BackendOptions, _compile, _validate_options
+from .compiler import (
+    BackendOptions,
+    _check_torch_mlir_compatibility,
+    _compile,
+    _validate_options,
+)
 from .runtime import MODEL_SUFFIX, _initialize_session
 
 type TensorCallable = Callable[..., Sequence[torch.Tensor]]
@@ -105,6 +110,7 @@ def backend(
     """
     options = options or {}
     _validate_options(options, allow_reference=True)
+    _check_torch_mlir_compatibility()
     runtime = options.get("runtime", "usb")
     usb_config = options.get("usb_config")
     bf16_compensation = options.get("bf16_compensation", "sign-split")

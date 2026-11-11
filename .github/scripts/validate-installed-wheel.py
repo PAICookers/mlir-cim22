@@ -12,7 +12,7 @@ PYTEST_FILES = (
     "tests/test_model_format.py",
     "tests/test_artifacts.py",
     "tests/test_usb_runtime.py",
-    "tests/test_native_compiler.py",
+    "tests/test_compile_tool.py",
     "tests/test_backend.py",
     "tests/test_convolution.py",
     "tests/test_tensorflow.py",

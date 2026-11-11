@@ -202,7 +202,7 @@ focused pytest；安装 `[web,tensorflow]` extra 后，再运行 `cim22-web --he
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | PyTorch 捕获、冻结与 AOT 边界   | [backend.py](cim22/backend.py) 和 [test_backend.py](tests/test_backend.py)                                                                    |
 | TF 签名、输出结构与编译进程隔离 | [tensorflow.py](cim22/tensorflow.py)、[_tensorflow_compile.py](cim22/_tensorflow_compile.py) 和 [test_tensorflow.py](tests/test_tensorflow.py) |
-| 原生编译、链接及模型发布        | [compiler.py](cim22/compiler.py)、[test_native_compiler.py](tests/test_native_compiler.py) 和 [test_artifacts.py](tests/test_artifacts.py)     |
+| 原生编译、链接及模型发布        | [compiler.py](cim22/compiler.py)、[test_compile_tool.py](tests/test_compile_tool.py) 和 [test_artifacts.py](tests/test_artifacts.py)     |
 | Session 所有权、USB 与 PLL      | [runtime.py](cim22/runtime.py) 和 [test_usb_runtime.py](tests/test_usb_runtime.py)                                                            |
 
 从仓库根目录运行，TF 用例需要安装 extra。
@@ -213,7 +213,7 @@ cd python
 .venv/bin/python -m pytest tests/test_tensorflow.py
 ```
 
-排查重复编译时使用 `TORCH_LOGS=recompiles`。定位 lowering 或链接问题时，先用 `debug_dir` 保留 IR 和目标文件，再检查安装包加载的原生组件。独立 CMake 构建可用 `CIM22_OPT`、`CIM22_RUNTIME_LIBRARY`、`CIM22_COMPILER_LIBRARY` 指向同一构建的产物，`CIM22_CC` 可指定模型链接工具。
+排查重复编译时使用 `TORCH_LOGS=recompiles`。定位 lowering 或链接问题时，先用 `debug_dir` 保留 IR 和目标文件，再检查安装包加载的原生组件。独立 CMake 构建可用 `CIM22_OPT`、`CIM22_COMPILE_TOOL`、`CIM22_RUNTIME_LIBRARY` 指向同一构建的产物，`CIM22_CC` 可指定模型链接工具。
 
 修改 C++、TableGen、schema 或 CMake 后，复用原构建目录和配置，通过 `uv sync --reinstall-package mlir-cim22` 重装 editable 包。完整命令、Ruff、原生 lit 和 wheel 验收见 [BUILDING 的测试与开发](../docs/BUILDING.md#测试与开发)。软件执行、模拟 USB 配置及实板结果分开记录。
 

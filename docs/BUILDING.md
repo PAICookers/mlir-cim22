@@ -4,7 +4,7 @@
 
 | 目标             | 方式                   | 结果                                             |
 | ---------------- | ---------------------- | ------------------------------------------------ |
-| 编译器本体       | CMake/Ninja            | 原生优化器、compiler/runtime 库，可选 ONNX 工具  |
+| 编译器本体       | CMake/Ninja            | 原生优化器、compile tool、runtime 库，可选 ONNX 工具  |
 | PyTorch 编译后端 | uv + scikit-build-core | 包含上述原生组件的 Python wheel 或 editable 安装 |
 
 仅使用预编译包时，直接阅读 [Python 安装指南](../python/README.md#安装)。以下命令除另有说明外，均在**仓库根目录**执行。
@@ -54,7 +54,7 @@ cmake --build ../llvm-build --parallel 8
 export MLIR_DIR="$(cd ../llvm-build && pwd)/lib/cmake/mlir"
 ```
 
-LLVM 默认生成启用 PIC 的静态库。PIC 即位置无关代码，使这些库中的代码可以链接进本项目的共享库（如 `libcim22_compiler.so`）；这里的“静态”指 LLVM/MLIR 依赖库的形式，本项目仍会生成 `.so`。torch-mlir 使用自身的 Python 绑定，无需额外启用 LLVM/MLIR Python 绑定。保留工具链源码和构建目录。
+LLVM 默认生成启用 PIC 的静态库。PIC 即位置无关代码，使这些库中的代码可以链接进本项目的 runtime 共享库和 compile tool；这里的“静态”指 LLVM/MLIR 依赖库的形式。torch-mlir 使用自身的 Python 绑定，无需额外启用 LLVM/MLIR Python 绑定。保留工具链源码和构建目录。
 
 后续源码构建使用以下工具链变量；打开新终端时需重新设置：
 
@@ -85,7 +85,7 @@ cmake --build build --parallel 4
 build/bin/mlir-cim22-opt --help
 ```
 
-优化器位于 `build/bin/`，compiler/runtime 库位于 `build/lib/`。Python 打包另用 `python/build/`；wheel 内安装路径为 `cim22/bin/` 和 `cim22/lib/`，与这两个构建目录无关。
+优化器和 compile tool 位于 `build/bin/`，runtime 库位于 `build/lib/`。Python 打包另用 `python/build/`；wheel 内安装路径为 `cim22/bin/` 和 `cim22/lib/`，与这两个构建目录无关。
 
 例如，将混合计算测试转换为 packet 阶段的 MLIR：
 
@@ -154,7 +154,7 @@ scikit-build-core 调用根 CMake 工程；上面的发行命令显式构建 **R
 cim22/
   *.py
   bin/mlir-cim22-opt
-  lib/libcim22_compiler.so
+  bin/mlir-cim22-compile
   lib/libcim22_runtime.so
   lib/libcyusb.so
   share/licenses/cyusb-linux/license.txt
@@ -224,7 +224,7 @@ cmake -G Ninja -S . -B build/test \
 cmake --build build/test --target check-mlir-cim22 --parallel 4
 ```
 
-自备工具链时应确认同样提供上述 LLVM 测试工具。测试说明见 [test/README](../test/README.md)。Python 测试使用安装包内的原生组件；需要测试独立 CMake 构建时，可设置 `CIM22_OPT`、`CIM22_RUNTIME_LIBRARY` 和 `CIM22_COMPILER_LIBRARY` 为对应产物路径。
+自备工具链时应确认同样提供上述 LLVM 测试工具。测试说明见 [test/README](../test/README.md)。Python 测试使用安装包内的原生组件；需要测试独立 CMake 构建时，可设置 `CIM22_OPT`、`CIM22_COMPILE_TOOL` 和 `CIM22_RUNTIME_LIBRARY` 为对应产物路径。
 
 schema 修改后，用同一原生测试构建更新并检查 Python 测试绑定：
 
@@ -316,7 +316,7 @@ uv build --python 3.12 python --wheel --out-dir python/dist `
   -C "cmake.define.CYAPI_ROOT=$PWD/third_party/cyapi"
 ```
 
-Windows wheel 包含 `mlir-cim22-opt.exe`、`cim22_compiler.dll`、`cim22_runtime.dll` 和模型链接所需的 `.lib`。Python 后端使用 MSVC 将 COFF `.obj` 链接为模型 `.dll`，通过与 Linux 相同的模型 ABI 加载。安装及 DLL 重新加载见 [Python 安装](../python/README.md#安装)和 [Session 与产物](../python/README.md#session-与产物)。
+Windows wheel 包含 `mlir-cim22-opt.exe`、`mlir-cim22-compile.exe`、`cim22_runtime.dll` 和模型链接所需的 `cim22_runtime.lib`。Python 后端使用 MSVC 将 COFF `.obj` 链接为模型 `.dll`，通过与 Linux 相同的模型 ABI 加载。安装及 DLL 重新加载见 [Python 安装](../python/README.md#安装)和 [Session 与产物](../python/README.md#session-与产物)。
 
 开发环境的 `pyproject.toml` / `uv.lock` 按平台选择 [torch-mlir `v20261101` release wheel](https://github.com/llvm/torch-mlir/releases/tag/v20261101)：Linux 使用 `torch_mlir-20261101-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl`，Windows 使用 `torch_mlir-20261101-cp312-abi3-win_amd64.whl`。不引入 torch-mlir 源码。在配置好 MSVC x64、`MLIR_DIR` 和 SDK 后，可执行：
 
@@ -325,7 +325,7 @@ uv sync --project python --python 3.12 --locked --group dev `
   -C build-dir=build/windows `
   -C cmake.define.MLIR_DIR=C:/path/to/llvm-build-windows/lib/cmake/mlir `
   -C "cmake.define.CYAPI_ROOT=$PWD/third_party/cyapi"
-uv run --directory python --no-sync pytest tests/test_artifacts.py tests/test_backend.py tests/test_convolution.py tests/test_model_format.py tests/test_native_compiler.py tests/test_usb_runtime.py
+uv run --directory python --no-sync pytest tests/test_artifacts.py tests/test_backend.py tests/test_convolution.py tests/test_model_format.py tests/test_compile_tool.py tests/test_usb_runtime.py
 ```
 
 这组测试覆盖原生模型编译、BF16 软件执行、Host 运算、状态更新、静态 T/B 维度、模型 ABI、USB 错误边界和 DLL 生命周期；POSIX 文件大小限制测试仅在 Linux 运行。wheel validate 还会在两平台运行 `tensorflow_compile.py`、`test_web.py` 和 Web UI 首页/静态资源/API smoke check。完整 DVS 数据集和真实 USB 板卡测试需要另行验收。

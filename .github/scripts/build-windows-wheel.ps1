@@ -66,6 +66,7 @@ try {
     if ($wheels.Count -ne 1 -or $wheels[0].Name -notlike '*-py3-none-win_amd64.whl') {
         throw 'Expected exactly one py3-none-win_amd64 wheel'
     }
+    python "$repoDir/.github/scripts/check-wheel-contents.py" $wheels[0].FullName
     @'
 import sys
 import tomllib
@@ -93,10 +94,9 @@ with ZipFile(path) as wheel:
         raise RuntimeError("Wheel metadata has unexpected compatibility tags")
     for name in (
         "cim22/bin/mlir-cim22-opt.exe",
+        "cim22/bin/mlir-cim22-compile.exe",
         "cim22/lib/cim22_runtime.dll",
         "cim22/lib/cim22_runtime.lib",
-        "cim22/lib/cim22_compiler.dll",
-        "cim22/lib/cim22_compiler.lib",
         "cim22/share/licenses/cyapi/license.rtf",
     ):
         if name not in wheel.namelist():
@@ -113,6 +113,7 @@ with ZipFile(path) as wheel:
     Push-Location $stageDir
     try {
         & "$stageDir/installed/cim22/bin/mlir-cim22-opt.exe" --version
+        & "$stageDir/installed/cim22/bin/mlir-cim22-compile.exe" --help
         @'
 import ctypes
 import os
@@ -121,7 +122,7 @@ from pathlib import Path
 
 libraries = Path(sys.argv[1])
 with os.add_dll_directory(str(libraries)):
-    for name in ("cim22_runtime.dll", "cim22_compiler.dll"):
+    for name in ("cim22_runtime.dll",):
         ctypes.CDLL(str(libraries / name))
         print(f"Loaded: {name}")
 '@ | python - "$stageDir/installed/cim22/lib"

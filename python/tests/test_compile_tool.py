@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from cim22.compiler import _compile_linalg, _emit_object
-from cim22.runtime import MODEL_SUFFIX, Session, compiler_library
+from cim22.runtime import MODEL_SUFFIX, Session, runtime_library
 
 from ._generated import cim22_model_pb2 as proto
 
@@ -27,34 +27,31 @@ pytestmark = [
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="ELF export policy")
-def test_native_export_boundary(native_runtime: Path) -> None:
-    """Only the three shared error tags may escape the native LLVM copies."""
+def test_runtime_export_boundary(native_runtime: Path) -> None:
+    """Only the three shared error tags may escape the runtime LLVM copy."""
     allowed = {
         "llvm::ErrorInfoBase::ID",
         "llvm::ErrorList::ID",
         "llvm::StringError::ID",
     }
-    for library in (native_runtime, compiler_library(native_runtime)):
-        output = subprocess.run(
-            ["nm", "-D", "-C", "--defined-only", str(library)],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-        symbols = {line.split(maxsplit=2)[2] for line in output.splitlines()}
-        assert {s for s in symbols if s.startswith("llvm::")} == allowed
-        assert not any(
-            s.startswith(("google::protobuf::", "absl::", "mlir::cl::"))
-            for s in symbols
-        )
-        assert "cim22_compile_object" in symbols or (
-            "cim22_session_load_shared" in symbols
-        )
+    output = subprocess.run(
+        ["nm", "-D", "-C", "--defined-only", str(native_runtime)],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    symbols = {line.split(maxsplit=2)[2] for line in output.splitlines()}
+    assert {s for s in symbols if s.startswith("llvm::")} == allowed
+    assert not any(
+        s.startswith(("google::protobuf::", "absl::", "mlir::cl::"))
+        for s in symbols
+    )
+    assert "cim22_session_load_shared" in symbols
 
 
 @pytest.fixture
 def packet(tmp_path: Path) -> Path:
-    """A minimal split program isolates the native compiler/file boundary."""
+    """A minimal split program isolates the compile-tool/object boundary."""
     path = tmp_path / "model.packet.mlir"
     path.write_text(
         """
@@ -134,45 +131,9 @@ else:
     assert not list(tmp_path.glob("*.tmp-*"))
 
 
-@pytest.mark.parametrize(
-    "visibility", ["", "private "], ids=["public", "private"]
-)
-def test_runtime_entry_preserves_input(packet: Path, visibility: str) -> None:
-    packet.write_text(
-        packet.read_text().replace(
-            "func.func @main", f"func.func {visibility}@main"
-        )
-    )
-    value = np.ones((2, 3), dtype=np.float32)
-    with Session(packet) as session:
-        np.testing.assert_array_equal(session(value)[0], np.full_like(value, 2))
-    np.testing.assert_array_equal(value, np.ones_like(value))
-
-
-@pytest.mark.parametrize("dtype", [np.int8, np.int32])
-def test_integer_host_boundary(
-    packet: Path, dtype: type[np.signedinteger]
-) -> None:
-    """Native JIT boundaries preserve storage width without casting."""
-    element_type = "i8" if dtype == np.int8 else "i32"
-    packet.write_text(
-        packet.read_text().replace("f32", element_type).replace("addf", "addi")
-    )
-    value = np.array([[-128, -1, 0], [1, 63, 127]], dtype=dtype)
-    with Session(packet) as session:
-        assert session.input_dtypes == (np.dtype(dtype),)
-        assert session.output_dtypes == (np.dtype(dtype),)
-        np.testing.assert_array_equal(session(value)[0], value + value)
-        with pytest.raises(TypeError, match=np.dtype(dtype).name):
-            session(value.astype(np.float32))
-
-
 @pytest.mark.usefixtures("native_toolchain")
-@pytest.mark.parametrize("artifact_format", ["packet", "shared"])
-def test_int8_conv_execution(
-    tmp_path: Path, native_runtime: Path, artifact_format: str
-) -> None:
-    """Native INT8 Conv preserves exact values through JIT and shared models."""
+def test_int8_conv_execution(tmp_path: Path, native_runtime: Path) -> None:
+    """Native INT8 Conv preserves exact values through shared models."""
     weights = (np.arange(17 * 2 * 6 * 6).reshape(17, 2, 6, 6) % 15 - 7).astype(
         np.int8
     )
@@ -212,6 +173,7 @@ func.func @main(%input: tensor<1x2x8x8xi8>) -> tensor<1x17x3x3xi32> {{
         capture_output=True,
         text=True,
     )
+    artifact_format = "shared"
     artifact = packet
     if artifact_format == "shared":
         object_file = tmp_path / ("conv.obj" if os.name == "nt" else "conv.o")
@@ -287,7 +249,7 @@ def test_packet_parser_rejects_invalid_return(packet: Path) -> None:
         )
     )
     with pytest.raises(RuntimeError, match="return"):
-        Session(packet)
+        _emit_object(packet, packet.with_suffix(".o"), runtime_library())
 
 
 @pytest.mark.usefixtures("native_toolchain")
@@ -355,7 +317,7 @@ def test_obsolete_correction_marker_rejected(packet: Path) -> None:
         )
     )
     with pytest.raises(RuntimeError, match="obsolete cim.bf16_corrected"):
-        Session(packet)
+        _emit_object(packet, packet.with_suffix(".o"), runtime_library())
 
 
 @pytest.mark.parametrize("mode", ['"unknown"', "true"])
@@ -367,7 +329,7 @@ def test_invalid_compensation_marker_rejected(packet: Path, mode: str) -> None:
         )
     )
     with pytest.raises(RuntimeError, match="BF16 compensation must"):
-        Session(packet)
+        _emit_object(packet, packet.with_suffix(".o"), runtime_library())
 
 
 @pytest.mark.usefixtures("native_toolchain")

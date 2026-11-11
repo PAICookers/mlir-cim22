@@ -146,6 +146,9 @@ jobs:
             -e CMAKE_BUILD_PARALLEL_LEVEL=2 \
             cim22-manylinux bash /io/.github/scripts/build-manylinux.sh
 
+      - name: Check Linux wheel contents
+        run: python3 .github/scripts/check-wheel-contents.py python/dist/manylinux/*.whl
+
       - uses: actions/upload-artifact@v7
         with:
           path: python/dist/manylinux/*.whl
@@ -299,6 +302,9 @@ jobs:
 
       - name: Build Windows wheel with USB support
         run: .github/scripts/build-windows-wheel.ps1 -SdkDir .cache/windows/llvm-sdk -CyapiRoot third_party/cyapi -DistDir python/dist/windows
+
+      - name: Check Windows wheel contents
+        run: python .github/scripts/check-wheel-contents.py (Get-ChildItem python/dist/windows/*.whl).FullName
 
       - uses: actions/upload-artifact@v7
         with:

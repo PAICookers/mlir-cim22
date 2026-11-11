@@ -69,11 +69,12 @@ auditwheel show "$stage_dir"/wheel/*.whl
 auditwheel repair --plat manylinux_2_28_x86_64 --wheel-dir /out \
   "$stage_dir"/wheel/*.whl
 auditwheel show /out/*.whl
+python /io/.github/scripts/check-wheel-contents.py /out/*.whl
 
 # Check native loading on glibc 2.28 without downloading the Python ML stack.
 uv pip install --python /opt/python/cp312-cp312/bin/python --no-deps \
   --target "$stage_dir/installed" /out/*.whl
-readelf -d "$stage_dir/installed/cim22/bin/mlir-cim22-opt" \
+readelf -d "$stage_dir/installed/cim22/bin/"* \
   "$stage_dir/installed/cim22/lib/"*.so > "$stage_dir/native-dynamic.txt"
 if [[ ! -f "$stage_dir/installed/cim22/lib/libcyusb.so" ]] ||
    [[ ! -f "$stage_dir/installed/cim22/share/licenses/cyusb-linux/license.txt" ]]; then
@@ -85,13 +86,14 @@ if grep -E 'NEEDED.*lib(LLVM|MLIR)' "$stage_dir/native-dynamic.txt"; then
   exit 1
 fi
 "$stage_dir/installed/cim22/bin/mlir-cim22-opt" --version
+"$stage_dir/installed/cim22/bin/mlir-cim22-compile" --help
 python - "$stage_dir/installed/cim22/lib" <<'PY'
 import ctypes
 import sys
 from pathlib import Path
 
 libraries = Path(sys.argv[1])
-for name in ("libcim22_runtime.so", "libcim22_compiler.so"):
+for name in ("libcim22_runtime.so",):
     ctypes.CDLL(str(libraries / name))
     print(f"Loaded: {name}")
 PY

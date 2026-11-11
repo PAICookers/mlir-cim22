@@ -257,7 +257,7 @@ uv run --directory python --no-sync pytest \
   覆盖未知字段、缺失/损坏数据、版本/backend、presence、绑定、长度与回读序列；
   它用测试 DSO 验证加载，不代表完成模型数值执行。
 - 编译产物与边界：[test_artifacts.py](../python/tests/test_artifacts.py)、
-  [test_native_compiler.py](../python/tests/test_native_compiler.py)。
+  [test_compile_tool.py](../python/tests/test_compile_tool.py)。
 - 执行计划、布局、packet 或 USB 变更：再运行对应原生 lit/unit 和
   [test_usb_runtime.py](../python/tests/test_usb_runtime.py) 中相关用例。
   原生测试构建选项与完整命令见 BUILDING.md；软件或 fake device 结果不能写成真板验证。
