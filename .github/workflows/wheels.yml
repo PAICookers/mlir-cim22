@@ -222,6 +222,12 @@ jobs:
           echo "LLVM_SDK_SHA256=$(sha256sum llvm-sdk.tar.zst | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
           rm -- llvm-sdk.tar.zst
 
+      - name: Verify Linux CyUSB bundle
+        if: matrix.platform == 'linux'
+        shell: bash
+        working-directory: third_party/cyusb-linux
+        run: sha256sum --check SHA256SUMS
+
       - name: Build Linux wheel in manylinux
         if: matrix.platform == 'linux'
         shell: bash
