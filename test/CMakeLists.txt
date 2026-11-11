@@ -30,20 +30,15 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR})
 # Test assertions must execute even when the compiler is built in Release.
 add_compile_options(-UNDEBUG)
 
-add_executable(mlir-cim22-model-data-test EXCLUDE_FROM_ALL
-  Unit/Execution/ModelDataTest.cpp
-  "${PROJECT_SOURCE_DIR}/runtime/ModelData.cpp"
-  "${PROJECT_BINARY_DIR}/runtime/generated/cim22_model.pb.cc")
-llvm_update_compile_flags(mlir-cim22-model-data-test)
-target_include_directories(mlir-cim22-model-data-test PRIVATE
-  "${PROJECT_SOURCE_DIR}/runtime"
-  "${PROJECT_BINARY_DIR}/runtime/generated")
+add_executable(mlir-cim22-model-artifact-test EXCLUDE_FROM_ALL
+  Unit/Execution/ModelArtifactTest.cpp
+)
+llvm_update_compile_flags(mlir-cim22-model-artifact-test)
 # Keep LLVM Error RTTI in one image: static LLVMSupport copies in a Windows
 # DLL and its test executable have distinct error-class IDs. Python integration
 # tests exercise the runtime DLL's public C ABI separately.
-target_link_libraries(mlir-cim22-model-data-test PRIVATE
-  protobuf::libprotobuf-lite LLVMSupport)
-add_dependencies(mlir-cim22-model-data-test cim22_runtime)
+target_link_libraries(mlir-cim22-model-artifact-test PRIVATE
+  MLIRCIM22RuntimeModel)
 
 add_executable(mlir-cim22-int8-weight-layout-test EXCLUDE_FROM_ALL
   Unit/Support/Int8WeightLayoutTest.cpp
@@ -115,7 +110,7 @@ if(CIM22_ENABLE_USB)
     Unit/Execution/UsbCIMDeviceTest.cpp)
   llvm_update_compile_flags(mlir-cim22-usb-runtime-test)
   target_include_directories(mlir-cim22-usb-runtime-test PRIVATE
-    "${PROJECT_SOURCE_DIR}/runtime")
+    "${PROJECT_SOURCE_DIR}/runtime/include")
   target_link_libraries(mlir-cim22-usb-runtime-test PRIVATE
     cim22_runtime LLVMSupport)
   if(NOT WIN32)
@@ -145,7 +140,7 @@ if(WIN32)
   llvm_update_compile_flags(mlir-cim22-cyapi-driver-test)
   target_include_directories(mlir-cim22-cyapi-driver-test BEFORE PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/Unit/Execution/fake-cyapi"
-    "${PROJECT_SOURCE_DIR}/runtime")
+    "${PROJECT_SOURCE_DIR}/runtime/include")
   target_compile_definitions(mlir-cim22-cyapi-driver-test PRIVATE NOMINMAX)
   target_link_libraries(mlir-cim22-cyapi-driver-test PRIVATE LLVMSupport)
 endif()
@@ -171,7 +166,7 @@ if(TARGET PkgConfig::LIBUSB)
     Unit/Execution/LibusbUsbDriverTest.cpp)
   llvm_update_compile_flags(mlir-cim22-libusb-driver-test)
   target_include_directories(mlir-cim22-libusb-driver-test PRIVATE
-    "${PROJECT_SOURCE_DIR}/runtime"
+    "${PROJECT_SOURCE_DIR}/runtime/include"
     $<TARGET_PROPERTY:PkgConfig::LIBUSB,INTERFACE_INCLUDE_DIRECTORIES>)
   target_link_libraries(mlir-cim22-libusb-driver-test PRIVATE LLVMSupport
     Threads::Threads)
@@ -182,7 +177,7 @@ if(TARGET cim22_usb_driver AND NOT WIN32)
     Unit/Execution/LibcyusbUsbDriverTest.cpp)
   llvm_update_compile_flags(mlir-cim22-libcyusb-driver-test)
   target_include_directories(mlir-cim22-libcyusb-driver-test PRIVATE
-    "${PROJECT_SOURCE_DIR}/runtime"
+    "${PROJECT_SOURCE_DIR}/runtime/include"
     "${CYUSB_INCLUDE_DIR}"
     $<TARGET_PROPERTY:PkgConfig::LIBUSB,INTERFACE_INCLUDE_DIRECTORIES>)
   target_link_libraries(mlir-cim22-libcyusb-driver-test PRIVATE LLVMSupport
@@ -190,9 +185,9 @@ if(TARGET cim22_usb_driver AND NOT WIN32)
   target_compile_options(mlir-cim22-libcyusb-driver-test PRIVATE -fno-rtti)
 endif()
 set(MLIRCIM22_TEST_DEPENDS
-  cim22_compiler
+  mlir-cim22-compile
   check-cim22-protobuf
-  mlir-cim22-model-data-test
+  mlir-cim22-model-artifact-test
   FileCheck
   mlir-runner
   mlir_c_runner_utils

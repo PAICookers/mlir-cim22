@@ -5,7 +5,7 @@
 #include "CIM22/Execution/WeightResidency.h"
 #include "CIM22/Runtime/CIMBoardRunner.h"
 #include "CIM22/Runtime/CIMDevice.h"
-#include "ModelData.h"
+#include "CIM22/Runtime/ModelArtifact.h"
 #include "mlir/ExecutionEngine/CRunnerUtils.h"
 #include <memory>
 #include <mutex>
@@ -14,9 +14,16 @@ namespace cim22::runtime {
 // One loaded model, with per-backend state owned for its execution lifetime.
 // Invoke, USB configuration and capture serialize through mutex.
 struct Session {
-  // Keeps either a JIT engine or an RTLD_LOCAL model DSO alive through invoke.
+  ~Session() {
+    // Release model code before compiler-owned temporary files are removed.
+    runner.reset();
+    device.reset();
+    code.reset();
+  }
+
+  // Keeps the loaded model DSO alive through invoke.
   std::shared_ptr<void> code;
-  ModelData model;
+  ModelArtifact model;
   // Lazily built under the invoke lock. Plans borrow immutable transactions
   // from model and are destroyed before it.
   std::vector<std::optional<::cim22::execution::CIMSoftwareRunner::Plan>>

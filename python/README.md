@@ -2,6 +2,83 @@
 
 `mlir-cim22` 通过 Python entry point 注册 `torch.compile` 后端 `cim22`。PyTorch 是主要接入路径，TensorFlow 通过可选的 `tensorflow` extra 提供。两个前端共用 Linalg 之后的原生编译和 Session 运行时。
 
+## 用户快速开始
+
+下面的命令适合在你自己的应用目录中执行。准备本项目 wheel 和对应平台的
+torch-mlir wheel 后，使用 uv 创建独立环境：
+
+```sh
+uv venv --python 3.12 .venv
+uv pip install --python .venv --index-url https://download.pytorch.org/whl/cpu \
+  "torch>=2.14,<3"
+uv pip install --python .venv \
+  /path/to/torch_mlir-20261101-<platform>.whl \
+  /path/to/mlir_cim22-<version>-<platform>.whl
+```
+
+将下面的代码保存为应用中的 Python 文件并运行。`simulator` 不需要连接板卡，
+首次调用完成模型编译和加载：
+
+```python
+import torch
+
+model = torch.nn.Sequential(
+    torch.nn.Linear(64, 16), torch.nn.ReLU()
+).cpu().eval()
+compiled = torch.compile(
+    model,
+    backend="cim22",
+    fullgraph=True,
+    dynamic=False,
+    options={"runtime": "simulator", "artifact_dir": "artifacts/linear"},
+)
+with torch.inference_mode():
+    output = compiled(torch.ones(1, 64))
+print(output.shape)
+```
+
+连接 CIM 板卡时将运行时改为 `usb`，并传入 `UsbConfig`。完整的设备字段和
+时序配置见 [USB 与 PLL 配置](#usb-与-pll-配置)。TensorFlow 应用在安装项目
+wheel 时加上 extra：
+
+```sh
+uv pip install --python .venv \
+  "/path/to/mlir_cim22-<version>-<platform>.whl[tensorflow]"
+```
+
+仓库提供的可复现实例可以直接运行：
+
+```sh
+./.venv/bin/python /path/to/mlir-pku-cim22/python/examples/torch_compile.py
+./.venv/bin/python /path/to/mlir-pku-cim22/python/examples/tensorflow_compile.py
+```
+
+Windows 将解释器路径替换为 `./.venv/Scripts/python.exe`。示例会在输出目录
+保存模型动态库、编译日志、调试 IR 和 `result.json`。
+
+## 运行仓库测试
+
+源码树测试需要 editable 环境和 LLVM/MLIR。先按 [源码构建说明](../docs/BUILDING.md)
+准备 `MLIR_DIR`。以下命令在仓库的 `python/` 目录执行：
+
+```sh
+uv sync --project . --python 3.12 --locked \
+  --extra web --extra tensorflow \
+  -Ccmake.define.MLIR_DIR="$MLIR_DIR"
+uv run --project . --no-sync pytest
+```
+
+只验证 PyTorch 后端和 TensorFlow 接口时，可以运行：
+
+```sh
+uv run --project . --no-sync pytest \
+  tests/test_backend.py tests/test_tensorflow.py
+```
+
+`tensorflow` extra 会安装 TensorFlow、tf2onnx 和 ONNX。Linux 中如果同一进程
+先加载 TensorFlow，再尝试首次加载 torch-mlir FX，CIM22 会返回可操作的错误，
+建议将两个框架的编译放在独立 Python 进程中。
+
 ## PyTorch backend
 
 ### 最小示例
@@ -78,7 +155,7 @@ def infer(x):
 with compile_tf(infer, options={"runtime": "simulator"}) as compiled:
     y = compiled(tf.ones((1, 64), dtype=tf.int8))
     tf.debugging.assert_equal(y, tf.fill((1, 16), 64))
-    assert compiled.session.dispatch_count > 0
+    assert compiled.session.dispatch_count == 0
 ```
 
 - `compile_tf` 接收带平坦静态 `input_signature` 的无状态 `tf.function`，在返回前冻结权重并完成编译。Keras 调用放在 `tf.function` 内，并传入 `training=False`。
@@ -202,7 +279,7 @@ focused pytest；安装 `[web,tensorflow]` extra 后，再运行 `cim22-web --he
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | PyTorch 捕获、冻结与 AOT 边界   | [backend.py](cim22/backend.py) 和 [test_backend.py](tests/test_backend.py)                                                                    |
 | TF 签名、输出结构与编译进程隔离 | [tensorflow.py](cim22/tensorflow.py)、[_tensorflow_compile.py](cim22/_tensorflow_compile.py) 和 [test_tensorflow.py](tests/test_tensorflow.py) |
-| 原生编译、链接及模型发布        | [compiler.py](cim22/compiler.py)、[test_native_compiler.py](tests/test_native_compiler.py) 和 [test_artifacts.py](tests/test_artifacts.py)     |
+| 原生编译、链接及模型发布        | [compiler.py](cim22/compiler.py)、[test_compile_tool.py](tests/test_compile_tool.py) 和 [test_artifacts.py](tests/test_artifacts.py)     |
 | Session 所有权、USB 与 PLL      | [runtime.py](cim22/runtime.py) 和 [test_usb_runtime.py](tests/test_usb_runtime.py)                                                            |
 
 从仓库根目录运行，TF 用例需要安装 extra。
@@ -213,7 +290,7 @@ cd python
 .venv/bin/python -m pytest tests/test_tensorflow.py
 ```
 
-排查重复编译时使用 `TORCH_LOGS=recompiles`。定位 lowering 或链接问题时，先用 `debug_dir` 保留 IR 和目标文件，再检查安装包加载的原生组件。独立 CMake 构建可用 `CIM22_OPT`、`CIM22_RUNTIME_LIBRARY`、`CIM22_COMPILER_LIBRARY` 指向同一构建的产物，`CIM22_CC` 可指定模型链接工具。
+排查重复编译时使用 `TORCH_LOGS=recompiles`。定位 lowering 或链接问题时，先用 `debug_dir` 保留 IR 和目标文件，再检查安装包加载的原生组件。独立 CMake 构建可用 `CIM22_OPT`、`CIM22_COMPILE_TOOL`、`CIM22_RUNTIME_LIBRARY` 指向同一构建的产物，`CIM22_CC` 可指定模型链接工具。
 
 修改 C++、TableGen、schema 或 CMake 后，复用原构建目录和配置，通过 `uv sync --reinstall-package mlir-cim22` 重装 editable 包。完整命令、Ruff、原生 lit 和 wheel 验收见 [BUILDING 的测试与开发](../docs/BUILDING.md#测试与开发)。软件执行、模拟 USB 配置及实板结果分开记录。
 

@@ -22,7 +22,7 @@ floor(C / B) × ceil(B × t / 40) + ceil((C mod B) × t / 40)
 
 模型加载先验证制品，再逐个解码并释放已消费的序列化 transaction。静态执行计划和驻留身份在首次使用时准备，借用数据的计划须在制品数据之前销毁。
 
-[编译流水线](../../lib/Compiler/Pipelines.cpp) · [原生编译入口](../../compiler/NativeCompiler.cpp) · [模型数据加载](../../runtime/ModelData.cpp)
+[编译流水线](../../lib/Compiler/Pipelines.cpp) · [对象生成工具](../../tools/mlir-cim22-compile/mlir-cim22-compile.cpp) · [模型 artifact 编解码](../../runtime/src/ModelArtifact.cpp)
 
 ### 模拟器状态与静态绑定
 

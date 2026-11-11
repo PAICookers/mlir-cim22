@@ -257,38 +257,35 @@ def runtime_library(library: Path | None = None) -> Path:
     return library.resolve(strict=True)
 
 
-def compiler_library(library: Path) -> Path:
-    """Resolve the compiler adapter used for compilation and raw packet loads.
-
-    Args:
-        library: Runtime library path. The compiler is adjacent unless
-            CIM22_COMPILER_LIBRARY selects a different path.
-
-    Returns:
-        The resolved absolute path.
-
-    Raises:
-        FileNotFoundError: The selected compiler adapter is missing.
-    """
-    configured = os.environ.get("CIM22_COMPILER_LIBRARY")
-    path = (
-        Path(configured)
-        if configured
-        else library.with_name(
-            "cim22_compiler.dll"
-            if os.name == "nt"
-            else "libcim22_compiler.so"
+def compile_tool(tool: Path | None = None) -> Path:
+    """Resolve the packet-to-object compiler executable."""
+    if tool is None:
+        configured = os.environ.get("CIM22_COMPILE_TOOL")
+        tool = (
+            Path(configured)
+            if configured
+            else Path(
+                str(
+                    files("cim22")
+                    / "bin"
+                    / (
+                        "mlir-cim22-compile.exe"
+                        if os.name == "nt"
+                        else "mlir-cim22-compile"
+                    )
+                )
+            )
         )
-    )
-    if not path.is_file():
+    if not tool.is_file():
         raise FileNotFoundError(
-            "Build cim22_compiler or set CIM22_COMPILER_LIBRARY"
+            "CIM22 compile tool not found; set CIM22_COMPILE_TOOL "
+            "to mlir-cim22-compile"
         )
-    return path.resolve(strict=True)
+    return tool.resolve(strict=True)
 
 
 class Session:
-    """Load a compiled native model, or a raw packet for compiler diagnostics.
+    """Load a compiled native model.
 
     Inputs must match the compiled static shapes and FP32/INT8/INT32 dtypes.
     All arrays must be contiguous and aligned in CPU memory.
@@ -304,16 +301,12 @@ class Session:
         num_transactions: Number of static CIM transactions in the model.
     """
 
-    def __init__(
-        self, artifact: Path, library: Path | None = None, entry: str = "main"
-    ) -> None:
-        """Open a native model or a diagnostic packet artifact.
+    def __init__(self, artifact: Path, library: Path | None = None) -> None:
+        """Open a compiled native model.
 
         Args:
-            artifact: Compiled .so/.dll or textual packet IR.
+            artifact: Compiled .so/.dll model.
             library: Optional override for the native execution library.
-            entry: Function name for raw packet IR. A native model supplies
-                its own entry.
 
         Raises:
             FileNotFoundError: The artifact or a required library is missing.
@@ -352,24 +345,17 @@ class Session:
             function.argtypes = args
             function.restype = result
         error = ctypes.create_string_buffer(16384)
+        if artifact.suffix != MODEL_SUFFIX:
+            raise ValueError(
+                f"Session requires a compiled {MODEL_SUFFIX} model, got {artifact}"
+            )
+        loader = lib.cim22_session_load_shared
+        loader.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_size_t,
+        ]
         arguments = [os.fsencode(artifact.resolve(strict=True))]
-        if artifact.suffix == MODEL_SUFFIX:
-            loader = lib.cim22_session_load_shared
-            loader.argtypes = [
-                ctypes.c_char_p,
-                ctypes.c_char_p,
-                ctypes.c_size_t,
-            ]
-        else:
-            self._compiler = _load_library(compiler_library(library))
-            loader = self._compiler.cim22_session_load_packet
-            loader.argtypes = [
-                ctypes.c_char_p,
-                ctypes.c_char_p,
-                ctypes.c_char_p,
-                ctypes.c_size_t,
-            ]
-            arguments.append(entry.encode())
         loader.restype = ctypes.c_void_p
         self._handle = loader(*arguments, error, len(error))
         if not self._handle:

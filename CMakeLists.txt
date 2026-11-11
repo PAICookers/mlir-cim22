@@ -60,7 +60,6 @@ include_directories(${PROJECT_BINARY_DIR}/include)
 add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(runtime)
-add_subdirectory(compiler)
 add_subdirectory(tools)
 
 if(MLIRCIM22_INCLUDE_TESTS)

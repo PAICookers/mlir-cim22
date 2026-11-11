@@ -14,10 +14,10 @@ if ($checksum.Count -ne 2 -or $checksum[0] -notmatch '^[0-9a-fA-F]{64}$' -or
     (Get-FileHash $wheels[0].FullName -Algorithm SHA256).Hash -ne $checksum[0]) {
     throw 'Windows wheel checksum mismatch'
 }
-foreach ($name in @('PYTHONPATH', 'CIM22_OPT', 'CIM22_COMPILER_LIBRARY', 'CIM22_RUNTIME_LIBRARY', 'CIM22_CC', 'LD_LIBRARY_PATH')) {
+foreach ($name in @('PYTHONPATH', 'CIM22_OPT', 'CIM22_COMPILE_TOOL', 'CIM22_RUNTIME_LIBRARY', 'CIM22_CC', 'LD_LIBRARY_PATH')) {
     Remove-Item "Env:$name" -ErrorAction SilentlyContinue
 }
-$workDir = Join-Path ([IO.Path]::GetTempPath()) "cim22-test-$([Guid]::NewGuid())"
+$workDir = Join-Path ([IO.Path]::GetTempPath()) "cim22 test-$([Guid]::NewGuid())"
 New-Item -ItemType Directory $workDir | Out-Null
 try {
     python -m venv "$workDir/venv"

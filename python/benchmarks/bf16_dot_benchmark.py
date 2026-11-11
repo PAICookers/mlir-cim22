@@ -14,7 +14,7 @@ from numpy.typing import NDArray
 
 from benchmarks.build_cases import Case, _linalg
 from cim22.compiler import BF16Compensation, _compile_linalg
-from cim22.runtime import MODEL_SUFFIX, compiler_library, runtime_library
+from cim22.runtime import MODEL_SUFFIX, compile_tool, runtime_library
 
 _CASE = Case("matvec", (64,), (16, 64), (16,))
 _CASES = (
@@ -344,7 +344,7 @@ def main() -> None:
         "numpy": np.__version__,
         "benchmark_sha256": _digest(Path(__file__)),
         "runtime_sha256": _digest(runtime),
-        "compiler_sha256": _digest(compiler_library(runtime)),
+        "compile_tool_sha256": _digest(compile_tool()),
         "results": rows,
     }
     (args.output_dir / "summary.json").write_text(

@@ -1,24 +1,60 @@
 // Execution-only runtime: no MLIR parser, passes, or LLVM JIT.
-#include "CIM22/Execution/Runtime.h"
+#include "CIM22/Runtime/Runtime.h"
 #include "CIM22/Execution/CIMRunner.h"
-#include "CIM22/Execution/ModelABI.h"
+#include "CIM22/Runtime/ModelABI.h"
 #include "CIM22/Runtime/CIMBoardRunner.h"
 #include "CIM22/Runtime/UsbCIMDevice.h"
 #include "Session.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Support/DynamicLibrary.h"
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
 #include <cstring>
+#include <string>
 #include <type_traits>
 #ifdef __linux__
 #include <dlfcn.h>
+#elif defined(_WIN32)
+#include <windows.h>
 #endif
 using cim22::runtime::Session;
 using llvm::SmallVector;
 namespace {
 // Generated tile calls consult the Session bound to their invoking thread.
 thread_local Session *activeSession = nullptr;
+
+#ifdef _WIN32
+std::string windowsError() {
+  char message[256] = {};
+  DWORD length = FormatMessageA(
+      FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr,
+      GetLastError(), 0, message, sizeof(message), nullptr);
+  return length ? std::string(message, length)
+                : "Windows failed to load the model library";
+}
+
+HMODULE loadWindowsLibrary(const char *path, std::string &error) {
+  if (!path) {
+    error = "missing model library path";
+    return nullptr;
+  }
+  int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
+                                  nullptr, 0);
+  if (length <= 0) {
+    error = "model library path is not valid UTF-8";
+    return nullptr;
+  }
+  std::wstring wide(length, L'\0');
+  if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
+                           wide.data(), length)) {
+    error = windowsError();
+    return nullptr;
+  }
+  HMODULE library = LoadLibraryW(wide.c_str());
+  if (!library)
+    error = windowsError();
+  return library;
+}
+#endif
 } // namespace
 
 void cim22::runtime::copyError(llvm::StringRef message, char *buffer,
@@ -44,23 +80,16 @@ extern "C" void *cim22_session_load_shared(const char *path, char *error,
   auto getModel = reinterpret_cast<const CIM22ModelV1 *(*)()>(
       dlsym(library, "cim22_model_v1"));
 #elif defined(_WIN32)
-  using llvm::sys::DynamicLibrary;
   std::string message;
-  auto library =
-      path ? DynamicLibrary::getLibrary(path, &message) : DynamicLibrary();
-  if (!library.isValid()) {
-    cim22::runtime::copyError(path ? message : "missing model library path",
-                              error, capacity);
+  HMODULE library = loadWindowsLibrary(path, message);
+  if (!library) {
+    cim22::runtime::copyError(message, error, capacity);
     return nullptr;
   }
-  // Non-permanent loading lets Session release the DLL before deleting it.
-  session->code = std::shared_ptr<DynamicLibrary>(
-      new DynamicLibrary(library), [](DynamicLibrary *p) {
-        DynamicLibrary::closeLibrary(*p);
-        delete p;
-      });
+  session->code = std::shared_ptr<void>(
+      library, [](void *handle) { FreeLibrary(static_cast<HMODULE>(handle)); });
   auto getModel = reinterpret_cast<const CIM22ModelV1 *(*)()>(
-      library.getAddressOfSymbol("cim22_model_v1"));
+      GetProcAddress(library, "cim22_model_v1"));
 #else
 #error Unsupported native model platform
 #endif
@@ -69,7 +98,7 @@ extern "C" void *cim22_session_load_shared(const char *path, char *error,
     cim22::runtime::copyError("incompatible CIM22 model ABI", error, capacity);
     return nullptr;
   }
-  if (auto failure = cim22::runtime::decodeModelData(
+  if (auto failure = cim22::runtime::decodeModelArtifact(
           {reinterpret_cast<const char *>(model->data), model->data_size},
           session->model)) {
     cim22::runtime::copyError(llvm::toString(std::move(failure)), error,

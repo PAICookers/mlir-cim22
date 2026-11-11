@@ -19,10 +19,10 @@
 | 环节 | 实现与职责 |
 | --- | --- |
 | 生成执行计划 | [CIMExecutable.cpp](../lib/Target/CIMExecutable.cpp)：生成 `CIMTransaction`、静态 packet 与 flit 数据 |
-| 内存表示 | [CIMExecutable.h](../include/CIM22/Execution/CIMExecutable.h)、[ModelData.h](../runtime/ModelData.h)：拥有静态数据，不保存活动设备或输入缓冲区 |
-| 编解码与加载检查 | [ModelData.cpp](../runtime/ModelData.cpp)：`encodeModelData` / `decodeModelData`、`validate` / `validateTransaction` |
-| 嵌入模型 | [NativeCompiler.cpp](../compiler/NativeCompiler.cpp)：生成 dispatch wrapper，嵌入数据和描述符 |
-| 原生 ABI 与加载 | [ModelABI.h](../include/CIM22/Execution/ModelABI.h)、[Runtime.cpp](../runtime/Runtime.cpp)：检查 ABI，解码数据，按 backend 创建或配置 runner |
+| 内存表示 | [CIMExecutable.h](../include/CIM22/Execution/CIMExecutable.h)、[ModelArtifact.h](../include/CIM22/Runtime/ModelArtifact.h)：拥有静态数据，不保存活动设备或输入缓冲区 |
+| 编解码与加载检查 | [ModelArtifact.cpp](../runtime/src/ModelArtifact.cpp)：`encodeModelArtifact` / `decodeModelArtifact`、`validate` / `validateTransaction` |
+| 嵌入模型 | [ObjectEmitter.cpp](../lib/Compiler/ObjectEmitter.cpp)：生成 dispatch wrapper，嵌入数据和描述符 |
+| 原生 ABI 与加载 | [ModelABI.h](../include/CIM22/Runtime/ModelABI.h)、[Runtime.cpp](../runtime/Runtime.cpp)：检查 ABI，解码数据，按 backend 创建或配置 runner |
 | 执行 | [CIMSoftwareRunner.cpp](../lib/Execution/CIMSoftwareRunner.cpp)、[CIMBoardRunner.cpp](../runtime/CIMBoardRunner.cpp)：执行语义或组装实际板端程序，并施加额外约束 |
 | 代码生成 | [runtime/CMakeLists.txt](../runtime/CMakeLists.txt)：生成 C++ 与 Python 测试绑定 |
 
@@ -67,7 +67,7 @@ reference 执行原 PyTorch CPU 算子，忽略 bf16_compensation，不生成 Mo
 `data_type = 2` 在边界只能为 `INT8`、`FP32` 或 `INT32`；CPU、连续布局等内存要求由调用边界检查，
 schema 本身没有 stride/device 字段。
 
-原生 `ModelData.types` 与 `shapes` 必须逐项对应；编译器和解码器都会填写
+原生 `ModelArtifact.types` 与 `shapes` 必须逐项对应；编译器和解码器都会填写
 每个边界 dtype，包括旧 FP32 模型。空类型列表不表示默认 FP32。
 
 `Kernel.kernel_name = 1` 必须非空且在模型内唯一，用于标识与错误定位；
@@ -106,7 +106,7 @@ schema 本身没有 stride/device 字段。
 
 当前路由表示的前三项为 diagonal XY、剩余 X、剩余 Y，后三项为 Copy 路由。
 生产构造与 codec 要求分量在 `[-31, 31]`，当前 Copy 三项为 0；
-**ModelData 加载器仅检查长度和绑定间一致性，不检查这些数值约束**。
+**ModelArtifact 加载器仅检查长度和绑定间一致性，不检查这些数值约束**。
 具体编码由 [CIMPacketCodec.cpp](../lib/Support/CIMPacketCodec.cpp) 与
 [CIMExecutable.cpp](../lib/Target/CIMExecutable.cpp) 负责，不能从字段名另造位域规则。
 
@@ -221,7 +221,7 @@ schema 本身没有 stride/device 字段。
 依赖由 [MLIRCIM22Dependencies.cmake](../cmake/modules/MLIRCIM22Dependencies.cmake)
 固定为 Protobuf/protoc 31.1 配对，runtime 链接 `protobuf::libprotobuf-lite`。
 不要切换成系统 `protoc` 或另加 Buf/gRPC 等构建路径。
-C++ 和 Python 绑定生成在所选 CMake build 目录的 `runtime/generated/` 下；
+C++ 和 Python 绑定生成在所选 CMake build 目录的 `lib/RuntimeModel/generated/` 下；
 Python 仓库副本只用于测试，位于
 [`python/tests/_generated/cim22_model_pb2.py`](../python/tests/_generated/cim22_model_pb2.py)，
 由目标复制更新，不手改。Python 测试依赖见
@@ -257,7 +257,7 @@ uv run --directory python --no-sync pytest \
   覆盖未知字段、缺失/损坏数据、版本/backend、presence、绑定、长度与回读序列；
   它用测试 DSO 验证加载，不代表完成模型数值执行。
 - 编译产物与边界：[test_artifacts.py](../python/tests/test_artifacts.py)、
-  [test_native_compiler.py](../python/tests/test_native_compiler.py)。
+  [test_compile_tool.py](../python/tests/test_compile_tool.py)。
 - 执行计划、布局、packet 或 USB 变更：再运行对应原生 lit/unit 和
   [test_usb_runtime.py](../python/tests/test_usb_runtime.py) 中相关用例。
   原生测试构建选项与完整命令见 BUILDING.md；软件或 fake device 结果不能写成真板验证。
@@ -266,7 +266,7 @@ uv run --directory python --no-sync pytest \
 
 ## 使用时的边界
 
-- `ModelData` 校验覆盖格式、固定长度和绑定引用，不是完整的 target/runner verifier。
+- `ModelArtifact` 校验覆盖格式、固定长度和绑定引用，不是完整的 target/runner verifier。
   USB runner 还检查 core/group、路由范围和返回路由等额外限制；不要只靠
   “Protobuf 解析成功”判断可执行性。
 - schema 接受 `BF16` 不等于已完成实板数值验收。当前 board runner 的 `run`
