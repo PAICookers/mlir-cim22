@@ -8,7 +8,7 @@ $repoDir = (Resolve-Path "$PSScriptRoot/../..").Path
 $DistDir = (Resolve-Path $DistDir).Path
 $wheels = @(Get-ChildItem "$DistDir/*.whl")
 if ($wheels.Count -ne 1) { throw 'Expected exactly one Windows wheel' }
-$checksum = (Get-Content -Raw "$DistDir/SHA256SUMS-windows").Trim() -split '  ', 2
+$checksum = (Get-Content -Raw "$DistDir/$($wheels[0].Name).sha256").Trim() -split '  ', 2
 if ($checksum.Count -ne 2 -or $checksum[0] -notmatch '^[0-9a-fA-F]{64}$' -or
     $checksum[1] -ne $wheels[0].Name -or
     (Get-FileHash $wheels[0].FullName -Algorithm SHA256).Hash -ne $checksum[0]) {

@@ -130,7 +130,7 @@ with os.add_dll_directory(str(libraries)):
         Pop-Location
     }
     $hash = (Get-FileHash $wheels[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-    "$hash  $($wheels[0].Name)" | Set-Content -Encoding ascii "$DistDir/SHA256SUMS-windows"
+    "$hash  $($wheels[0].Name)" | Set-Content -Encoding ascii "$DistDir/$($wheels[0].Name).sha256"
     Write-Host 'Windows native CLI and installed library loading PASS; USB ON; no board validation'
 } finally {
     Remove-Item -Recurse -Force $stageDir

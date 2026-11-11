@@ -47,6 +47,7 @@ printf 'LLVM version: %s\nLLVM commit: %s\nBuild: Release; assertions OFF; X86 s
   "$LLVM_VERSION" "$LLVM_COMMIT" > "$sdk_dir/SDK-INFO.txt"
 ccache --show-stats
 # Tar preserves executable permissions when the SDK crosses artifact jobs.
-tar --use-compress-program='zstd -T2 -3' -cf /out/llvm-sdk.tar.zst -C "$sdk_dir" .
+archive="LLVM-${LLVM_VERSION}-Linux-X64.tar.zst"
+tar --use-compress-program='zstd -T2 -3' -cf "/out/$archive" -C "$sdk_dir" .
 cd /out
-sha256sum llvm-sdk.tar.zst > SHA256SUMS
+sha256sum "$archive" > "$archive.sha256"

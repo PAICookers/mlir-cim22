@@ -25,10 +25,12 @@ jobs:
         include:
           - platform: linux
             runner: ubuntu-24.04
-            artifact-path: .cache/manylinux/sdk-package
+            sdk-package: .cache/manylinux/sdk-package
+            sdk-suffix: Linux-X64.tar.zst
           - platform: windows
             runner: windows-2022
-            artifact-path: .cache/windows/llvm-sdk
+            sdk-package: .cache/windows/sdk-package
+            sdk-suffix: x86_64-pc-windows-msvc.zip
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     steps:
@@ -123,7 +125,7 @@ jobs:
         if: matrix.platform == 'linux'
         shell: bash
         working-directory: .cache/manylinux/sdk-package
-        run: sha256sum --check SHA256SUMS
+        run: sha256sum --check LLVM-*.sha256
 
       - name: Verify Windows SDK
         if: matrix.platform == 'windows'
@@ -140,12 +142,29 @@ jobs:
               throw 'Expected the pinned static Windows LLVM/MLIR SDK'
           }
 
+      - name: Package Windows SDK
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $packageDir = New-Item -ItemType Directory -Force .cache/windows/sdk-package
+          $archive = "LLVM-$env:LLVM_VERSION-x86_64-pc-windows-msvc.zip"
+          # Windows bsdtar supports ZIP64, unlike Compress-Archive's 2 GB limit.
+          tar -a -cf "$packageDir/$archive" -C .cache/windows/llvm-sdk .
+          $hash = (Get-FileHash "$packageDir/$archive" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content -Encoding ascii "$packageDir/$archive.sha256"
+
       - uses: actions/upload-artifact@v7
         with:
-          name: llvm-sdk-${{ matrix.platform }}
-          path: ${{ matrix.artifact-path }}
+          path: ${{ matrix.sdk-package }}/LLVM-${{ env.LLVM_VERSION }}-${{ matrix.sdk-suffix }}
+          archive: false
           if-no-files-found: error
-          compression-level: 0
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ${{ matrix.sdk-package }}/LLVM-${{ env.LLVM_VERSION }}-${{ matrix.sdk-suffix }}.sha256
+          archive: false
+          if-no-files-found: error
           retention-days: 7
 
   build-wheel:
@@ -157,10 +176,12 @@ jobs:
           - platform: linux
             runner: ubuntu-24.04
             sdk-package: .cache/manylinux/sdk-package
+            sdk-suffix: Linux-X64.tar.zst
             dist-dir: manylinux
           - platform: windows
             runner: windows-2022
-            sdk-package: .cache/windows/llvm-sdk
+            sdk-package: .cache/windows/sdk-package
+            sdk-suffix: x86_64-pc-windows-msvc.zip
             dist-dir: windows
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
@@ -174,8 +195,10 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: llvm-sdk-${{ matrix.platform }}
+          pattern: LLVM-${{ env.LLVM_VERSION }}-${{ matrix.sdk-suffix }}*
           path: ${{ matrix.sdk-package }}
+          merge-multiple: true
+          skip-decompress: true
 
       - uses: actions/setup-python@v7
         with:
@@ -216,11 +239,27 @@ jobs:
         run: |
           set -euo pipefail
           cd .cache/manylinux/sdk-package
-          sha256sum --check SHA256SUMS
+          archive="LLVM-${LLVM_VERSION}-Linux-X64.tar.zst"
+          sha256sum --check "$archive.sha256"
           mkdir ../llvm-sdk
-          tar --use-compress-program='zstd -d' -xf llvm-sdk.tar.zst -C ../llvm-sdk
-          echo "LLVM_SDK_SHA256=$(sha256sum llvm-sdk.tar.zst | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
-          rm -- llvm-sdk.tar.zst
+          tar --use-compress-program='zstd -d' -xf "$archive" -C ../llvm-sdk
+          echo "LLVM_SDK_SHA256=$(sha256sum "$archive" | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+          rm -- "$archive"
+
+      - name: Extract shared Windows SDK
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        working-directory: .cache/windows/sdk-package
+        run: |
+          $archive = "LLVM-$env:LLVM_VERSION-x86_64-pc-windows-msvc.zip"
+          $checksum = (Get-Content -Raw "$archive.sha256").Trim() -split '  ', 2
+          if ($checksum.Count -ne 2 -or $checksum[1] -ne $archive -or
+              (Get-FileHash $archive -Algorithm SHA256).Hash -ne $checksum[0]) {
+              throw 'Windows SDK checksum mismatch'
+          }
+          New-Item -ItemType Directory -Force ../llvm-sdk | Out-Null
+          tar -xf $archive -C ../llvm-sdk
+          Remove-Item $archive
 
       - name: Verify Linux CyUSB bundle
         if: matrix.platform == 'linux'
@@ -265,8 +304,15 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: wheel-${{ matrix.platform }}
-          path: python/dist/${{ matrix.dist-dir }}/*
+          path: python/dist/${{ matrix.dist-dir }}/*.whl
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: python/dist/${{ matrix.dist-dir }}/*.whl.sha256
+          archive: false
           if-no-files-found: error
           retention-days: 14
 
@@ -279,15 +325,19 @@ jobs:
           - platform: linux
             runner: ubuntu-22.04
             dist-dir: manylinux
+            wheel-tag: manylinux_2_28_x86_64
           - platform: linux
             runner: ubuntu-24.04
             dist-dir: manylinux
+            wheel-tag: manylinux_2_28_x86_64
           - platform: linux
             runner: ubuntu-26.04
             dist-dir: manylinux
+            wheel-tag: manylinux_2_28_x86_64
           - platform: windows
             runner: windows-2022
             dist-dir: windows
+            wheel-tag: win_amd64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     steps:
@@ -297,8 +347,10 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: wheel-${{ matrix.platform }}
+          pattern: mlir_cim22-*-py3-none-*${{ matrix.wheel-tag }}*.whl*
           path: python/dist/${{ matrix.dist-dir }}
+          merge-multiple: true
+          skip-decompress: true
 
       - uses: actions/setup-python@v7
         with:
@@ -314,16 +366,17 @@ jobs:
         if: matrix.platform == 'linux'
         shell: bash
         working-directory: python/dist/manylinux
-        run: sha256sum --check SHA256SUMS-linux
+        run: sha256sum --check *.whl.sha256
 
       - name: Validate Windows checksum
         if: matrix.platform == 'windows'
         shell: pwsh
         working-directory: python/dist/windows
         run: |
-          $checksum = (Get-Content -Raw SHA256SUMS-windows).Trim() -split '  ', 2
           $wheel = @(Get-ChildItem '*.whl')
-          if ($checksum.Count -ne 2 -or $wheel.Count -ne 1 -or $checksum[1] -ne $wheel[0].Name -or
+          if ($wheel.Count -ne 1) { throw 'Expected exactly one Windows wheel' }
+          $checksum = (Get-Content -Raw "$($wheel[0].Name).sha256").Trim() -split '  ', 2
+          if ($checksum.Count -ne 2 -or $checksum[1] -ne $wheel[0].Name -or
               (Get-FileHash $wheel[0].FullName -Algorithm SHA256).Hash -ne $checksum[0]) {
               throw 'Windows wheel checksum mismatch'
           }

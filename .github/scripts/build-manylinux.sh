@@ -112,4 +112,6 @@ echo "glibc 2.28: installed native CLI and library loading PASS"
   ldd --version | sed -n '1p'
 }
 cd /out
-sha256sum ./*.whl > SHA256SUMS-linux
+for wheel in *.whl; do
+  sha256sum "$wheel" > "$wheel.sha256"
+done

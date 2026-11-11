@@ -170,15 +170,28 @@ cim22/
 
 源码 `python/pyproject.toml` 的版本是当前开发目标，例如 `1.0.0`：
 
-- 分支构建在目标版本后加 `.dev`、提交的 UTC 日期和六位工作流序号（1–999999），例如 `1.0.0.dev20261028000042`。手动运行选择分支时遵循同一规则。
+- 分支构建在目标版本后加 `.dev` 和提交的 UTC 日期，例如 `1.0.0.dev20261028`。手动运行选择分支时遵循同一规则；提交日期相同的多次构建使用相同版本号。
 - 正式构建使用标签版本：源码版本为 `1.0.0` 时推送 `v1.0.0`，生成 `1.0.0`；标签与源码不一致则构建失败。手动运行选择标签时也会核对。
 
 ```text
-mlir_cim22-1.0.0.dev20261028000042-py3-none-manylinux_2_28_x86_64.whl
-mlir_cim22-1.0.0.dev20261028000042-py3-none-win_amd64.whl
+mlir_cim22-1.0.0.dev20261028-py3-none-manylinux_2_28_x86_64.whl
+mlir_cim22-1.0.0.dev20261028-py3-none-win_amd64.whl
 mlir_cim22-1.0.0-py3-none-manylinux_2_28_x86_64.whl
 mlir_cim22-1.0.0-py3-none-win_amd64.whl
 ```
+
+wheel 文件名由 Python 构建工具生成，包含包名、版本和兼容性标签。项目构建的
+LLVM/MLIR 开发 SDK 参考 LLVM 官方包命名：Linux 使用系统与架构名，Windows
+使用开发归档的目标三元组；压缩格式分别为 tar.zst 和 ZIP：
+
+```text
+LLVM-22.1.8-Linux-X64.tar.zst
+LLVM-22.1.8-x86_64-pc-windows-msvc.zip
+```
+
+Actions artifact 直接使用上述文件名，不再额外套一层 ZIP。每个文件配套上传
+`<文件名>.sha256`；下游下载后先校验，再解压 SDK 或安装 wheel。Linux SDK 的
+tar 包保留可执行权限，Windows SDK 使用支持 ZIP64 的系统 tar 打包。
 
 发布时先确认源码版本和测试，再对对应提交创建并推送 `vX.Y.Z` 标签。正式版之后，将源码版本及锁文件中的本项目版本更新到下一个开发目标，再继续合入开发变更。`.dev` 是 Python 预发布版本，排在对应正式版之前；与正式版共享包索引时，通常需要显式选择版本或使用 `pip install --pre`。
 

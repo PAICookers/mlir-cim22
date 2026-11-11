@@ -10,9 +10,7 @@ from pathlib import Path
 RELEASE_VERSION = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 
 
-def wheel_version(
-    base: str, ref_type: str, ref_name: str, date: str, run_number: str
-) -> str:
+def wheel_version(base: str, ref_type: str, ref_name: str, date: str) -> str:
     """Require matching release tags; derive branch snapshots from the target."""
     if not re.fullmatch(RELEASE_VERSION, base):
         raise ValueError("Expected project version X.Y.Z")
@@ -25,9 +23,7 @@ def wheel_version(
     if not re.fullmatch(r"[0-9]{8}", date):
         raise ValueError("Expected commit date YYYYMMDD")
     datetime.strptime(date, "%Y%m%d")
-    if not re.fullmatch(r"[1-9][0-9]{0,5}", run_number):
-        raise ValueError("Expected workflow run number 1..999999")
-    return f"{base}.dev{date}{int(run_number):06d}"
+    return f"{base}.dev{date}"
 
 
 def prepare_wheel(project: Path, version: str) -> None:
@@ -48,7 +44,7 @@ def prepare_wheel(project: Path, version: str) -> None:
 
 
 def main() -> None:
-    """Use the same Git ref, commit date and workflow number on both runners."""
+    """Use the same Git ref and commit UTC date on both runners."""
     root = Path(__file__).resolve().parents[2]
     project = root / "python"
     with (project / "pyproject.toml").open("rb") as metadata:
@@ -62,7 +58,6 @@ def main() -> None:
         os.environ["GITHUB_REF_TYPE"],
         os.environ["GITHUB_REF_NAME"],
         date,
-        os.environ["GITHUB_RUN_NUMBER"],
     )
     prepare_wheel(project, version)
     print(f"Wheel version: {version}")
