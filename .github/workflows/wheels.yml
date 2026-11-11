@@ -268,7 +268,6 @@ jobs:
           name: wheel-${{ matrix.platform }}
           path: python/dist/${{ matrix.dist-dir }}/*
           if-no-files-found: error
-          archive: false
           retention-days: 14
 
   validate-wheel:

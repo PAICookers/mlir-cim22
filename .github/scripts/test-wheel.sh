@@ -24,7 +24,7 @@ curl --fail --location --retry 3 --output "$work_dir/$torch_mlir_wheel" \
   'ml_dtypes==0.6.0' 'pytest>=8.3,<10' 'httpx>=0.28,<1' 'protobuf>=6.31.1'
 "$py" -m pip check
 cp -R "$repo_dir/python/tests" "$work_dir/tests"
-cp "$repo_dir/python/examples"/{torch_compile,tensorflow_compile}.py "$work_dir"
+cp -R "$repo_dir/python/examples" "$work_dir/examples"
 cp "$repo_dir/.github/scripts/validate-installed-wheel.py" "$work_dir"
 cd "$work_dir"
 "$py" validate-installed-wheel.py

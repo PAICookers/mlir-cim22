@@ -33,8 +33,11 @@ cmake.source-dir = ".."
 wheel.packages = ["cim22"]
 wheel.install-dir = "cim22"
 wheel.py-api = "py3"
-wheel.force-include = { "../LICENSE" = "${SKBUILD_METADATA_DIR}/licenses/LICENSE" }
 install.components = ["runtime", "dev"]
+
+[tool.scikit-build.wheel.force-include]
+"../LICENSE" = "${SKBUILD_METADATA_DIR}/licenses/LICENSE"
+"cim22/web/static" = "cim22/web/static"
 
 [tool.uv]
 environments = [

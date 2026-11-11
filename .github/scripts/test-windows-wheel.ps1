@@ -28,8 +28,7 @@ try {
     & $py -m pip install $torchMlir $projectWheel 'ml_dtypes==0.6.0' 'pytest>=8.3,<10' 'httpx>=0.28,<1' 'protobuf>=6.31.1'
     & $py -m pip check
     Copy-Item -Recurse "$repoDir/python/tests" "$workDir/tests"
-    Copy-Item "$repoDir/python/examples/torch_compile.py" "$workDir/torch_compile.py"
-    Copy-Item "$repoDir/python/examples/tensorflow_compile.py" "$workDir/tensorflow_compile.py"
+    Copy-Item -Recurse "$repoDir/python/examples" "$workDir/examples"
     Copy-Item "$repoDir/.github/scripts/validate-installed-wheel.py" "$workDir/validate-installed-wheel.py"
     Push-Location $workDir
     try {

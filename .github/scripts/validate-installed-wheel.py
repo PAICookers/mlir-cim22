@@ -1,7 +1,7 @@
 """Run the platform-neutral installed-wheel validation sequence."""
 
+import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -20,28 +20,44 @@ PYTEST_FILES = (
 
 
 def _run(*arguments: str) -> None:
-    subprocess.run([sys.executable, *arguments], check=True)
+    subprocess.run(
+        [sys.executable, *arguments],
+        check=True,
+        env=os.environ
+        | {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+    )
 
 
 def _check_web_ui() -> None:
-    cli = shutil.which("cim22-web")
-    if cli is None:
+    cli = (
+        Path(sys.prefix)
+        / ("Scripts" if os.name == "nt" else "bin")
+        / ("cim22-web.exe" if os.name == "nt" else "cim22-web")
+    )
+    if not cli.is_file():
         raise RuntimeError("The installed wheel did not provide cim22-web")
-    subprocess.run([cli, "--help"], check=True)
+    subprocess.run(
+        [str(cli), "--help"],
+        check=True,
+        env=os.environ
+        | {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+    )
 
     from cim22.web.app import create_app
     from fastapi.testclient import TestClient
 
     with TemporaryDirectory() as directory:
         root = Path(directory)
-        with TestClient(create_app(root / "data", root / "model")) as client:
+        with TestClient(
+            create_app(root / "data", root / "model"),
+            base_url="http://127.0.0.1",
+        ) as client:
             response = client.get("/")
             response.raise_for_status()
-            assets = re.findall(r'(?:src|href)="(/assets/[^"]+)"', response.text)
-            if not assets:
+            asset = re.search(r'(?:src|href)="(/assets/[^"]+)"', response.text)
+            if asset is None:
                 raise RuntimeError("The wheel does not contain frontend assets")
-            for url in assets:
-                client.get(url).raise_for_status()
+            client.get(asset.group(1)).raise_for_status()
             client.get("/api/state").raise_for_status()
 
 
@@ -54,8 +70,8 @@ def main() -> None:
         raise RuntimeError(f"Expected installed wheel, imported {package}")
     print(f"Installed package: {package}")
 
-    _run("torch_compile.py")
-    _run("tensorflow_compile.py")
+    _run("examples/torch_compile.py")
+    _run("examples/tensorflow_compile.py")
     _run("-m", "pytest", "--import-mode=importlib", "-q", *PYTEST_FILES)
     _check_web_ui()
     print("Installed wheel framework, pytest, and Web UI validation: PASS")
