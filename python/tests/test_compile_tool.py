@@ -108,7 +108,7 @@ try:
     _emit_object(Path(sys.argv[1]), Path(sys.argv[2]),
                  Path(sys.argv[3]))
 except RuntimeError as error:
-    assert 'cannot write object file' in str(error), str(error)
+    assert 'CIM22 object emission failed:' in str(error), str(error)
 else:
     raise AssertionError('native object write failure was swallowed')
 """

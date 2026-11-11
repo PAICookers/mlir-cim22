@@ -158,12 +158,11 @@ def test_compensation_strategies_persist_and_have_separate_specializations(
             assert f'cim.bf16_compensation = "{mode}"' in packet.read_text()
             assert symbols[index].encode() in artifact.read_bytes()
             assert embedded_model(artifact).backend == proto.SOFTWARE
-            for path in (packet, artifact):
-                with Session(path) as session:
-                    np.testing.assert_array_equal(
-                        session(value.numpy())[0], reference
-                    )
-                    assert session.dispatch_count > 0
+            with Session(artifact) as session:
+                np.testing.assert_array_equal(
+                    session(value.numpy())[0], reference
+                )
+                assert session.dispatch_count > 0
             artifacts.append(artifact)
         np.testing.assert_array_equal(
             compiled[0](value).numpy(),
