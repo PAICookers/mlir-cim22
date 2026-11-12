@@ -82,8 +82,9 @@ struct CIMDeviceReadback {
 struct CIMDeviceResponse {
   // May be in packet-completion order. Use outputIndex to locate bindings.
   std::vector<CIMDeviceReadback> readbacks;
-  // False includes manually managed clocks and unavailable optional serial.
-  // True may reuse an earlier verified PLL word in the same open session.
+  // False includes manually managed clocks and commands without echo.
+  // True includes unchanged reuse of the first echoed word. A later unchecked
+  // command is false, even when it has the same value as an earlier word.
   // Entries follow CIMDevicePhase order.
   std::array<bool, 3> pllVerified{};
 };

@@ -10,11 +10,11 @@
 #define CIM22_RUNTIME_USBCIMDEVICE_H
 
 #include "CIM22/Runtime/CIMDevice.h"
-#include "CIM22/Runtime/PLLSerial.h"
 #include "CIM22/Runtime/UsbRecordCodec.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 
@@ -50,8 +50,9 @@ struct UsbCIMDeviceConfig {
   // OUT transfer cap and IN buffer size, in bytes.
   size_t maxTransferBytes = 512;
   size_t receiveChunkBytes = 32 * 1024;
-  // Manual clock when omitted; Linux also permits a missing optional port.
-  std::optional<PLLSerialConfig> pll;
+  // Synchronous phase boundary; omitted means manual clock. Result records
+  // whether the current clock has echo confirmation, not whether it was sent.
+  std::function<llvm::Expected<bool>(CIMDevicePhase)> configureClock;
 };
 
 // Construct a closed device that owns its transport. Call open() before

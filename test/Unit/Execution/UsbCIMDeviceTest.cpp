@@ -1,10 +1,11 @@
 //===- UsbCIMDeviceTest.cpp - CIM22 USB backend tests --------*- C++ -*-===//
 
 #include "CIM22/Runtime/UsbCIMDevice.h"
-#include "CIM22/Runtime/Runtime.h"
 #include "CIM22/Runtime/CIMBoardRunner.h"
 #include "CIM22/Runtime/CIMPacketCodec.h"
+#include "CIM22/Runtime/Runtime.h"
 #include "CIM22/Runtime/UsbRecordCodec.h"
+#include "ClockCallback.h"
 #include "Session.h"
 #include "UsbDriver.h"
 
@@ -24,15 +25,8 @@
 #include <deque>
 #include <memory>
 #include <mutex>
-#ifndef _WIN32
-#include <poll.h>
-#include <pty.h>
-#endif
 #include <string>
 #include <thread>
-#ifndef _WIN32
-#include <unistd.h>
-#endif
 #include <utility>
 #include <vector>
 
@@ -537,7 +531,7 @@ void testWriteFailureIsSticky() {
 }
 
 #ifndef _WIN32
-void testFailedOpenPreservesSessionFault() {
+void testFailedOpenDisablesDispatch() {
   class EarlyFailureDriver final : public FakeUsbDriver {
   public:
     llvm::Expected<size_t> read(llvm::MutableArrayRef<uint8_t>) override {
@@ -563,19 +557,46 @@ void testFailedOpenPreservesSessionFault() {
                                      error.size()) != 0);
   assert(std::string(error.data()).find("startup IN failure") !=
          std::string::npos);
-  assert(session.device && session.device->isFaulted());
-  assert(!session.runner);
-  CIM22PLLConfig pll{};
-  assert(cim22_session_configure_usb_with_pll(&session, &config, &pll,
-                                              error.data(), error.size()) != 0);
-  assert(std::string(error.data()).find("failed before reconfiguration") !=
-         std::string::npos);
   assert(!session.device && !session.runner);
   injectedPlatformDriver = std::make_unique<FakeUsbDriver>();
   assert(cim22_session_configure_usb(&session, &config, error.data(),
                                      error.size()) == 0);
   assert(session.device && session.runner);
   assert(platformFactoryCalls == 2);
+}
+
+void testNativeClockConfiguration() {
+  Session session;
+  session.model.backend = RuntimeBackend::USB;
+  injectedPlatformDriver = std::make_unique<FakeUsbDriver>();
+  CIM22UsbConfig config{};
+  config.vendor_id = 0x1234;
+  config.product_id = 0x5678;
+  config.bus_number = config.device_address = 0xff;
+  config.bulk_in_endpoint = 0x81;
+  config.bulk_out_endpoint = 0x01;
+  config.logical_channel = 2;
+  config.transfer_timeout_ms = 1000;
+  config.receive_poll_timeout_ms = 200;
+  config.response_timeout_ms = 1000;
+  const CIM22HardwareConfig hardware{};
+  std::vector<uint32_t> phases;
+  CIM22ClockControl control{
+      [](void *context, uint32_t phase, uint8_t *verified, char *, size_t) {
+        static_cast<std::vector<uint32_t> *>(context)->push_back(phase);
+        *verified = phase == CIM22_CLOCK_CONFIG;
+        return 0;
+      },
+      &phases};
+  std::array<char, 256> error{};
+  assert(cim22_session_configure_usb_with_clock(&session, &config, &hardware,
+                                                &control, error.data(),
+                                                error.size()) == 0);
+  control = {}; // Configuration copies the function and context pointer.
+  CIMDeviceResponse response;
+  expectSuccess(session.device->execute(makeProgram(), response));
+  assert((phases == std::vector<uint32_t>{0, 1, 2}));
+  assert((response.pllVerified == std::array<bool, 3>{true, false, false}));
 }
 
 #endif
@@ -909,16 +930,27 @@ void testBoardWeightResidency(cim22::execution::CIMDataType dataType) {
   CIMRunOutputs outputs{outputViews};
   auto driver = std::make_unique<FakeUsbDriver>();
   auto *view = driver.get();
-  auto device = detail::createUsbCIMDevice(makeConfig(), std::move(driver));
+  std::vector<CIMDevicePhase> phases;
+  auto config = makeConfig();
+  config.configureClock = [&](CIMDevicePhase phase) -> llvm::Expected<bool> {
+    phases.push_back(phase);
+    return phase == CIMDevicePhase::Configuration;
+  };
+  auto device = detail::createUsbCIMDevice(config, std::move(driver));
   CIMBoardRunner runner(*device, {0, 0, 0, 0, 0});
   expectSuccess(device->open());
 
   auto run = [&](const CIMTransaction &transaction,
                  llvm::ArrayRef<CIMWeightIdentity> identities,
                  BF16Compensation mode = BF16Compensation::None) {
+    const size_t phaseBegin = phases.size();
     const size_t begin = view->writes().size();
     expectSuccess(
         runner.run(transaction, {inputs}, outputs, mode, nullptr, identities));
+    assert(phases.size() == phaseBegin + 3);
+    assert(phases[phaseBegin] == CIMDevicePhase::Configuration);
+    assert(phases[phaseBegin + 1] == CIMDevicePhase::Work);
+    assert(phases[phaseBegin + 2] == CIMDevicePhase::Readback);
     std::vector<uint64_t> flits;
     for (const auto &record : llvm::ArrayRef(view->writes()).drop_front(begin))
       flits.push_back(record.flit);
@@ -964,7 +996,10 @@ void testBoardWeightResidency(cim22::execution::CIMDataType dataType) {
 
   const auto beforeCapture = device->weightStats();
   const size_t beforeCaptureFlits = view->writes().size();
+  const size_t capturePhaseBegin = phases.size();
   auto capture = runner.capture(first, {inputs});
+  assert(phases.size() == capturePhaseBegin + 3);
+  assert((capture->pllVerified == std::array<bool, 3>{true, false, false}));
   assert(capture && capture->readbacks.size() == 1);
   assert(view->writes().size() - beforeCaptureFlits == restored.size());
   assert(device->weightStats().writes == beforeCapture.writes);
@@ -989,226 +1024,59 @@ void testBoardWeightResidency(cim22::execution::CIMDataType dataType) {
   device->close();
 }
 
-void testPLLReuse(const std::array<uint32_t, 3> &words) {
-  using namespace cim22::execution;
-  std::vector<CIMGroup> groups;
-  std::vector<StaticWeightSection> weights;
-  std::vector<DynamicInputBinding> inputs;
-  std::vector<ReadbackBinding> readbacks;
-  for (int64_t core : {0, 1}) {
-    const std::array<int32_t, 6> route{0, static_cast<int32_t>(core), 0, 0, 0,
-                                       0};
-    CIMGroup group{core, {}};
-    for (int64_t macro : {0, 1}) {
-      const int64_t work = 2 * core + macro;
-      group.works.push_back({work, core, macro, route});
-      StaticWeightSection weight;
-      weight.groupId = weight.coreSlot = core;
-      weight.workId = work;
-      weight.macroSlot = macro;
-      weight.route = route;
-      weight.dataType = CIMDataType::BF16;
-      weight.words.resize(256);
-      weights.push_back(std::move(weight));
-      inputs.push_back({core, work, macro, work, CIMDataType::BF16});
-      readbacks.push_back({core, work, macro, 7, route, {}, CIMDataType::BF16});
-    }
-    groups.push_back(std::move(group));
-  }
-  const CIMTransaction transaction("cim22-4x5-v1", 1, 1, std::move(groups),
-                                   std::move(weights), {}, std::move(inputs),
-                                   std::move(readbacks), {});
-  std::array<uint16_t, 64> data{};
-  std::array<CIMInputView, 4> views;
-  views.fill({{}, data});
-  std::vector<std::vector<BatchUsbDriver::Reply>> replies;
-  // Four transactions. Each Macro has two requests and reuses the same keys
-  // as the other Macro. Release the replies in reverse Core order.
-  for (size_t run = 0; run < 4; ++run)
-    for (size_t macro = 0; macro < 2; ++macro) {
-      replies.emplace_back();
-      replies.push_back(
-          {{responseHeader(1, 7), 2 + macro}, {responseHeader(0, 7), macro}});
-    }
+#endif
 
-  int master = -1, slave = -1;
-  char name[128]{};
-  assert(::openpty(&master, &slave, name, nullptr, nullptr) == 0);
-  std::vector<uint32_t> expected;
-  // Reopening must forget the clock; each run follows physical phase changes.
-  for (unsigned session = 0; session < 2; ++session) {
-    std::optional<uint32_t> current;
-    for (unsigned run = 0; run < 2; ++run) {
-      for (uint32_t word : words)
-        if (current != word) {
-          expected.push_back(word);
-          current = word;
-        }
-    }
-  }
-  std::atomic<size_t> echoed{0};
-  std::thread peer([&] {
-    for (uint32_t word : expected) {
-      std::array<uint8_t, 3> bytes{};
-      size_t offset = 0;
-      while (offset < bytes.size()) {
-        pollfd descriptor{master, POLLIN, 0};
-        assert(::poll(&descriptor, 1, 1000) == 1);
-        const ssize_t count =
-            ::read(master, bytes.data() + offset, bytes.size() - offset);
-        assert(count > 0);
-        offset += count;
-      }
-      assert(bytes[0] == (word >> 16) && bytes[1] == ((word >> 8) & 0xff) &&
-             bytes[2] == (word & 0xff));
-      ++echoed;
-      assert(::write(master, bytes.data(), bytes.size()) == 3);
-    }
-  });
+void testClockCallbacks(int failingPhase) {
   auto config = makeConfig();
-  config.pll = PLLSerialConfig{name, words[0], words[1], words[2]};
-  auto device = detail::createUsbCIMDevice(
-      config, std::make_unique<BatchUsbDriver>(std::move(replies)));
-  CIMBoardRunner runner(*device, {0, 0, 0, 0, 0});
-  for (unsigned session = 0; session < 2; ++session) {
-    expectSuccess(device->open());
-    for (unsigned run = 0; run < 2; ++run) {
-      auto response = runner.capture(transaction, {views});
-      assert(response && response->readbacks.size() == 4);
-      assert((response->pllVerified == std::array<bool, 3>{true, true, true}));
-      const std::array<size_t, 4> arrivalOrder{2, 0, 3, 1};
-      for (size_t index = 0; index < arrivalOrder.size(); ++index) {
-        const auto &readback = response->readbacks[index];
-        assert(readback.outputIndex == arrivalOrder[index]);
-        assert(readback.bodyFlits.front() ==
-               (kResponse.front() ^ arrivalOrder[index]));
-      }
-    }
-    device->close();
-  }
-  peer.join();
-  assert(echoed == expected.size());
-  // No additional command may have been sent after the expected prefix.
-  pollfd descriptor{master, POLLIN, 0};
-  assert(::poll(&descriptor, 1, 0) == 0);
-  ::close(master);
-  ::close(slave);
-}
-
-void testThreePLLPhases(bool wrongWorkEcho, bool disconnectSerial = false) {
-  int master = -1, slave = -1;
-  char name[128]{};
-  assert(::openpty(&master, &slave, name, nullptr, nullptr) == 0);
-  char serialDir[] = "/tmp/cim22-pll-XXXXXX";
-  std::string port = name;
-  if (disconnectSerial) {
-    assert(::mkdtemp(serialDir));
-    port = std::string(serialDir) + "/serial";
-    assert(::symlink(name, port.c_str()) == 0);
-  }
-  std::atomic<unsigned> echoed{0};
-  class PhaseDriver final : public FakeUsbDriver {
-  public:
-    PhaseDriver(std::atomic<unsigned> &echoed, const char *disconnectPath)
-        : echoed_(echoed), disconnectPath_(disconnectPath) {}
-    llvm::Expected<size_t> write(llvm::ArrayRef<uint8_t> bytes) override {
-      const size_t before = writes().size();
-      auto count = FakeUsbDriver::write(bytes);
-      if (count && writes().size() != before) {
-        const unsigned expected = disconnectPath_ || writes().size() == 1
-                                      ? 1
-                                      : (writes().size() == 2 ? 2 : 3);
-        assert(echoed_.load() == expected);
-        if (disconnectPath_ && writes().size() == 1)
-          assert(::unlink(disconnectPath_) == 0);
-      }
-      return count;
-    }
-
-  private:
-    std::atomic<unsigned> &echoed_;
-    const char *disconnectPath_;
-  };
-  std::thread peer([&] {
-    const std::array<uint32_t, 3> words{0x2828a4, 0x2c28a4, 0x3028a4};
-    const unsigned phases = disconnectSerial ? 1 : (wrongWorkEcho ? 2 : 3);
-    for (unsigned phase = 0; phase < phases; ++phase) {
-      std::array<uint8_t, 3> bytes{};
-      size_t offset = 0;
-      while (offset < bytes.size()) {
-        pollfd descriptor{master, POLLIN, 0};
-        assert(::poll(&descriptor, 1, 1000) == 1);
-        const ssize_t count =
-            ::read(master, bytes.data() + offset, bytes.size() - offset);
-        assert(count > 0);
-        offset += count;
-      }
-      assert(bytes[0] == (words[phase] >> 16) &&
-             bytes[1] == ((words[phase] >> 8) & 0xff) &&
-             bytes[2] == (words[phase] & 0xff));
-      if (wrongWorkEcho && phase == 1)
-        bytes.back() ^= 1;
-      echoed.store(phase + 1);
-      assert(::write(master, bytes.data(), bytes.size()) == 3);
-    }
-  });
-  auto config = makeConfig();
-  config.pll = PLLSerialConfig{port, 0x2828a4, 0x2c28a4,
-                               disconnectSerial ? 0x2828a4u : 0x3028a4u};
-  auto driver = std::make_unique<PhaseDriver>(
-      echoed, disconnectSerial ? port.c_str() : nullptr);
+  auto driver = std::make_unique<FakeUsbDriver>();
   auto *view = driver.get();
+  std::vector<CIMDevicePhase> phases;
+  const auto caller = std::this_thread::get_id();
+  config.configureClock = [&](CIMDevicePhase phase) -> llvm::Expected<bool> {
+    assert(std::this_thread::get_id() == caller);
+    const auto index = static_cast<size_t>(phase);
+    assert(view->writes().size() == index);
+    phases.push_back(phase);
+    if (static_cast<int>(phase) == failingPhase)
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "injected clock failure");
+    return index == 0;
+  };
   auto device = detail::createUsbCIMDevice(config, std::move(driver));
   expectSuccess(device->open());
   CIMDeviceResponse response;
-  llvm::Error result = device->execute(makeProgram(), response);
-  peer.join();
-  if (wrongWorkEcho) {
-    assert(takeError(std::move(result)).find("PLL echo timed out") !=
+  auto error = device->execute(makeProgram(), response);
+  if (failingPhase >= 0) {
+    assert(takeError(std::move(error)).find("injected clock failure") !=
            std::string::npos);
-    assert(view->writes().size() == 1);
+    assert(view->writes().size() == static_cast<size_t>(failingPhase));
     assert(device->isFaulted());
-    assert(takeError(device->execute(makeProgram(), response))
-               .find("session is faulted") != std::string::npos);
-    assert(view->writes().size() == 1);
-    assert(echoed == 2);
+    const auto calls = phases.size();
+    assert(
+        takeError(device->execute(makeProgram(), response)).find("faulted") !=
+        std::string::npos);
+    assert(phases.size() == calls);
   } else {
-    expectSuccess(std::move(result));
-    assert((response.pllVerified ==
-            std::array<bool, 3>{true, !disconnectSerial, !disconnectSerial}));
+    expectSuccess(std::move(error));
+    assert(phases.size() == 3);
+    assert((response.pllVerified == std::array<bool, 3>{true, false, false}));
+    assert(view->writes().size() == 4);
   }
   device->close();
-  ::close(master);
-  ::close(slave);
-  if (disconnectSerial)
-    assert(::rmdir(serialDir) == 0);
 }
 
-void testMissingPLLUsesManualClock() {
-  auto config = makeConfig();
-  config.pll = PLLSerialConfig{"/missing-cim22-pll-device", 0x2828a4, 0x2828a4,
-                               0x2828a4};
-  auto device =
-      detail::createUsbCIMDevice(config, std::make_unique<FakeUsbDriver>());
-  expectSuccess(device->open());
-  CIMDeviceResponse response;
-  expectSuccess(device->execute(makeProgram(), response));
-  assert((response.pllVerified == std::array<bool, 3>{false, false, false}));
-  device->close();
-}
-
-#endif
-
-void testNativePLLExtensionValidation() {
+void testNativeClockValidation() {
   Session session;
   session.model.backend = RuntimeBackend::USB;
   CIM22UsbConfig config{};
-  CIM22PLLConfig pll{"/missing-cim22-pll-device", 0x1000000, 0x2828a4,
-                     0x2828a4};
+  CIM22ClockControl clock{};
+  const CIM22HardwareConfig hardware{};
   std::array<char, 256> error{};
-  assert(cim22_session_configure_usb_with_pll(&session, &config, &pll,
-                                              error.data(), error.size()) != 0);
-  assert(std::string(error.data()).find("three bytes") != std::string::npos);
+  assert(cim22_session_configure_usb_with_clock(&session, &config, &hardware,
+                                                &clock, error.data(),
+                                                error.size()) != 0);
+  assert(std::string(error.data()).find("missing CIM22 clock callback") !=
+         std::string::npos);
   assert(!session.device);
 }
 
@@ -1343,6 +1211,41 @@ void testCloseRetainsLateDataBetweenReads() {
 }
 } // namespace
 
+// Test-only ABI entry exercises ctypes -> production adapter -> USB phases.
+#ifdef CIM22_CLOCK_FIXTURE
+#ifdef _WIN32
+#define CIM22_TEST_EXPORT __declspec(dllexport)
+#else
+#define CIM22_TEST_EXPORT __attribute__((visibility("default")))
+#endif
+extern "C" CIM22_TEST_EXPORT int
+cim22_test_clock(const CIM22ClockControl *clock, uint8_t *verified,
+                 uint32_t *writes, char *error, size_t capacity) {
+  auto config = makeConfig();
+  config.configureClock = detail::makeClockCallback(clock);
+  auto driver = std::make_unique<FakeUsbDriver>();
+  auto *view = driver.get();
+  auto device = detail::createUsbCIMDevice(config, std::move(driver));
+  CIMDeviceResponse response;
+  auto result = device->open();
+  if (!result)
+    result = device->execute(makeProgram(), response);
+  *writes = static_cast<uint32_t>(view->writes().size());
+  for (size_t index = 0; index < 3; ++index)
+    verified[index] = response.pllVerified[index];
+  device->close();
+  if (result) {
+    const auto message = llvm::toString(std::move(result));
+    if (capacity) {
+      const size_t length = std::min(message.size(), capacity - 1);
+      std::copy_n(message.data(), length, error);
+      error[length] = 0;
+    }
+    return 1;
+  }
+  return 0;
+}
+#else
 int main() {
   testSupplierInteractionDefaults();
   testRecordCodecResidualBytes();
@@ -1356,7 +1259,8 @@ int main() {
   testWriteFailureIsSticky();
   testExplicitReopenAfterFault();
 #ifndef _WIN32
-  testFailedOpenPreservesSessionFault();
+  testFailedOpenDisablesDispatch();
+  testNativeClockConfiguration();
 #endif
   testRejectsUnsolicitedAndOverflowResponses();
   testRejectsInvalidTransferConfig();
@@ -1370,17 +1274,13 @@ int main() {
 #ifndef _WIN32
   testBoardWeightResidency(cim22::execution::CIMDataType::Int8);
   testBoardWeightResidency(cim22::execution::CIMDataType::BF16);
-  testThreePLLPhases(false);
-  testThreePLLPhases(true);
-  testThreePLLPhases(false, true);
-  testPLLReuse({0x2828a4, 0x2828a4, 0x2828a4});
-  testPLLReuse({0x2828a4, 0x2c28a4, 0x3028a4});
-  testPLLReuse({0x2828a4, 0x2828a4, 0x2c28a4});
-  testPLLReuse({0x2828a4, 0x2c28a4, 0x2828a4});
-  testMissingPLLUsesManualClock();
 #endif
-  testNativePLLExtensionValidation();
+  testNativeClockValidation();
+  for (int phase : {-1, 0, 1, 2})
+    testClockCallbacks(phase);
   testReceiveFailureStopsLaterChunks();
   testCloseRetainsLateDataBetweenReads();
   return 0;
 }
+
+#endif

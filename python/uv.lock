@@ -424,6 +424,7 @@ version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
+    { name = "pyserial" },
     { name = "torch" },
     { name = "torch-mlir", version = "20261101", source = { url = "https://github.com/llvm/torch-mlir/releases/download/v20261101/torch_mlir-20261101-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }, marker = "sys_platform != 'win32'" },
     { name = "torch-mlir", version = "20261101", source = { url = "https://github.com/llvm/torch-mlir/releases/download/v20261101/torch_mlir-20261101-cp312-abi3-win_amd64.whl" }, marker = "sys_platform == 'win32'" },
@@ -454,6 +455,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.115,<1" },
     { name = "numpy", specifier = ">=1.26,<3" },
     { name = "onnx", marker = "extra == 'tensorflow'", specifier = ">=1.21.0,<2" },
+    { name = "pyserial", specifier = ">=3.5,<4" },
     { name = "spikingjelly", marker = "extra == 'web'", specifier = ">=0.0.0.0.12,<1" },
     { name = "tensorflow", marker = "extra == 'tensorflow'", specifier = "==2.20.0" },
     { name = "tf2onnx", marker = "extra == 'tensorflow'", specifier = "==1.17.0" },
@@ -649,6 +651,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e4/11/b213bebff182584360cb8d17c72c1677fec5c5c228de439e63bcf8ab1c8f/pyparsing-3.3.3.tar.gz", hash = "sha256:928ae7e20211f3b6f3915a72f06a0cfd29ab9d24279dd6346b6b1a7146397d36", size = 1050487, upload-time = "2026-09-20T20:59:05.609Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/38/bb/d215ee7c73b61497b28a5503f9f53523f294fcc936762b7caf90e0c1c2b5/pyparsing-3.3.3-py3-none-any.whl", hash = "sha256:ece8c00a69cf01b45d0b1dedabb469c90d8caf996d4fda40f147627a122849a4", size = 126420, upload-time = "2026-09-20T20:59:04.025Z" },
+]
+
+[[package]]
+name = "pyserial"
+version = "3.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1e/7d/ae3f0a63f41e4d2f6cb66a5b57197850f919f59e558159a4dd3a818f5082/pyserial-3.5.tar.gz", hash = "sha256:3c77e014170dfffbd816e6ffc205e9842efb10be9f58ec16d3e8675b4925cddb", size = 159125, upload-time = "2020-11-23T03:59:15.045Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/07/bc/587a445451b253b285629263eb51c2d8e9bcea4fc97826266d186f96f558/pyserial-3.5-py2.py3-none-any.whl", hash = "sha256:c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0", size = 90585, upload-time = "2020-11-23T03:59:13.41Z" },
 ]
 
 [[package]]

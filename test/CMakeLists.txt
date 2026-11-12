@@ -113,9 +113,6 @@ if(CIM22_ENABLE_USB)
     "${PROJECT_SOURCE_DIR}/runtime/include")
   target_link_libraries(mlir-cim22-usb-runtime-test PRIVATE
     cim22_runtime LLVMSupport)
-  if(NOT WIN32)
-    target_link_libraries(mlir-cim22-usb-runtime-test PRIVATE util)
-  endif()
   if(WIN32)
     # The fake driver exchanges llvm::Error with USB internals. Static LLVM
     # type IDs are distinct across Windows DLLs, so keep this C++ test seam
@@ -123,13 +120,31 @@ if(CIM22_ENABLE_USB)
     target_sources(mlir-cim22-usb-runtime-test PRIVATE
       "${PROJECT_SOURCE_DIR}/runtime/UsbCIMDevice.cpp"
       "${PROJECT_SOURCE_DIR}/runtime/UsbRecordCodec.cpp"
-      "${PROJECT_SOURCE_DIR}/runtime/PLLSerial.cpp"
       "${PROJECT_SOURCE_DIR}/lib/Support/CIMPacketCodec.cpp")
   endif()
   if(MSVC)
     target_compile_options(mlir-cim22-usb-runtime-test PRIVATE /GR-)
   else()
     target_compile_options(mlir-cim22-usb-runtime-test PRIVATE -fno-rtti)
+  endif()
+endif()
+if(CIM22_ENABLE_USB)
+  add_library(mlir-cim22-clock-callback-fixture SHARED EXCLUDE_FROM_ALL
+    Unit/Execution/UsbCIMDeviceTest.cpp
+    "${PROJECT_SOURCE_DIR}/runtime/UsbCIMDevice.cpp"
+    "${PROJECT_SOURCE_DIR}/runtime/UsbRecordCodec.cpp"
+    "${PROJECT_SOURCE_DIR}/lib/Support/CIMPacketCodec.cpp")
+  llvm_update_compile_flags(mlir-cim22-clock-callback-fixture)
+  target_include_directories(mlir-cim22-clock-callback-fixture PRIVATE
+    "${PROJECT_SOURCE_DIR}/runtime/include")
+  target_compile_definitions(mlir-cim22-clock-callback-fixture PRIVATE
+    CIM22_CLOCK_FIXTURE)
+  target_link_libraries(mlir-cim22-clock-callback-fixture PRIVATE
+    cim22_runtime LLVMSupport)
+  if(MSVC)
+    target_compile_options(mlir-cim22-clock-callback-fixture PRIVATE /GR-)
+  else()
+    target_compile_options(mlir-cim22-clock-callback-fixture PRIVATE -fno-rtti)
   endif()
 endif()
 if(WIN32)
@@ -143,23 +158,6 @@ if(WIN32)
     "${PROJECT_SOURCE_DIR}/runtime/include")
   target_compile_definitions(mlir-cim22-cyapi-driver-test PRIVATE NOMINMAX)
   target_link_libraries(mlir-cim22-cyapi-driver-test PRIVATE LLVMSupport)
-endif()
-if(CIM22_ENABLE_USB)
-  add_executable(mlir-cim22-pll-serial-test EXCLUDE_FROM_ALL
-    Unit/Execution/PLLSerialTest.cpp
-    "${PROJECT_SOURCE_DIR}/runtime/PLLSerial.cpp")
-  llvm_update_compile_flags(mlir-cim22-pll-serial-test)
-  # Keep LLVM error objects within this executable on both platforms.
-  target_link_libraries(mlir-cim22-pll-serial-test PRIVATE LLVMSupport
-    Threads::Threads)
-  if(NOT WIN32)
-    target_link_libraries(mlir-cim22-pll-serial-test PRIVATE util)
-  endif()
-  if(MSVC)
-    target_compile_options(mlir-cim22-pll-serial-test PRIVATE /GR-)
-  else()
-    target_compile_options(mlir-cim22-pll-serial-test PRIVATE -fno-rtti)
-  endif()
 endif()
 if(TARGET PkgConfig::LIBUSB)
   add_executable(mlir-cim22-libusb-driver-test EXCLUDE_FROM_ALL
@@ -205,9 +203,6 @@ set(MLIRCIM22_TEST_DEPENDS
 )
 if(TARGET mlir-cim22-usb-runtime-test)
   list(APPEND MLIRCIM22_TEST_DEPENDS mlir-cim22-usb-runtime-test)
-endif()
-if(TARGET mlir-cim22-pll-serial-test)
-  list(APPEND MLIRCIM22_TEST_DEPENDS mlir-cim22-pll-serial-test)
 endif()
 if(TARGET mlir-cim22-libusb-driver-test)
   list(APPEND MLIRCIM22_TEST_DEPENDS mlir-cim22-libusb-driver-test)

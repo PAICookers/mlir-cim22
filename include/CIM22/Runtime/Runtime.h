@@ -29,13 +29,22 @@ typedef struct CIM22UsbConfig {
   uint32_t receive_poll_timeout_ms;
   uint32_t response_timeout_ms;
 } CIM22UsbConfig;
-// Separate extension with packed 24-bit PLL words in phase order.
-typedef struct CIM22PLLConfig {
-  const char *port;
-  uint32_t configuration_word;
-  uint32_t work_word;
-  uint32_t readback_word;
-} CIM22PLLConfig;
+// Invoked synchronously before the first USB command in each phase.
+typedef enum CIM22ClockPhase {
+  CIM22_CLOCK_CONFIG = 0,
+  CIM22_CLOCK_WORK = 1,
+  CIM22_CLOCK_READBACK = 2
+} CIM22ClockPhase;
+// Return zero on success, nonzero with an optional NUL-terminated diagnostic
+// on failure. Set echo_verified only when the current clock was echo-confirmed.
+// The callback must not reenter the same Session.
+typedef int (*CIM22ClockCallback)(void *context, uint32_t phase,
+                                  uint8_t *echo_verified, char *error,
+                                  size_t capacity);
+typedef struct CIM22ClockControl {
+  CIM22ClockCallback callback;
+  void *context;
+} CIM22ClockControl;
 // Board pacing in milliseconds. Zero skips a delay. Start-up gives the
 // receive path time to settle. The remaining delays follow the completed
 // operation. The Work and selection delays each cover an entire batch.
@@ -70,16 +79,15 @@ int cim22_session_invoke(void *session, void **buffers, const int64_t *counts,
 // Returns nonzero on configuration or transport failure.
 int cim22_session_configure_usb(void *session, const CIM22UsbConfig *config,
                                 char *error, size_t error_capacity);
-// A null PLL config or null/empty port selects a manually managed clock.
-// Linux also permits a missing port; Windows rejects nonempty serial ports.
-int cim22_session_configure_usb_with_pll(void *session,
-                                         const CIM22UsbConfig *config,
-                                         const CIM22PLLConfig *pll, char *error,
-                                         size_t error_capacity);
-// Uses the supplied pacing configuration, copied during configuration.
-int cim22_session_configure_usb_with_hardware(
-    void *session, const CIM22UsbConfig *config, const CIM22PLLConfig *pll,
-    const CIM22HardwareConfig *hardware, char *error, size_t error_capacity);
+// Copies hardware and clock-control values. Null clock selects manual clock.
+// The caller owns callback/context until replacement or Session destruction.
+// Early validation failures retain the previous device. Once replacement
+// starts, failures leave dispatch disabled and do not retain the new callback.
+int cim22_session_configure_usb_with_clock(void *session,
+                                           const CIM22UsbConfig *config,
+                                           const CIM22HardwareConfig *hardware,
+                                           const CIM22ClockControl *clock,
+                                           char *error, size_t error_capacity);
 int64_t cim22_session_num_readbacks(void *session, int64_t transaction);
 // Capture one USB transaction with BF16 input bits in binding order (64 per
 // input). Returns one header and six raw body flits per readback, in binding

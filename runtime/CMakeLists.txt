@@ -87,7 +87,7 @@ set(_cim22_runtime_sources Runtime.cpp CIMBoardRunner.cpp)
 if(CIM22_ENABLE_USB)
   find_package(Threads REQUIRED)
   list(APPEND _cim22_runtime_sources UsbCIMDevice.cpp UsbRecordCodec.cpp
-       ${_cim22_usb_driver_source} PLLSerial.cpp)
+       ${_cim22_usb_driver_source})
 endif()
 add_library(cim22_runtime SHARED ${_cim22_runtime_sources}
   $<TARGET_OBJECTS:obj.MLIRCIM22Execution>
