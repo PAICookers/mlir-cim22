@@ -139,8 +139,9 @@ class UsbConfig:
         receive_poll_timeout_ms: Poll timeout for the USB receive loop.
         response_timeout_ms: Deadline for collecting one Macro readback batch.
         pll: Optional serial PLL words, one per phase.
-        clock_frequency_mhz: Optional table target in MHz for all three phases.
-            Mutually exclusive with pll.
+        clock_frequency_mhz: Optional frequency in MHz for configuration, work
+            and readback. Unlisted values use the nearest available table
+            frequency with a warning. Mutually exclusive with pll.
         pll_port: Optional Linux serial path for clock_frequency_mhz. Without
             it the caller sets the clock manually.
         timing: Board startup and operation pacing.

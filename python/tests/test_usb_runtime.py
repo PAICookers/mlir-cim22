@@ -608,8 +608,6 @@ def test_frequency_without_serial_keeps_manual_clock(
         ({"pll_port": "/dev/pll"}, "requires clock_frequency_mhz"),
         ({"clock_frequency_mhz": 24, "pll_port": ""}, "pll_port"),
         ({"clock_frequency_mhz": 24, "pll_port": "a\0b"}, "pll_port"),
-        ({"clock_frequency_mhz": True}, "not a listed target"),
-        ({"clock_frequency_mhz": 26}, "not a listed target"),
     ],
 )
 def test_frequency_usb_configuration_validation(

@@ -195,7 +195,9 @@ config = UsbConfig(
 )
 ```
 
-按实际 FPGA/FX3 固件设置 VID/PID、端点和接口。Linux 为对应设备配置 USB 访问权限，Windows 使用 CyAPI 与 CyUSB3 驱动。上述配置使用手动时钟。Linux 如需自动配置，传入 `clock_frequency_mhz` 与实际 `pll_port`，或使用 `PLLConfig` 指定三个阶段的命令。频率选择和设备字段校验见 [pll.py](cim22/pll.py) 和 [runtime.py](cim22/runtime.py)。
+按实际 FPGA/FX3 固件设置 VID/PID、端点和接口。Linux 为对应设备配置 USB 访问权限，Windows 使用 CyAPI 与 CyUSB3 驱动。上述配置使用手动时钟。Linux 如需通过串口配置时钟，传入 `clock_frequency_mhz=24` 与实际 `pll_port`，表示写入、计算、回读三个阶段均使用 24 MHz；需要分阶段使用不同频率时，用 `PLLConfig` 指定三个阶段的命令。未列出的频率按实际频率选择最近的 `available` 表项，距离相同时选较低频率，并通过 `RuntimeWarning` 告知请求频率、选中频率及串口命令；`available` 是供应方表中的分类，不代表本次实板稳定性验证。
+
+`session.configure_usb()` 打开设备；串口命令在执行 transaction 的阶段边界发送并校验回显。同一 USB Session 内已校验的相同命令会复用，不会在每个阶段重复发送。仅传频率而不传串口不会配置板卡，Linux 串口设备缺失时也保留手动时钟行为，因此记录请求频率不能作为串口配置成功的证据。频率选择和设备字段校验见 [pll.py](cim22/pll.py) 和 [runtime.py](cim22/runtime.py)。
 
 `UsbConfig.timing` 统一管理板卡时序：`startup_delay_ms`、
 `cache_write_delay_ms`、`weight_write_delay_ms`、`work_delay_ms` 和
