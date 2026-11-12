@@ -1,6 +1,7 @@
 """Check native files required by the installed CIM22 wheel."""
 
 import sys
+from email.parser import BytesParser
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -11,28 +12,45 @@ def main() -> None:
     wheel = Path(sys.argv[1])
     with ZipFile(wheel) as archive:
         names = set(archive.namelist())
+        metadata = [
+            name for name in names if name.endswith(".dist-info/METADATA")
+        ]
+        if len(metadata) != 1:
+            raise SystemExit("Wheel must contain exactly one METADATA file")
+        fields = BytesParser().parsebytes(archive.read(metadata[0]))
+        # scikit-build-core emits this normalized spelling for our dependency.
+        if "pyserial<4,>=3.5" not in fields.get_all("Requires-Dist", []):
+            raise SystemExit("Wheel must declare pyserial>=3.5,<4")
     windows = "win_amd64" in wheel.name
     required = {
-        "cim22/bin/mlir-cim22-opt.exe" if windows else "cim22/bin/mlir-cim22-opt",
+        "cim22/_pll_serial.py",
+        "cim22/bin/mlir-cim22-opt.exe"
+        if windows
+        else "cim22/bin/mlir-cim22-opt",
         "cim22/bin/mlir-cim22-compile.exe"
         if windows
         else "cim22/bin/mlir-cim22-compile",
-        "cim22/lib/cim22_runtime.dll" if windows else "cim22/lib/libcim22_runtime.so",
+        "cim22/lib/cim22_runtime.dll"
+        if windows
+        else "cim22/lib/libcim22_runtime.so",
     }
-    required.add("cim22/lib/cim22_runtime.lib" if windows else "cim22/lib/libcyusb.so")
+    required.add(
+        "cim22/lib/cim22_runtime.lib" if windows else "cim22/lib/libcyusb.so"
+    )
     missing = sorted(required - names)
     if missing:
         raise SystemExit(f"Wheel is missing: {', '.join(missing)}")
     forbidden = {
         name
         for name in names
-        if name.endswith(
+        if name.startswith("serial/")
+        or name.endswith(
             ("cim22_compiler.dll", "cim22_compiler.lib", "libcim22_compiler.so")
         )
     }
     if forbidden:
         raise SystemExit(
-            f"Wheel contains retired compiler libraries: {sorted(forbidden)}"
+            f"Wheel contains retired compiler libraries or vendored serial: {sorted(forbidden)}"
         )
     print(f"Wheel contents: {wheel.name}: PASS")
 
