@@ -6,7 +6,7 @@ build-backend = "scikit_build_core.build"
 name = "mlir-cim22"
 version = "1.0.0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["numpy>=1.26,<3", "torch>=2.14,<3", "torch-mlir"]
+dependencies = ["numpy>=1.26,<3", "pyserial>=3.5,<4", "torch>=2.14,<3", "torch-mlir"]
 
 [project.optional-dependencies]
 web = ["fastapi>=0.115,<1", "spikingjelly>=0.0.0.0.12,<1", "uvicorn>=0.34,<1"]

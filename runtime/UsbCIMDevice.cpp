@@ -138,21 +138,12 @@ public:
         if (!receiveError_.empty())
           return usbError(receiveError_);
       }
-      if (!config_.pll)
-        return llvm::Error::success();
-      const auto &pll = *config_.pll;
-      const std::array<uint32_t, 3> words{pll.configurationWord, pll.workWord,
-                                          pll.readbackWord};
-      const size_t index = static_cast<size_t>(phase);
-      if (verifiedPLLWord_ == words[index]) {
-        response.pllVerified[index] = true;
-        return llvm::Error::success();
+      if (config_.configureClock) {
+        auto verified = config_.configureClock(phase);
+        if (!verified)
+          return verified.takeError();
+        response.pllVerified[static_cast<size_t>(phase)] = *verified;
       }
-      auto verified = configurePLL(*config_.pll, phase);
-      if (!verified)
-        return verified.takeError();
-      verifiedPLLWord_ = *verified ? std::optional(words[index]) : std::nullopt;
-      response.pllVerified[index] = *verified;
       return llvm::Error::success();
     };
     if (llvm::Error error = configurePhase(CIMDevicePhase::Configuration))
@@ -253,8 +244,6 @@ private:
         config_.receiveChunkBytes == 0 || config_.transferTimeoutMs == 0 ||
         config_.receivePollTimeoutMs == 0 || config_.responseTimeoutMs == 0)
       return usbError("CIM USB transfer sizes and timeouts must be non-zero");
-    if (config_.pll)
-      return validatePLLSerialConfig(*config_.pll);
     return llvm::Error::success();
   }
 
@@ -450,7 +439,6 @@ private:
   // After a transport fault the chip's last completed operation is unknown.
   // Forget cached state and block further execute calls until open.
   llvm::Error fault(std::string message) {
-    verifiedPLLWord_.reset();
     weightResidency_.clear();
     faulted_ = true;
     faultMessage_ = std::move(message);
@@ -522,7 +510,6 @@ private:
   }
 
   void closeUnlocked() {
-    verifiedPLLWord_.reset();
     weightResidency_.clear();
     {
       std::lock_guard<std::mutex> lock(receiveMutex_);
@@ -556,9 +543,6 @@ private:
   }
 
   UsbCIMDeviceConfig config_;
-  // The PLL is one physical register. Cache only its current successfully
-  // verified word, so a phase change cannot be skipped accidentally.
-  std::optional<uint32_t> verifiedPLLWord_;
   execution::CIMWeightResidency weightResidency_;
   std::unique_ptr<detail::UsbDriver> driver_;
   std::mutex executionMutex_;

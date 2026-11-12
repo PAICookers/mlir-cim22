@@ -16,11 +16,11 @@ import torch
 from torch._dynamo.exc import BackendCompilerFailed
 
 from cim22 import CIMTimingConfig, PLLConfig, Session, UsbConfig
+from cim22._pll_serial import ClockControl, ClockResources
 from cim22.runtime import (
     MODEL_SUFFIX,
     _HardwareConfig,
     _initialize_session,
-    _PLLConfig,
     _release_session,
     _UsbConfig,
 )
@@ -135,20 +135,23 @@ def test_usb_defaults_preserve_legacy_usb_abi(
     assert _UsbConfig.response_timeout_ms.offset == 24
 
 
-@pytest.fixture
-def mock_usb_session() -> tuple[Session, Mock, Mock]:
+def _make_mock_usb_session() -> tuple[Session, Mock, Mock]:
     session = Session.__new__(Session)
     session._lock = threading.RLock()
     session._handle = 123
+    session._clock_resources = ClockResources()
     legacy = Mock(return_value=0)
-    with_pll = Mock(return_value=0)
     hardware = Mock(return_value=0)
     session._library = SimpleNamespace(
         cim22_session_configure_usb=legacy,
-        cim22_session_configure_usb_with_pll=with_pll,
-        cim22_session_configure_usb_with_hardware=hardware,
+        cim22_session_configure_usb_with_clock=hardware,
     )
     return session, legacy, hardware
+
+
+@pytest.fixture
+def mock_usb_session() -> tuple[Session, Mock, Mock]:
+    return _make_mock_usb_session()
 
 
 @pytest.mark.parametrize("failure", [False, True])
@@ -234,9 +237,10 @@ def test_hardware_timing_reaches_native_configuration() -> None:
     session = Session.__new__(Session)
     session._lock = threading.RLock()
     session._handle = 123
+    session._clock_resources = ClockResources()
     configure = Mock(return_value=0)
     session._library = SimpleNamespace(
-        cim22_session_configure_usb_with_hardware=configure,
+        cim22_session_configure_usb_with_clock=configure,
     )
     config = UsbConfig(
         0x1234,
@@ -254,7 +258,7 @@ def test_hardware_timing_reaches_native_configuration() -> None:
     session.configure_usb(config)
     configure.assert_called_once()
     native = ctypes.cast(
-        configure.call_args.args[3], ctypes.POINTER(_HardwareConfig)
+        configure.call_args.args[2], ctypes.POINTER(_HardwareConfig)
     )
     assert [
         native.contents.startup_delay_ms,
@@ -275,28 +279,15 @@ def test_optional_pll_commands_reach_separate_native_config(
     legacy.assert_not_called()
     with_hardware.assert_called_once()
     native = ctypes.cast(
-        with_hardware.call_args.args[2], ctypes.POINTER(_PLLConfig)
+        with_hardware.call_args.args[3], ctypes.POINTER(ClockControl)
     )
-    assert native.contents.port == os.fsencode(pll_config.port)
-    assert native.contents.configuration_word == 0x2828A4
-    assert native.contents.work_word == 0x2C28A4
-    assert native.contents.readback_word == 0x3028A4
-
-
-def test_missing_pll_device_is_delegated_to_native_manual_fallback(
-    tmp_path: Path,
-    usb_config: UsbConfig,
-    pll_config: PLLConfig,
-    mock_usb_session: tuple[Session, Mock, Mock],
-) -> None:
-    session, _, with_hardware = mock_usb_session
-    missing = tmp_path / "no-such-serial-device"
-    assert not missing.exists()
-    session.configure_usb(
-        replace(usb_config, pll=replace(pll_config, port=str(missing)))
+    assert native.contents.callback
+    assert session._clock_resources.controller.port == pll_config.port
+    assert session._clock_resources.controller.commands == (
+        bytes.fromhex("2828A4"),
+        bytes.fromhex("2C28A4"),
+        bytes.fromhex("3028A4"),
     )
-    # Native open decides availability; Python must not reject an absent port.
-    with_hardware.assert_called_once()
 
 
 def test_present_pll_error_is_not_hidden(
@@ -360,7 +351,7 @@ def test_usb_session_checks(
 
 @pytest.mark.integration
 @pytest.mark.parametrize("field", ["config_hex", "work_hex", "readback_hex"])
-def test_native_rejects_pll_limits_before_opening_usb(
+def test_python_rejects_pll_limits_before_opening_usb(
     model_library: "ModelLibrary",
     transaction_artifact: proto.ModelArtifact,
     usb_config: UsbConfig,
@@ -368,15 +359,8 @@ def test_native_rejects_pll_limits_before_opening_usb(
     field: str,
 ) -> None:
     transaction_artifact.backend = proto.USB
-    # Valid HEX syntax reaches native validation; no USB device is opened.
-    pll = replace(pll_config, **{field: "000000"})
-    with (
-        Session(
-            model_library(transaction_artifact.SerializeToString(), 1)
-        ) as session,
-        pytest.raises(RuntimeError, match="PLL VCO must be at least 250 MHz"),
-    ):
-        session.configure_usb(replace(usb_config, pll=pll))
+    with pytest.raises(ValueError, match="PLL VCO must be at least 250 MHz"):
+        replace(pll_config, **{field: "000000"})
 
 
 @pytest.mark.integration
@@ -559,19 +543,15 @@ def test_frequency_selection_reaches_all_native_pll_phases(
     assert selected.clock_setting.serial_hex == "2828A4"
     session.configure_usb(selected)
     legacy.assert_not_called()
-    native = ctypes.cast(
-        with_hardware.call_args.args[2], ctypes.POINTER(_PLLConfig)
+    controller = session._clock_resources.controller
+    assert controller.port == "/dev/serial/by-id/pll"
+    assert controller.commands == (bytes.fromhex("2828A4"),) * 3
+    session.configure_usb(replace(selected, clock_frequency_mhz=32))
+    assert controller._closed
+    assert (
+        session._clock_resources.controller.commands
+        == (bytes.fromhex("2C20B4"),) * 3
     )
-    assert native.contents.port == b"/dev/serial/by-id/pll"
-    assert native.contents.configuration_word == 0x2828A4
-    assert native.contents.work_word == 0x2828A4
-    assert native.contents.readback_word == 0x2828A4
-    changed = replace(selected, clock_frequency_mhz=32)
-    session.configure_usb(changed)
-    native = ctypes.cast(
-        with_hardware.call_args.args[2], ctypes.POINTER(_PLLConfig)
-    )
-    assert native.contents.work_word == 0x2C20B4
 
 
 def test_maybe_available_row_is_warned_and_its_literal_bytes_are_sent(
@@ -585,10 +565,10 @@ def test_maybe_available_row_is_warned_and_its_literal_bytes_are_sent(
     assert selected.clock_setting.actual_frequency_mhz == 283.2
     assert selected.clock_setting.status == "maybe available"
     session.configure_usb(selected)
-    native = ctypes.cast(
-        with_hardware.call_args.args[2], ctypes.POINTER(_PLLConfig)
+    assert (
+        session._clock_resources.controller.commands
+        == (bytes.fromhex("E813A4"),) * 3
     )
-    assert native.contents.work_word == 0xE813A4
 
 
 def test_frequency_without_serial_keeps_manual_clock(
@@ -624,3 +604,148 @@ def test_raw_pll_and_frequency_cannot_conflict(
 ) -> None:
     with pytest.raises(ValueError, match="either pll or clock_frequency_mhz"):
         replace(usb_config, pll=pll_config, clock_frequency_mhz=24)
+
+
+def test_old_runtime_requires_reinstall(
+    usb_config: UsbConfig, mock_usb_session: tuple[Session, Mock, Mock]
+) -> None:
+    session, _, _ = mock_usb_session
+    del session._library.cim22_session_configure_usb_with_clock
+    with pytest.raises(RuntimeError, match="reinstall mlir-cim22"):
+        session.configure_usb(usb_config)
+
+
+def test_failed_reconfiguration_keeps_callback_alive_but_blocks_execution(
+    usb_config: UsbConfig,
+    pll_config: PLLConfig,
+    mock_usb_session: tuple[Session, Mock, Mock],
+) -> None:
+    session, _, configure = mock_usb_session
+    session.configure_usb(replace(usb_config, pll=pll_config))
+    previous = session._clock_resources.controller
+    configure.return_value = 1
+    with pytest.raises(RuntimeError):
+        session.configure_usb(replace(usb_config, pll=pll_config))
+    assert session._clock_resources.controller is previous
+    assert previous._closed
+    with pytest.raises(RuntimeError, match="reconfigure"):
+        session()
+    configure.return_value = 0
+    session.configure_usb(usb_config)
+    assert session._clock_resources.controller is None
+    assert not session._clock_resources.failed
+
+
+@pytest.mark.parametrize("capture", [False, True])
+def test_native_execution_failure_closes_serial_and_requires_reconfigure(
+    usb_config: UsbConfig,
+    pll_config: PLLConfig,
+    mock_usb_session: tuple[Session, Mock, Mock],
+    capture: bool,
+) -> None:
+    session, _, _ = mock_usb_session
+    session.configure_usb(replace(usb_config, pll=pll_config))
+    controller = session._clock_resources.controller
+    session.input_shapes = session.output_shapes = ()
+    session.input_dtypes = session.output_dtypes = ()
+    session.num_transactions = 1
+    session._library.cim22_session_error = Mock(return_value=b"USB failed")
+    session._library.cim22_session_invoke = Mock(return_value=1)
+    session._library.cim22_session_num_readbacks = Mock(return_value=0)
+    session._library.cim22_session_capture_usb = Mock(return_value=1)
+    with pytest.raises(RuntimeError, match="USB failed"):
+        if capture:
+            session.capture_usb(0, np.zeros((1, 64), dtype=np.uint16))
+        else:
+            session()
+    assert controller._closed
+    with pytest.raises(RuntimeError, match="reconfigure"):
+        session()
+
+
+def test_session_gc_keeps_callback_until_native_destroy(
+    usb_config: UsbConfig,
+    pll_config: PLLConfig,
+) -> None:
+    import gc
+    import weakref
+
+    session, _, _ = _make_mock_usb_session()
+    session.configure_usb(replace(usb_config, pll=pll_config))
+    controller = session._clock_resources.controller
+    events: list[str] = []
+    destroy = Mock(side_effect=lambda handle: events.append("destroy"))
+    session._library.cim22_session_destroy = destroy
+    session._resources = ExitStack()
+    session._resources.callback(session._clock_resources.close)
+    session._resources.callback(events.append, "cleanup")
+    session._finalizer = weakref.finalize(
+        session, _release_session, session._library, 123, session._resources
+    )
+    reference = weakref.ref(session)
+    del session
+    gc.collect()
+    assert reference() is None
+    assert controller._closed
+    assert events == ["destroy", "cleanup"]
+    destroy.assert_called_once_with(123)
+
+
+@pytest.mark.parametrize("capture", [False, True])
+def test_serial_cleanup_does_not_hide_native_execution_error(
+    usb_config: UsbConfig,
+    pll_config: PLLConfig,
+    mock_usb_session: tuple[Session, Mock, Mock],
+    capture: bool,
+) -> None:
+    session, _, _ = mock_usb_session
+    session.configure_usb(replace(usb_config, pll=pll_config))
+    controller = session._clock_resources.controller
+    controller._serial = Mock(close=Mock(side_effect=OSError("close failed")))
+    session.input_shapes = session.output_shapes = ()
+    session.input_dtypes = session.output_dtypes = ()
+    session.num_transactions = 1
+    session._library.cim22_session_error = Mock(
+        return_value=b"original USB error"
+    )
+    session._library.cim22_session_invoke = Mock(return_value=1)
+    session._library.cim22_session_num_readbacks = Mock(return_value=0)
+    session._library.cim22_session_capture_usb = Mock(return_value=1)
+    with pytest.raises(RuntimeError, match="original USB error") as caught:
+        if capture:
+            session.capture_usb(0, np.zeros((1, 64), dtype=np.uint16))
+        else:
+            session()
+    assert session._clock_resources.failed
+    assert "close failed" in caught.value.__notes__[0]
+
+
+@pytest.mark.parametrize("native_failure", [False, True])
+def test_reconfiguration_cleanup_error_requires_explicit_recovery(
+    usb_config: UsbConfig,
+    pll_config: PLLConfig,
+    mock_usb_session: tuple[Session, Mock, Mock],
+    native_failure: bool,
+) -> None:
+    session, _, configure = mock_usb_session
+    session.configure_usb(replace(usb_config, pll=pll_config))
+    previous = session._clock_resources.controller
+    previous._serial = Mock(close=Mock(side_effect=OSError("close failed")))
+
+    def native(*args: object) -> int:
+        args[4].value = b"original configuration error"
+        return int(native_failure)
+
+    configure.side_effect = native
+    with pytest.raises(
+        RuntimeError if native_failure else OSError,
+        match="original configuration error"
+        if native_failure
+        else "close failed",
+    ) as caught:
+        session.configure_usb(replace(usb_config, pll=pll_config))
+    assert session._clock_resources.failed
+    if native_failure:
+        assert "close failed" in caught.value.__notes__[0]
+    else:
+        assert session._clock_resources.controller._closed

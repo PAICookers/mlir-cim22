@@ -195,9 +195,15 @@ config = UsbConfig(
 )
 ```
 
-按实际 FPGA/FX3 固件设置 VID/PID、端点和接口。Linux 为对应设备配置 USB 访问权限，Windows 使用 CyAPI 与 CyUSB3 驱动。上述配置使用手动时钟。Linux 如需通过串口配置时钟，传入 `clock_frequency_mhz=24` 与实际 `pll_port`，表示写入、计算、回读三个阶段均使用 24 MHz；需要分阶段使用不同频率时，用 `PLLConfig` 指定三个阶段的命令。未列出的频率按实际频率选择最近的 `available` 表项，距离相同时选较低频率，并通过 `RuntimeWarning` 告知请求频率、选中频率及串口命令；`available` 是供应方表中的分类，不代表本次实板稳定性验证。
+按实际 FPGA/FX3 固件设置 VID/PID、端点和接口。Linux 为对应设备配置 USB 访问权限，Windows 使用 CyAPI 与 CyUSB3 驱动。上述配置使用手动时钟。Linux 或 Windows 如需通过串口配置时钟，传入 `clock_frequency_mhz=24` 与实际 `pll_port`，表示写入、计算、回读三个阶段均使用 24 MHz；需要分阶段使用不同频率时，用 `PLLConfig` 指定三个阶段的命令。未列出的频率按实际频率选择最近的 `available` 表项，距离相同时选较低频率，并通过 `RuntimeWarning` 告知请求频率、选中频率及串口命令；`available` 是供应方表中的分类，不代表本次实板稳定性验证。
 
-`session.configure_usb()` 打开设备；串口命令在执行 transaction 的阶段边界发送并校验回显。同一 USB Session 内已校验的相同命令会复用，不会在每个阶段重复发送。仅传频率而不传串口不会配置板卡，Linux 串口设备缺失时也保留手动时钟行为，因此记录请求频率不能作为串口配置成功的证据。频率选择和设备字段校验见 [pll.py](cim22/pll.py) 和 [runtime.py](cim22/runtime.py)。
+`session.configure_usb()` 打开 USB 设备并绑定时钟回调。Python 使用随 wheel 依赖自动安装的 pyserial，串口在首次执行阶段打开，随 Session 保持连接。C++ 在写入、计算、回读阶段的第一条 USB 命令前同步调用配置回调。首次命令要求匹配回显；后续变化的命令不读取或等待回显，相同的当前命令跳过发送。三个阶段使用相同频率时，首次只需发送一次。重新配置会恢复首次回显要求。
+
+Windows 可直接使用 `COM10` 等端口名称，Linux 使用实际设备路径，无需独立配置脚本。未提供串口表示人工管理时钟；显式指定串口后，设备缺失、权限不足、写入或回显失败均会报错并停止阶段执行，必须显式重新配置后才能恢复。仅记录请求频率不能作为串口配置成功的证据。频率选择与参数校验见 [pll.py](cim22/pll.py) 和 [runtime.py](cim22/runtime.py)。
+
+每条串口命令采用 200 ms 的写入及首次回显期限。后续无回显发送检查驱动输出队列为空，再保留三字节 9600/8N1 的 4 ms 发送等待。驱动队列不一定覆盖 USB 转串口适配器内部缓冲区；该等待是主机发送保障，不是实测校准、PLL 锁定或芯片已切换频率的证明。
+
+原生 C/C++ 使用 `cim22_session_configure_usb_with_clock` 和 `CIM22ClockControl` 注册同步阶段回调；调用方保持函数指针和上下文有效，直到设备被替换或 Session 销毁，且不能在回调中重入同一 Session。旧的 PLL 串口配置 ABI 已移除，原生调用方需要迁移并重新编译，Python 包也必须与新运行库一起重新安装。
 
 `UsbConfig.timing` 统一管理板卡时序：`startup_delay_ms`、
 `cache_write_delay_ms`、`weight_write_delay_ms`、`work_delay_ms` 和

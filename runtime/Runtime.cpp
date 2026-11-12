@@ -1,9 +1,10 @@
 // Execution-only runtime: no MLIR parser, passes, or LLVM JIT.
 #include "CIM22/Runtime/Runtime.h"
 #include "CIM22/Execution/CIMRunner.h"
-#include "CIM22/Runtime/ModelABI.h"
 #include "CIM22/Runtime/CIMBoardRunner.h"
+#include "CIM22/Runtime/ModelABI.h"
 #include "CIM22/Runtime/UsbCIMDevice.h"
+#include "ClockCallback.h"
 #include "Session.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
@@ -37,15 +38,15 @@ HMODULE loadWindowsLibrary(const char *path, std::string &error) {
     error = "missing model library path";
     return nullptr;
   }
-  int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
-                                  nullptr, 0);
+  int length =
+      MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, nullptr, 0);
   if (length <= 0) {
     error = "model library path is not valid UTF-8";
     return nullptr;
   }
   std::wstring wide(length, L'\0');
-  if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
-                           wide.data(), length)) {
+  if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide.data(),
+                           length)) {
     error = windowsError();
     return nullptr;
   }
@@ -336,7 +337,7 @@ extern "C" int cim22_session_invoke(void *handle, void **buffers,
 }
 
 static int configureUsb(void *handle, const CIM22UsbConfig *config,
-                        const CIM22PLLConfig *pll,
+                        const CIM22ClockControl *clock,
                         const CIM22HardwareConfig &hardware, char *error,
                         size_t capacity) {
   if (!handle || !config) {
@@ -355,19 +356,10 @@ static int configureUsb(void *handle, const CIM22UsbConfig *config,
     cim22::runtime::copyError("invalid USB word byte order", error, capacity);
     return 1;
   }
-#ifdef CIM22_HAS_USB
-  std::optional<cim22::runtime::PLLSerialConfig> pllConfig;
-  if (pll) {
-    pllConfig = cim22::runtime::PLLSerialConfig{
-        pll->port ? pll->port : "", pll->configuration_word, pll->work_word,
-        pll->readback_word};
-    if (auto failure = cim22::runtime::validatePLLSerialConfig(*pllConfig)) {
-      cim22::runtime::copyError(llvm::toString(std::move(failure)), error,
-                                capacity);
-      return 1;
-    }
+  if (clock && !clock->callback) {
+    cim22::runtime::copyError("missing CIM22 clock callback", error, capacity);
+    return 1;
   }
-#endif
   // Stop the receive loop before checking so late errors cannot be discarded.
   if (session.device)
     session.device->close();
@@ -402,7 +394,8 @@ static int configureUsb(void *handle, const CIM22UsbConfig *config,
   deviceConfig.receivePollTimeoutMs = config->receive_poll_timeout_ms;
   deviceConfig.responseTimeoutMs = config->response_timeout_ms;
   deviceConfig.startupDelayMs = hardware.startup_delay_ms;
-  deviceConfig.pll = std::move(pllConfig);
+  deviceConfig.configureClock =
+      cim22::runtime::detail::makeClockCallback(clock);
   // Release the interface before replacement. A failed open leaves dispatch
   // disabled; a previous transaction's failure was reported above.
   session.runner.reset();
@@ -410,6 +403,8 @@ static int configureUsb(void *handle, const CIM22UsbConfig *config,
   if (auto failure = session.device->open()) {
     cim22::runtime::copyError(llvm::toString(std::move(failure)), error,
                               capacity);
+    // A failed replacement must not retain the caller's candidate callback.
+    session.device.reset();
     return 1;
   }
   session.runner = std::make_unique<cim22::runtime::CIMBoardRunner>(
@@ -429,23 +424,16 @@ extern "C" int cim22_session_configure_usb(void *handle,
   return configureUsb(handle, config, nullptr, hardware, error, capacity);
 }
 
-extern "C" int
-cim22_session_configure_usb_with_pll(void *handle, const CIM22UsbConfig *config,
-                                     const CIM22PLLConfig *pll, char *error,
-                                     size_t capacity) {
-  const auto hardware = cim22::runtime::defaultCIM22HardwareConfig();
-  return configureUsb(handle, config, pll, hardware, error, capacity);
-}
-
-extern "C" int cim22_session_configure_usb_with_hardware(
-    void *handle, const CIM22UsbConfig *config, const CIM22PLLConfig *pll,
-    const CIM22HardwareConfig *hardware, char *error, size_t capacity) {
+extern "C" int cim22_session_configure_usb_with_clock(
+    void *handle, const CIM22UsbConfig *config,
+    const CIM22HardwareConfig *hardware, const CIM22ClockControl *clock,
+    char *error, size_t capacity) {
   if (!hardware) {
     cim22::runtime::copyError("missing CIM22 hardware configuration", error,
                               capacity);
     return 1;
   }
-  return configureUsb(handle, config, pll, *hardware, error, capacity);
+  return configureUsb(handle, config, clock, *hardware, error, capacity);
 }
 
 extern "C" int64_t cim22_session_num_readbacks(void *handle, int64_t id) {
