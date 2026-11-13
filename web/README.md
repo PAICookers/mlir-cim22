@@ -111,3 +111,13 @@ python -m pytest -q tests/test_dvs_layers.py
 
 测试覆盖单层、连续两个 Linear 和中间保留 CPU Linear 的不连续选择，
 逐层检查真实 simulator dispatch、独立产物、重复执行及 CPU 数值对比。
+
+
+## MNIST 模型训练
+
+Web 工作台的“MNIST 训练”页面提供固定的 PyTorch 两层全连接模型：`small`
+为 `784 -> 64 -> 10`，`standard` 为 `784 -> 128 -> 10`。页面可设置训练轮数、
+batch size、学习率和数据缓存目录；数据不存在时会自动联网下载到缓存目录。训练
+过程显示文本日志，每轮保存 Loss 和测试集准确率，并保留 `model.pt`、`config.json`、
+`metrics.jsonl`、`summary.json` 和 `train.log`。该入口用于模型配置和训练验收，
+不提供命令行训练选项、量化配置或任意拓扑编辑。
