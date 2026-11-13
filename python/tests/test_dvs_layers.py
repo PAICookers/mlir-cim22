@@ -5,87 +5,12 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("spikingjelly")
 
-from cim22.web.engine import validate_cim_layers
 
-
-class SharedLeafModel(torch.nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self.first = torch.nn.Linear(4, 4)
-        self.second = torch.nn.Linear(4, 2)
-        self.block = torch.nn.Sequential(torch.nn.Linear(2, 2))
-
-
-def test_single_and_multiple_distinct_leaf_layers() -> None:
-    model = SharedLeafModel()
-    assert validate_cim_layers(model, ["first"]) == ("first",)
-    assert validate_cim_layers(model, ["first", "second"]) == (
-        "first",
-        "second",
-    )
-
-
-@pytest.mark.parametrize(
-    ("selected", "message"),
-    [
-        (["first", "first"], "不能重复"),
-        (["missing"], "未知"),
-        (["block"], "叶子"),
-        ([], "至少需要一个"),
-    ],
-)
-def test_invalid_layer_selection(selected: list[str], message: str) -> None:
-    with pytest.raises(ValueError, match=message):
-        validate_cim_layers(SharedLeafModel(), selected)
-
-
-def test_none_preserves_full_model_mode() -> None:
-    assert validate_cim_layers(SharedLeafModel(), None) == ()
-
-
-def test_alias_module_names_are_rejected() -> None:
-    model = SharedLeafModel()
-    model.alias = model.first
-    with pytest.raises(ValueError, match="同一模块"):
-        validate_cim_layers(model, ["alias"])
-
-
-def test_each_selected_layer_must_dispatch(monkeypatch, tmp_path) -> None:
-    from types import SimpleNamespace
-
-    from cim22.web import engine
-
-    instance = engine.DvsEngine.__new__(engine.DvsEngine)
-    instance.directory = tmp_path
-    instance.cim_layers = ("first", "second")
-    monkeypatch.setattr(
-        engine,
-        "session_for_artifact",
-        lambda path: SimpleNamespace(
-            dispatch_count=3 if path.name == "first" else 0
-        ),
-    )
-    with pytest.raises(RuntimeError, match="second"):
-        instance._selected_dispatch_count()
-
-
-def test_session_registry_does_not_own_sessions(tmp_path) -> None:
-    import gc
-    import weakref
-
-    from cim22 import backend
-
-    class FakeSession:
-        pass
-
-    session = FakeSession()
-    ref = weakref.ref(session)
-    backend._SESSIONS_BY_ARTIFACT[tmp_path / "graph.so"] = session
-    assert backend.session_for_artifact(tmp_path) is session
-    del session
-    gc.collect()
-    assert ref() is None
-    assert backend.session_for_artifact(tmp_path) is None
+@pytest.fixture(autouse=True)
+def reset_compiler():
+    torch.compiler.reset()
+    yield
+    torch.compiler.reset()
 
 
 def test_discovery_reports_actual_multi_step_shapes(monkeypatch, tmp_path):

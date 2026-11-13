@@ -5,29 +5,24 @@ import importlib.util
 import sys
 import time
 from collections.abc import Callable, Sequence
-from functools import partial
 from importlib.metadata import version
 from pathlib import Path
-from typing import TypedDict
 
 import numpy as np
 import torch
 from spikingjelly.activation_based import functional, neuron, surrogate
 
-from cim22.backend import session_for_artifact
+from cim22.layers import (
+    CimLayerInfo,
+    LayerOffload,
+    validate_cim_layers,
+)
+from cim22.layers import (
+    discover_cim_layers as discover_model_layers,
+)
 from cim22.runtime import MODEL_SUFFIX, compile_tool, runtime_library
 
 from .storage import Document, digest, read_json, save_json
-
-
-class CimLayerInfo(TypedDict):
-    """A selectable leaf module exposed by the fixed DVS model."""
-
-    name: str
-    type: str
-    weight_shape: list[int]
-    input_shape: list[int]
-    output_shape: list[int]
 
 
 def _load_model_module(model_dir: Path) -> object:
@@ -62,69 +57,12 @@ def _new_model(module: object, dropout: float = 0.2) -> torch.nn.Module:
 
 
 def discover_cim_layers(model_dir: Path) -> list[CimLayerInfo]:
-    """List selectable Conv2d/Linear leaf modules in deterministic order."""
+    """Discover the fixed DVS model using the shared SDK layer API."""
     model = _new_model(_load_model_module(model_dir))
-    result: list[CimLayerInfo] = []
-    handles = []
-
-    def record_shape(info: CimLayerInfo, _module, args, output) -> None:
-        info["input_shape"] = list(args[0].shape)
-        info["output_shape"] = list(output.shape)
-
-    for name, module in model.named_modules(remove_duplicate=False):
-        if not name or list(module.children()):
-            continue
-        if not isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
-            continue
-        info: CimLayerInfo = {
-            "name": name,
-            "type": type(module).__name__,
-            "weight_shape": list(module.weight.shape),
-            "input_shape": [],
-            "output_shape": [],
-        }
-        result.append(info)
-        handles.append(
-            module.register_forward_hook(partial(record_shape, info))
-        )
     try:
-        with torch.inference_mode():
-            model(torch.zeros(32, 1, 2, 128, 128))
+        return discover_model_layers(model, (torch.zeros(32, 1, 2, 128, 128),))
     finally:
-        for handle in handles:
-            handle.remove()
         functional.reset_net(model)
-    return result
-
-
-def validate_cim_layers(
-    model: torch.nn.Module, selected: Sequence[str] | None
-) -> tuple[str, ...]:
-    """Validate exact, distinct selectable leaf-module names."""
-    if selected is None:
-        return ()
-    names = tuple(selected)
-    if not names:
-        raise ValueError("指定 CIM 层时至少需要一个层名")
-    if len(set(names)) != len(names):
-        raise ValueError("CIM 层名不能重复")
-    modules = dict(model.named_modules(remove_duplicate=False))
-    aliases: dict[int, list[str]] = {}
-    for name, module in modules.items():
-        aliases.setdefault(id(module), []).append(name)
-    validated: list[str] = []
-    for name in names:
-        module = modules.get(name)
-        if module is None:
-            raise ValueError(f"未知 CIM 层：{name}")
-        if list(module.children()):
-            raise ValueError(f"CIM 层必须是叶子模块：{name}")
-        if not isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
-            raise ValueError(f"CIM 层类型不支持：{name}")
-        if len(aliases[id(module)]) > 1:
-            raise ValueError(f"CIM 层名称指向同一模块实例：{name}")
-        validated.append(name)
-    return tuple(validated)
 
 
 def validate_cim_layer_names(
@@ -155,7 +93,12 @@ class DvsEngine:
             "adapter": digest(Path(__file__)),
             "python_backend": {
                 name: digest(Path(__file__).parents[1] / name)
-                for name in ("backend.py", "compiler.py", "runtime.py")
+                for name in (
+                    "backend.py",
+                    "compiler.py",
+                    "runtime.py",
+                    "layers.py",
+                )
             },
         }
         identity_path = directory / "environment.json"
@@ -196,7 +139,7 @@ class DvsEngine:
 
         self.original = build()
         self.cim = build()
-        self.compiled: torch.nn.Module | None = None
+        self.compiled: torch.nn.Module | LayerOffload | None = None
         self.layer_artifacts: dict[str, list[str]] = {}
         self.layer_compile_seconds: dict[str, float] = {}
         self.dispatch_count: int | None = None
@@ -220,32 +163,18 @@ class DvsEngine:
         return set((self.directory / "artifacts").rglob(f"*{MODEL_SUFFIX}"))
 
     def _compile_selected(self, sample: torch.Tensor) -> None:
-        root = self.directory / "artifacts"
-        for name in self.cim_layers:
-            module = dict(self.cim.named_modules(remove_duplicate=False))[name]
-            layer_dir = root / name.replace(".", "__")
-            layer_dir.mkdir(parents=True, exist_ok=True)
-            started = time.perf_counter()
-            module.compile(
-                backend="cim22",
-                fullgraph=True,
-                dynamic=False,
-                options={
-                    "runtime": self.config.get("runtime", "simulator"),
-                    "artifact_dir": layer_dir,
-                    "debug_dir": layer_dir / "ir",
-                },
-            )
-            functional.reset_net(self.cim)
-            output = self.cim(sample)
-            self.layer_compile_seconds[name] = time.perf_counter() - started
-            self.prediction(output)
-            artifacts = sorted(layer_dir.glob(f"*{MODEL_SUFFIX}"))
-            if not artifacts:
-                raise RuntimeError(f"选定 CIM 层未生成模型产物：{name}")
-            self.layer_artifacts[name] = [str(path) for path in artifacts]
-        self.dispatch_count = self._selected_dispatch_count()
-        self.compiled = self.cim
+        offload = LayerOffload(
+            self.cim,
+            self.cim_layers,
+            (sample,),
+            artifact_dir=self.directory / "artifacts",
+            runtime=self.config.get("runtime", "simulator"),
+            reset=functional.reset_net,
+        )
+        self.layer_artifacts = offload.layer_artifacts
+        self.layer_compile_seconds = offload.layer_compile_seconds
+        self.dispatch_count = offload.dispatch_count
+        self.compiled = offload
 
     def compile(self, phase: Callable[[str], None]) -> float:
         sample = self.load(0)
@@ -257,6 +186,8 @@ class DvsEngine:
             started = time.perf_counter()
             if self.cim_layers:
                 self._compile_selected(sample)
+                functional.reset_net(self.cim)
+                self.prediction(self.compiled(sample))
             else:
                 self.compiled = torch.compile(
                     self.cim,
@@ -284,19 +215,6 @@ class DvsEngine:
             raise ValueError("模型输出尺寸错误或包含非有限值")
         return int(output.sum(0).argmax(1).item())
 
-    def _selected_dispatch_count(self) -> int:
-        total = 0
-        for name in self.cim_layers:
-            layer_dir = self.directory / "artifacts" / name.replace(".", "__")
-            session = session_for_artifact(layer_dir)
-            if session is None:
-                raise RuntimeError(f"选定 CIM 层 Session 丢失：{name}")
-            count = session.dispatch_count
-            if count <= 0:
-                raise RuntimeError(f"选定 CIM 层未产生 CIM dispatch：{name}")
-            total += count
-        return total
-
     def infer(self, side: str, sample: torch.Tensor) -> tuple[int, float]:
         model = self.original if side == "original" else self.compiled
         if model is None:
@@ -317,7 +235,7 @@ class DvsEngine:
                         "样本触发额外编译，未计入结果；请重新导入"
                     )
                 if getattr(self, "cim_layers", ()):
-                    self.dispatch_count = self._selected_dispatch_count()
+                    self.dispatch_count = self.compiled.dispatch_count
             prediction = self.prediction(output)
         self.trim()
         return prediction, elapsed
