@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .example_manager import ExampleManager
-from .manager import TaskManager
+from .manager import USE_DEFAULT_CIM_LAYERS, TaskManager
 from .storage import Document
 
 
@@ -28,6 +28,7 @@ class ImportRequest(BaseModel):
 
     weights: str
     dataset: str
+    cim_layers: list[str] | None = None
 
 
 class ActionRequest(BaseModel):
@@ -45,14 +46,19 @@ class ExampleRunRequest(BaseModel):
 
 
 def create_app(
-    root: Path, model_dir: Path, examples_dir: Path | None = None
+    root: Path,
+    model_dir: Path,
+    examples_dir: Path | None = None,
+    default_cim_layers: list[str] | None = None,
 ) -> FastAPI:
     """Create one local service. Its lifespan owns the exclusive worker lock."""
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-        app.state.manager = TaskManager(root, model_dir)
-        selected_examples = examples_dir or Path(__file__).resolve().parents[2] / "examples"
+        app.state.manager = TaskManager(root, model_dir, default_cim_layers)
+        selected_examples = (
+            examples_dir or Path(__file__).resolve().parents[2] / "examples"
+        )
         app.state.examples = ExampleManager(
             root,
             selected_examples,
@@ -96,19 +102,31 @@ def create_app(
         return app.state.manager.snapshot()
 
     @app.get("/api/defaults")
-    def defaults() -> dict[str, str]:
+    def defaults() -> Document:
         return {
             "weights": str(
                 model_dir / "weights/dvsgesture_mobilenet_snn_qat_int8.pt"
             ),
             "dataset": str(model_dir / "data/test"),
+            "cim_layers": default_cim_layers,
         }
+
+    @app.get("/api/cim-layers")
+    def cim_layers() -> list[dict[str, object]]:
+        from .engine import discover_cim_layers
+
+        return discover_cim_layers(model_dir)
 
     @app.post("/api/import")
     def import_model(body: ImportRequest) -> Document:
         try:
+            selected_layers = (
+                body.cim_layers
+                if "cim_layers" in body.model_fields_set
+                else USE_DEFAULT_CIM_LAYERS
+            )
             return app.state.manager.import_model(
-                Path(body.weights), Path(body.dataset)
+                Path(body.weights), Path(body.dataset), selected_layers
             )
         except OSError as error:
             raise HTTPException(400, str(error)) from error
@@ -205,9 +223,7 @@ def create_app(
         async def stream() -> AsyncIterator[str]:
             previous = None
             while not await request.is_disconnected():
-                snapshot = await asyncio.to_thread(
-                    app.state.examples.snapshot
-                )
+                snapshot = await asyncio.to_thread(app.state.examples.snapshot)
                 data = json.dumps(snapshot, ensure_ascii=False)
                 if data != previous:
                     yield f"data: {data}\n\n"

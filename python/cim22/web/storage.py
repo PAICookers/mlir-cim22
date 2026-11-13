@@ -129,7 +129,12 @@ def totals(rows: list[Result]) -> Document:
     }
 
 
-def make_config(model_dir: Path, weights: Path, dataset: Path) -> Document:
+def make_config(
+    model_dir: Path,
+    weights: Path,
+    dataset: Path,
+    cim_layers: list[str] | None = None,
+) -> Document:
     """Index cached frames using the fixed training label order."""
     source = model_dir / "model_mobilenet_snn_deploy.py"
     for path in (source, weights):
@@ -161,6 +166,7 @@ def make_config(model_dir: Path, weights: Path, dataset: Path) -> Document:
         "classes": CLASSES,
         "input_shape": INPUT_SHAPE,
         "runtime": "simulator",
+        "cim_layers": list(cim_layers) if cim_layers is not None else None,
     }
 
 
@@ -170,6 +176,9 @@ def validate_config(config: Document) -> None:
         Path(config["model_dir"]),
         Path(config["weights"]),
         Path(config["dataset"]),
+        config.get("cim_layers"),
     )
-    if current != config:
+    expected = dict(config)
+    expected.setdefault("cim_layers", None)
+    if current != expected:
         raise ValueError("模型、权重或测试集已变化，请重新导入为新任务")
