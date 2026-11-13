@@ -536,3 +536,42 @@ def test_layer_defaults_overrides_and_recovery(tmp_path, inputs, monkeypatch):
         assert read_json(manager.current / "config.json")["cim_layers"] == ["0"]
     finally:
         manager.close()
+
+
+def test_mnist_api_configuration_and_state(
+    tmp_path: Path, inputs: Inputs
+) -> None:
+    app = create_app(
+        tmp_path / "results", inputs[0], examples_dir=tmp_path / "examples"
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/api/mnist/state").json() == {"task": None}
+        response = client.post(
+            "/api/mnist/run",
+            json={"model": "standard", "epochs": 0},
+        )
+        assert response.status_code == 409
+        assert "训练轮数" in response.json()["detail"]
+        response = client.post(
+            "/api/mnist/run",
+            json={"model": "unknown", "epochs": 1},
+        )
+        assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"epochs": True},
+        {"epochs": 1.5},
+        {"learning_rate": "bad"},
+        {"model": "unknown"},
+    ],
+)
+def test_mnist_rejects_invalid_input_in_chinese(tmp_path, inputs, invalid):
+    app = create_app(tmp_path / "results", inputs[0])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post("/api/mnist/run", json=invalid)
+        assert response.status_code == 422
+        assert "训练配置无效" in response.json()["detail"]
+        assert client.get("/api/mnist/state").json() == {"task": None}

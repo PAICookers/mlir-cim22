@@ -9,7 +9,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = ["numpy>=1.26,<3", "pyserial>=3.5,<4", "torch>=2.14,<3", "torch-mlir"]
 
 [project.optional-dependencies]
-web = ["fastapi>=0.115,<1", "spikingjelly>=0.0.0.0.12,<1", "uvicorn>=0.34,<1"]
+web = ["fastapi>=0.115,<1", "spikingjelly>=0.0.0.0.12,<1", "torchvision>=0.29,<0.30", "uvicorn>=0.34,<1"]
 tensorflow = ["tensorflow==2.20.0", "tf2onnx==1.17.0", "onnx>=1.21.0,<2"]
 
 [project.scripts]
@@ -52,6 +52,7 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
 torch-mlir = [
     { url = "https://github.com/llvm/torch-mlir/releases/download/v20261101/torch_mlir-20261101-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", marker = "sys_platform == 'linux'" },
     { url = "https://github.com/llvm/torch-mlir/releases/download/v20261101/torch_mlir-20261101-cp312-abi3-win_amd64.whl", marker = "sys_platform == 'win32'" },
