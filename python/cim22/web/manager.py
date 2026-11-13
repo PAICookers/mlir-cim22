@@ -23,13 +23,25 @@ from .storage import (
 )
 from .worker import worker_main
 
+USE_DEFAULT_CIM_LAYERS = object()
+
 
 class TaskManager:
     """One service owns one result directory and at most one compute process."""
 
-    def __init__(self, root: Path, model_dir: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        model_dir: Path,
+        default_cim_layers: list[str] | None = None,
+    ) -> None:
+        if default_cim_layers is not None:
+            from .engine import validate_cim_layer_names
+
+            validate_cim_layer_names(model_dir, default_cim_layers)
         self.root = root.resolve()
         self.model_dir = model_dir.resolve()
+        self.default_cim_layers = default_cim_layers
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock_file = (self.root / ".lock").open("a+")
         try:
@@ -105,13 +117,28 @@ class TaskManager:
             )
             return {"task": state}
 
-    def import_model(self, weights: Path, dataset: Path) -> Document:
+    def import_model(
+        self,
+        weights: Path,
+        dataset: Path,
+        cim_layers: list[str] | None | object = USE_DEFAULT_CIM_LAYERS,
+    ) -> Document:
         with self.lock:
             self._ensure_idle()
+            selected_layers = (
+                self.default_cim_layers
+                if cim_layers is USE_DEFAULT_CIM_LAYERS
+                else cim_layers
+            )
+            if selected_layers is not None:
+                from .engine import validate_cim_layer_names
+
+                validate_cim_layer_names(self.model_dir, selected_layers)
             config = make_config(
                 self.model_dir,
                 weights.expanduser().resolve(),
                 dataset.expanduser().resolve(),
+                selected_layers,
             )
             self._stop()
             task_id = uuid4().hex
@@ -131,6 +158,14 @@ class TaskManager:
                     "input_shape": config["input_shape"],
                     "classes": config["classes"],
                     "runtime": "simulator",
+                    "cim_layers": config["cim_layers"],
+                    "execution_mode": (
+                        "hybrid" if config["cim_layers"] else "full_model"
+                    ),
+                    "layer_artifacts": {},
+                    "layer_compile_seconds": {},
+                    "dispatch_count": None,
+                    "numeric_max_abs_error": None,
                     "compile_seconds": None,
                     "compile_attempts": [],
                     "error": None,

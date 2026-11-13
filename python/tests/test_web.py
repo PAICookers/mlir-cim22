@@ -496,3 +496,43 @@ def test_resume_rejects_changed_python_backend(
     revisions[changed_source] = "updated"
     with pytest.raises(ValueError, match="运行环境已变化"):
         engine.DvsEngine(config, tmp_path)
+
+
+def test_layer_defaults_overrides_and_recovery(tmp_path, inputs, monkeypatch):
+    import torch
+
+    from cim22.web import engine
+    from cim22.web.engine import validate_cim_layers
+
+    model = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.ReLU())
+    monkeypatch.setattr(
+        engine,
+        "validate_cim_layer_names",
+        lambda _, selected: validate_cim_layers(model, selected),
+    )
+    root = tmp_path / "results"
+    app = create_app(root, inputs[0], default_cim_layers=["0"])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        body = {"weights": str(inputs[1]), "dataset": str(inputs[2])}
+        assert client.get("/api/defaults").json()["cim_layers"] == ["0"]
+        task = client.post("/api/import", json=body).json()["task"]
+        assert task["cim_layers"] == ["0"]
+        assert task["execution_mode"] == "hybrid"
+        for names in ([], ["0", "0"], ["missing"], ["1"]):
+            response = client.post(
+                "/api/import", json={**body, "cim_layers": names}
+            )
+            assert response.status_code == 409
+            assert client.get("/api/state").json()["task"]["id"] == task["id"]
+        response = client.post("/api/import", json={**body, "cim_layers": None})
+        assert response.json()["task"]["execution_mode"] == "full_model"
+        response = client.post(
+            "/api/import", json={**body, "cim_layers": ["0"]}
+        )
+        task = response.json()["task"]
+    manager = TaskManager(root, inputs[0])
+    try:
+        assert manager.snapshot()["task"]["cim_layers"] == ["0"]
+        assert read_json(manager.current / "config.json")["cim_layers"] == ["0"]
+    finally:
+        manager.close()

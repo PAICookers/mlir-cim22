@@ -136,6 +136,44 @@ INT8 CIM 降低要求显式 `i8 × i8 → i32`、冻结权重和可证明的有�
 
 PyTorch 的 `reference` 忽略 BF16 补偿策略，且不生成原生制品。TensorFlow 可直接调用原 `tf.function` 取得参考结果。
 
+## 按模块名选择 CIM 执行
+
+`cim22.layers` 提供通用 PyTorch 分层执行接口，DVS Web 是它的一个应用。
+对其他网络同样使用完整的 `named_modules()` 名称选择 `Conv2d`、`Linear`
+叶子模块；其余模块继续由 PyTorch CPU 执行。
+
+```python
+import torch
+from cim22.layers import LayerOffload, discover_cim_layers
+
+model = torch.nn.Sequential(
+    torch.nn.Linear(4, 4), torch.nn.ReLU(), torch.nn.Linear(4, 2)
+).cpu().eval()
+x = torch.ones(1, 4)
+print(discover_cim_layers(model, (x,)))
+compiled = LayerOffload(
+    model, ["0", "2"], (x,),
+    runtime="simulator", artifact_dir="artifacts/selected",
+)
+y = compiled(x)
+print(compiled.layer_artifacts, compiled.layer_compile_seconds)
+print(compiled.dispatch_count)
+```
+
+- `LayerOffload` 原地编译选中的叶子层，构造时完成预热；参考模型请事先单独
+  构造或深拷贝。层名不可为空、重复、未知或指向共享模块实例。
+- 模型使用 CPU、eval、固定权重及后端支持的静态输入签名，执行采用
+  `torch.inference_mode()`；模块之外的控制流和输出结构由 PyTorch 保留。
+  不提供通用模型导入器，也不保证所有网络算子均可在 CIM 上执行。
+- 不传 `example_inputs` 的发现接口只枚举结构，尺寸列表为空。传入样本会
+  执行一次模型并通过临时 hook 记录尺寸；有状态模型由应用负责重置。
+- 有状态模型可传 `reset(model)` 回调，在每轮预热前和全部预热结束后重置；
+  正式推理的序列边界仍由应用负责重置，不假定所有网络都使用脉冲状态。
+- 每层独立保存产物及 IR，检查实际 CIM dispatch；后续调用若新增编译产物
+  会报错。使用不同输入尺寸或改变冻结权重时，请重新构造模型并编译。
+- 默认运行时为 `usb`，可传 `usb_config`；软件验证显式使用 `simulator`。
+  这些参数复用现有后端，未增加精度或量化选项。
+
 ## TensorFlow 接口
 
 在 editable 环境的安装命令上加 `--extra tensorflow`。安装 wheel 时使用同一版本的项目 wheel 并指定 `[tensorflow]` extra。两套最小示例分别在新 Python 进程中运行。
