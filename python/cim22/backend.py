@@ -8,6 +8,7 @@ it does not classify CIM operators. MLIR owns that decision.
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from uuid import uuid4
+from weakref import WeakValueDictionary
 
 import torch
 from torch._dynamo.backends.common import aot_autograd
@@ -25,9 +26,23 @@ from .compiler import (
     _compile,
     _validate_options,
 )
-from .runtime import MODEL_SUFFIX, _initialize_session
+from .runtime import MODEL_SUFFIX, Session, _initialize_session
 
 type TensorCallable = Callable[..., Sequence[torch.Tensor]]
+
+_SESSIONS_BY_ARTIFACT: WeakValueDictionary[Path, Session] = (
+    WeakValueDictionary()
+)
+
+
+def session_for_artifact(artifact_dir: Path) -> Session | None:
+    """Return the most recently captured native session in an artifact dir."""
+    matches = [
+        session
+        for path, session in _SESSIONS_BY_ARTIFACT.items()
+        if path.parent == artifact_dir.resolve()
+    ]
+    return matches[-1] if matches else None
 
 
 def _is_module_input(node: torch.fx.Node) -> bool:
@@ -171,14 +186,15 @@ def backend(
                 node.replace_all_uses_with(constant)
                 gm.graph.erase_node(node)
             gm.recompile()
+            artifact_path = (
+                Path(artifact_dir) / f"{graph_name}{MODEL_SUFFIX}"
+                if artifact_dir is not None
+                else None
+            )
             session = _compile(
                 gm,
                 *(defake(fake_inputs[i]) for i in input_indices),
-                artifact_path=(
-                    Path(artifact_dir) / f"{graph_name}{MODEL_SUFFIX}"
-                )
-                if artifact_dir is not None
-                else None,
+                artifact_path=artifact_path,
                 debug_dir=Path(debug_dir) / graph_name
                 if debug_dir is not None
                 else None,
@@ -191,6 +207,8 @@ def backend(
                 parameter_sources[index].make_guard(GuardBuilder.ID_MATCH)
             )
         session = _initialize_session(session, usb_config)
+        if artifact_path is not None:
+            _SESSIONS_BY_ARTIFACT[artifact_path.resolve()] = session
 
         def run(*values: torch.Tensor) -> tuple[torch.Tensor, ...]:
             return tuple(
