@@ -7,6 +7,7 @@
 #include "CIM22/Runtime/ModelArtifact.h"
 #include "CIM22/Target/CIMExecutable.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -118,6 +119,13 @@ defineDispatchWrapper(func::FuncOp stub, int64_t id, func::FuncOp dispatchFunc,
   if (stub.getNumResults() != transaction.getReadbacks().size())
     return stub.emitError("runtime readback count differs from Host results");
   Block *block = stub.addEntryBlock();
+  // The wrapper packs inputs by index, so a strided view needs no prior copy.
+  auto inputLayout = StridedLayoutAttr::get(
+      stub.getContext(), ShapedType::kDynamic, {ShapedType::kDynamic});
+  for (unsigned index = 0; index < stub.getNumArguments(); ++index)
+    stub.setArgAttr(index,
+                    bufferization::BufferizationDialect::kBufferLayoutAttrName,
+                    inputLayout);
   OpBuilder builder(block, block->begin());
   Location loc = stub.getLoc();
   Value input = memref::AllocaOp::create(
@@ -354,7 +362,7 @@ LogicalResult load(CompileState &state, StringRef path, StringRef entryName,
   if (!interface ||
       !isa<LLVM::LLVMVoidType>(interface.getFunctionType().getReturnType()) ||
       interface.getFunctionType().getParams().size() !=
-      state.model.shapes.size())
+          state.model.shapes.size())
     return host.emitError("runtime requires input/output descriptor arguments");
   static std::once_flag initialized;
   std::call_once(initialized, [] {
