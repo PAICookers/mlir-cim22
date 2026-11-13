@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def run(command):
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = subprocess.run(command, check=False, capture_output=True, text=True)
     if result.returncode:
         raise RuntimeError(result.stderr)
     return result.stdout
@@ -33,6 +33,7 @@ def main():
         )
         return subprocess.run(
             [a.opt, str(source), f"--bind-cim-parameters=file={manifest}"],
+            check=False,
             capture_output=True,
             text=True,
         )
@@ -57,6 +58,7 @@ def main():
         assert bind(attr).returncode != 0
     rejected = subprocess.run(
         [a.opt, str(source), "--cim-bf16-pipeline=require-cim=true"],
+        check=False,
         capture_output=True,
         text=True,
     )
@@ -72,9 +74,36 @@ def main():
     )
     assert bind("arg1 = dense<0.5> : tensor<3x2xf32>").returncode != 0
 
-    print(
-        "PASS entry parameter types, specialization, callers and strict offload"
+    # Multiple independent entries share one module-wide symbol-use scan.
+    source.write_text(
+        """func.func @main(%x: tensor<2x3xf32>, %w: tensor<3x2xf32>)
+        -> tensor<2x2xf32> {
+      %z = arith.constant dense<0.0> : tensor<2x2xf32>
+      %r = linalg.matmul ins(%x, %w : tensor<2x3xf32>, tensor<3x2xf32>)
+        outs(%z : tensor<2x2xf32>) -> tensor<2x2xf32>
+      return %r : tensor<2x2xf32>
+    }
+    func.func @aux(%x: tensor<2x3xf32>, %w: tensor<3x2xf32>)
+        -> tensor<2x2xf32> {
+      %z = arith.constant dense<0.0> : tensor<2x2xf32>
+      %r = linalg.matmul ins(%x, %w : tensor<2x3xf32>, tensor<3x2xf32>)
+        outs(%z : tensor<2x2xf32>) -> tensor<2x2xf32>
+      return %r : tensor<2x2xf32>
+    }
+    module @nested {
+      func.func @main() {
+        func.call @main() : () -> ()
+        return
+      }
+    }"""
     )
+    manifest.write_text(
+        "module attributes {cim.parameters = {main = {arg1 = dense<0.5> : tensor<3x2xf32>}, aux = {arg1 = dense<0.25> : tensor<3x2xf32>}}} {}"
+    )
+    multi = run([a.opt, str(source), f"--bind-cim-parameters=file={manifest}"])
+    assert multi.count("arith.constant dense<") >= 4
+
+    print("PASS entry parameter types, specialization, callers and strict offload")
 
 
 if __name__ == "__main__":

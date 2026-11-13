@@ -252,6 +252,85 @@ def test_packet_parser_rejects_invalid_return(packet: Path) -> None:
         _emit_object(packet, packet.with_suffix(".o"), runtime_library())
 
 
+@pytest.mark.parametrize("shape", [(), (1, 1, 1), (1, 8, 1), (2, 4, 3)])
+def test_host_elementwise_fusion_preserves_outputs_and_input(
+    shape: tuple[int, ...],
+) -> None:
+    """Scalar/unit-rank chains preserve fanout, rounding and caller buffers."""
+    tensor = "tensor<" + "x".join((*map(str, shape), "f32")) + ">"
+    source = f"""
+func.func @main(%x: {tensor}) -> ({tensor}, {tensor}, {tensor}) {{
+  %one = arith.constant dense<1.0> : {tensor}
+  %two = arith.constant dense<2.0> : {tensor}
+  %shifted = arith.addf %x, %one : {tensor}
+  %scaled = arith.mulf %shifted, %two : {tensor}
+  %result = arith.subf %scaled, %shifted : {tensor}
+  return %result, %shifted, %x : {tensor}, {tensor}, {tensor}
+}}
+"""
+    values = np.resize(
+        np.array(
+            [2**24, -(2**24), 2**100, -(2**100), 0.0, -0.0, 0.1, -0.1],
+            dtype=np.float32,
+        ),
+        shape,
+    )
+    other_values = np.array(-values - np.float32(0.5)).reshape(shape)
+    saved = []
+    with _compile_linalg(source, runtime="simulator") as session:
+        assert session.input_shapes == (shape,)
+        assert session.output_shapes == (shape,) * 3
+        for value in (values, other_values, values):
+            original = value.copy()
+            shifted = value + np.float32(1)
+            expected = (shifted * np.float32(2) - shifted, shifted, value)
+            outputs = session(value)
+            for index, (actual, reference) in enumerate(
+                zip(outputs, expected, strict=True)
+            ):
+                np.testing.assert_array_equal(
+                    actual.view(np.uint32), reference.view(np.uint32)
+                )
+                assert not np.shares_memory(actual, value)
+                for other in outputs[:index]:
+                    assert not np.shares_memory(actual, other)
+            np.testing.assert_array_equal(value, original)
+            saved.append((outputs, tuple(output.copy() for output in outputs)))
+        assert session.dispatch_count == 0
+    for outputs, snapshots in saved:
+        for actual, snapshot in zip(outputs, snapshots, strict=True):
+            np.testing.assert_array_equal(actual, snapshot)
+    for first, last in zip(saved[0][0], saved[-1][0], strict=True):
+        np.testing.assert_array_equal(first, last)
+
+
+def test_host_elementwise_fusion_preserves_strided_slice() -> None:
+    """Unit-dimension folding must not treat a strided view as contiguous."""
+    source = """
+func.func @main(%x: tensor<1x8x1xf32>)
+    -> (tensor<1x4x1xf32>, tensor<1x8x1xf32>) {
+  %view = tensor.extract_slice %x[0, 0, 0] [1, 4, 1] [1, 2, 1]
+      : tensor<1x8x1xf32> to tensor<1x4x1xf32>
+  %one = arith.constant dense<1.0> : tensor<1x4x1xf32>
+  %two = arith.constant dense<2.0> : tensor<1x4x1xf32>
+  %shifted = arith.addf %view, %one : tensor<1x4x1xf32>
+  %scaled = arith.mulf %shifted, %two : tensor<1x4x1xf32>
+  return %scaled, %x : tensor<1x4x1xf32>, tensor<1x8x1xf32>
+}
+"""
+    data = np.arange(8, dtype=np.float32).reshape(1, 8, 1)
+    with _compile_linalg(source, runtime="simulator") as session:
+        for value in (data, -data, data):
+            original = value.copy()
+            result, passthrough = session(value)
+            np.testing.assert_array_equal(result, (value[:, ::2] + 1) * 2)
+            np.testing.assert_array_equal(passthrough, original)
+            np.testing.assert_array_equal(value, original)
+            assert not np.shares_memory(result, passthrough)
+            assert not np.shares_memory(passthrough, value)
+        assert session.dispatch_count == 0
+
+
 @pytest.mark.usefixtures("native_toolchain")
 def test_multiple_kernels_retain_distinct_weight_resources(
     tmp_path: Path, embedded_model: "EmbeddedModel"
@@ -449,6 +528,7 @@ func.func @main(%x: {activation}) -> {output} {{
 """
     counts = []
     outputs = []
+    repeated_outputs = []
     schedules = []
     bindings = []
     for enabled in (False, True):
@@ -461,8 +541,10 @@ func.func @main(%x: {activation}) -> {output} {{
             runtime="simulator",
             weight_residency_schedule=enabled,
         ) as session:
-            outputs.append(session(data)[0].copy())
+            first = session(data)[0].copy()
             dispatches = session.dispatch_count
+            outputs.append(first)
+            repeated_outputs.append(session(data)[0].copy())
         model = embedded_model(artifact)
         transactions = {
             kernel.kernel_name: kernel.transaction for kernel in model.kernels
@@ -525,6 +607,10 @@ func.func @main(%x: {activation}) -> {output} {{
     else:
         assert schedules[0] != schedules[1]
     assert outputs[0].tobytes() == outputs[1].tobytes()
+    assert all(
+        output.tobytes() == reference.tobytes()
+        for output, reference in zip(outputs, repeated_outputs, strict=True)
+    )
     if integer:
         np.testing.assert_array_equal(
             outputs[0], weights.astype(np.int32) @ data

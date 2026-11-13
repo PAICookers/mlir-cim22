@@ -6,6 +6,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/DenseSet.h"
 
 namespace mlir::cim {
 #define GEN_PASS_DEF_BINDCIMPARAMETERS
@@ -32,6 +33,14 @@ public:
       SmallVector<std::pair<unsigned, DenseElementsAttr>> values;
     };
     SmallVector<Binding> bindings;
+    llvm::SmallDenseSet<SymbolRefAttr, 8> symbolsWithUses;
+    if (functions.size() > 1) {
+      auto uses = SymbolTable::getSymbolUses(getOperation());
+      if (!uses)
+        return fail("cannot analyze parameter specialization symbol uses");
+      for (const SymbolTable::SymbolUse &use : *uses)
+        symbolsWithUses.insert(use.getSymbolRef());
+    }
     // Validate every name/type before changing any function ABI. This pass is
     // for separately compiled entry points; existing callers cannot be updated
     // without knowing whether they intended the same parameter specialization.
@@ -42,8 +51,17 @@ public:
       if (!function || function.isDeclaration() || !args || args.empty())
         return fail(
             "parameter manifest must name defined functions and arguments");
-      auto uses = SymbolTable::getSymbolUses(function, getOperation());
-      if (!uses || !uses->empty())
+      bool hasUses = false;
+      if (functions.size() > 1) {
+        hasUses = symbolsWithUses.contains(
+            SymbolRefAttr::get(function.getNameAttr()));
+      } else {
+        auto uses = SymbolTable::getSymbolUses(function, getOperation());
+        if (!uses)
+          return fail("cannot analyze parameter specialization symbol uses");
+        hasUses = !uses->empty();
+      }
+      if (hasUses)
         return fail(
             "parameter specialization requires an entry without symbol uses");
       Binding binding{function, {}};
