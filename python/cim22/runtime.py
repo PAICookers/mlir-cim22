@@ -26,6 +26,7 @@ _BOUNDARY_DTYPES = {
 }
 
 MODEL_SUFFIX = ".dll" if os.name == "nt" else ".so"
+_DEFAULT_BOARD_CLOCK_MHZ = 128
 
 
 def _load_library(path: Path) -> ctypes.CDLL:
@@ -105,10 +106,10 @@ class CIMTimingConfig:
     """
 
     startup_delay_ms: int = 20
-    cache_write_delay_ms: int = 1
-    weight_write_delay_ms: int = 2
-    work_delay_ms: int = 10
-    readback_select_delay_ms: int = 40
+    cache_write_delay_ms: int = 0
+    weight_write_delay_ms: int = 0
+    work_delay_ms: int = 0
+    readback_select_delay_ms: int = 2
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -143,17 +144,18 @@ class UsbConfig:
         word_byte_order: Record word order, 0 for big-endian and 1 for
             little-endian.
         transfer_timeout_ms: Timeout for a USB write transfer.
-        receive_poll_timeout_ms: Poll timeout for the USB receive loop.
+        receive_poll_timeout_ms: Receive poll interval. Defaults to 100 ms on
+            Windows and 200 ms on Linux.
         response_timeout_ms: Deadline for collecting one Macro readback batch.
         pll: Optional serial PLL words, one per phase.
-        clock_frequency_mhz: Optional frequency in MHz for configuration, work
-            and readback. Unlisted values use the nearest available table
-            frequency with a warning. Mutually exclusive with pll.
-        pll_port: Optional serial port for clock_frequency_mhz. Without
-            it the caller sets the clock manually.
+        clock_frequency_mhz: Frequency in MHz for configuration, work and
+            readback. None selects 128 MHz when pll is omitted. Unlisted
+            values use the nearest available table entry with a warning.
+        pll_port: Serial port for the table-selected clock. Without it the
+            caller sets the clock manually or supplies a PLLConfig.
         timing: Board startup and operation pacing.
-        clock_setting: Resolved table entry, if requested. It records nominal
-            table settings. Readback timing still uses the configured delays.
+        clock_setting: Resolved nominal table entry. None when the caller
+            supplies a PLLConfig.
     """
 
     vendor_id: int
@@ -168,7 +170,7 @@ class UsbConfig:
     logical_channel: int = 3
     word_byte_order: Literal[0, 1] = 0
     transfer_timeout_ms: int = 5000
-    receive_poll_timeout_ms: int = 200
+    receive_poll_timeout_ms: int = 100 if os.name == "nt" else 200
     response_timeout_ms: int = 7000
     pll: PLLConfig | None = None
     clock_frequency_mhz: float | None = None
@@ -208,20 +210,28 @@ class UsbConfig:
                 raise ValueError("bus_number is not supported by Windows CyAPI")
         elif (self.bus_number == 0xFF) != (self.device_address == 0xFF):
             raise ValueError("Specify both bus_number and device_address")
-        if self.pll_port is not None:
-            if not self.pll_port or "\0" in self.pll_port:
+        if self.pll_port is not None and (
+            not self.pll_port or "\0" in self.pll_port
+        ):
+            raise ValueError("pll_port must be non-empty and contain no NUL")
+        if self.pll is not None:
+            if (
+                self.clock_frequency_mhz is not None
+                or self.pll_port is not None
+            ):
                 raise ValueError(
-                    "pll_port must be non-empty and contain no NUL"
+                    "Specify either pll or clock_frequency_mhz/pll_port"
                 )
-            if self.clock_frequency_mhz is None:
-                raise ValueError("pll_port requires clock_frequency_mhz")
-        if self.clock_frequency_mhz is not None:
-            if self.pll is not None:
-                raise ValueError("Specify either pll or clock_frequency_mhz")
+        else:
+            frequency = (
+                _DEFAULT_BOARD_CLOCK_MHZ
+                if self.clock_frequency_mhz is None
+                else self.clock_frequency_mhz
+            )
             object.__setattr__(
                 self,
                 "clock_setting",
-                select_pll_clock(self.clock_frequency_mhz),
+                select_pll_clock(frequency),
             )
         if not isinstance(self.timing, CIMTimingConfig):
             raise TypeError("timing must be a CIMTimingConfig")

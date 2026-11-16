@@ -53,7 +53,7 @@ async function request(path: string, body: object = {}): Promise<void> {
   }
 }
 
-const initialUsb: UsbConfig = { vendor_id: 1204, product_id: 241, bulk_in_endpoint: 129, bulk_out_endpoint: 1, bus_number: 255, device_address: 255, timing: { startup_delay_ms: 20, cache_write_delay_ms: 1, weight_write_delay_ms: 2, work_delay_ms: 10, readback_select_delay_ms: 40 } };
+const initialUsb: UsbConfig = { vendor_id: 1204, product_id: 241, bulk_in_endpoint: 129, bulk_out_endpoint: 1, bus_number: 255, device_address: 255, timing: { startup_delay_ms: 20, cache_write_delay_ms: 0, weight_write_delay_ms: 0, work_delay_ms: 0, readback_select_delay_ms: 2 } };
 
 function useEventStream<T>(path: string, onSnapshot: (value: T) => void): boolean {
   const [connected, setConnected] = useState(false);

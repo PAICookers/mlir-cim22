@@ -1,0 +1,4 @@
+interface:
+  display_name: "CIM22 实板测试"
+  short_description: "在 Windows 或 Linux 上运行 CIM22 实板回归、采集 ILA、调整时序和排查故障"
+  default_prompt: "使用 $5-cim22-board-testing 为当前平台准备一次通用实板回归，列出设备参数、Vivado Lab 采集步骤和通过条件。"

@@ -15,9 +15,9 @@
 
 namespace cim22::runtime {
 
-// Supplier-compatible default pacing in CIM22HardwareConfig field order.
+// Board-validated pacing at 128 MHz, in CIM22HardwareConfig field order.
 inline CIM22HardwareConfig defaultCIM22HardwareConfig() {
-  return {20, 1, 2, 10, 40};
+  return {20, 0, 0, 0, 2};
 }
 
 // Materializes validated device commands and returns decoded readbacks in

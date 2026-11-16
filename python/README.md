@@ -219,33 +219,32 @@ with compile_tf(infer, options={"runtime": "simulator"}) as compiled:
 前端通过 `options={"runtime": "usb", "usb_config": config}` 交给公共运行时。直接加载 USB 模型动态库时，在首次 CIM dispatch 前调用 `session.configure_usb(config)`。
 
 ```python
-from cim22 import CIMTimingConfig, UsbConfig
+from cim22 import UsbConfig
 
 config = UsbConfig(
     vendor_id=0x04B4,
     product_id=0x00F1,
     bulk_in_endpoint=0x81,
     bulk_out_endpoint=0x01,
-    timing=CIMTimingConfig(
-        work_delay_ms=10,
-        readback_select_delay_ms=40,
-    ),
+    pll_port="COM5",  # Linux 示例为 /dev/ttyUSB0，按实际设备替换
 )
 ```
 
-按实际 FPGA/FX3 固件设置 VID/PID、端点和接口。Linux 为对应设备配置 USB 访问权限，Windows 使用 CyAPI 与 CyUSB3 驱动。上述配置使用手动时钟。Linux 或 Windows 如需通过串口配置时钟，传入 `clock_frequency_mhz=24` 与实际 `pll_port`，表示写入、计算、回读三个阶段均使用 24 MHz；需要分阶段使用不同频率时，用 `PLLConfig` 指定三个阶段的命令。未列出的频率按实际频率选择最近的 `available` 表项，距离相同时选较低频率，并通过 `RuntimeWarning` 告知请求频率、选中频率及串口命令；`available` 是供应方表中的分类，不代表本次实板稳定性验证。
+按实际 FPGA/FX3 固件设置 VID/PID、端点和接口。运行时通过配置的串口同步设钟。
+
+USB 接收轮询默认在 Windows 上为 100 ms，在 Linux 上为 200 ms。Windows 轮询超时后继续等待同一个 Bulk IN 请求，回包期限由 `response_timeout_ms` 单独设置。
 
 `session.configure_usb()` 打开 USB 设备并绑定时钟回调。Python 使用随 wheel 依赖自动安装的 pyserial，串口在首次执行阶段打开，随 Session 保持连接。C++ 在写入、计算、回读阶段的第一条 USB 命令前同步调用配置回调。首次命令要求匹配回显；后续变化的命令不读取或等待回显，相同的当前命令跳过发送。三个阶段使用相同频率时，首次只需发送一次。重新配置会恢复首次回显要求。
 
-Windows 可直接使用 `COM10` 等端口名称，Linux 使用实际设备路径，无需独立配置脚本。未提供串口表示人工管理时钟；显式指定串口后，设备缺失、权限不足、写入或回显失败均会报错并停止阶段执行，必须显式重新配置后才能恢复。仅记录请求频率不能作为串口配置成功的证据。频率选择与参数校验见 [pll.py](cim22/pll.py) 和 [runtime.py](cim22/runtime.py)。
+串口连接、配置写入或所需回显失败时，运行时停止该阶段。恢复后须重新调用 `session.configure_usb()`。
 
 每条串口命令采用 200 ms 的写入及首次回显期限。后续无回显发送检查驱动输出队列为空，再保留三字节 9600/8N1 的 4 ms 发送等待。驱动队列不一定覆盖 USB 转串口适配器内部缓冲区；该等待是主机发送保障，不是实测校准、PLL 锁定或芯片已切换频率的证明。
 
 原生 C/C++ 使用 `cim22_session_configure_usb_with_clock` 和 `CIM22ClockControl` 注册同步阶段回调；调用方保持函数指针和上下文有效，直到设备被替换或 Session 销毁，且不能在回调中重入同一 Session。旧的 PLL 串口配置 ABI 已移除，原生调用方需要迁移并重新编译，Python 包也必须与新运行库一起重新安装。
 
-`UsbConfig.timing` 统一管理板卡时序：`startup_delay_ms`、
-`cache_write_delay_ms`、`weight_write_delay_ms`、`work_delay_ms` 和
-`readback_select_delay_ms`。默认值分别为 `20/1/2/10/40`，单位为毫秒，允许设为 `0`。
+### 调整板卡时序
+
+[板卡时钟与等待调整指南](../.agents/skills/5-cim22-board-testing/references/timing-tuning.md#配置默认值与覆盖方式)
 
 ## 安装
 
@@ -281,6 +280,8 @@ uv sync --project python --python 3.12 --locked "-Ccmake.define.MLIR_DIR=<MLIR_D
 
 在各自的目标平台从仓库根目录执行。准备 Python 3.12、CMake、Ninja 和本平台的 LLVM/MLIR 工具链。当前验证的 LLVM/MLIR 版本为 22.1.8，`MLIR_DIR` 指向含 `MLIRConfig.cmake` 的目录。两条命令使用独立的 CMake 缓存并将 wheel 写入 `python/dist/`。TensorFlow 依赖通过同一 wheel 的 `[tensorflow]` extra 在安装时选择。
 
+USB 默认开启，下面的命令显式传入 `CIM22_ENABLE_USB=ON`。只构建软件运行时时可改为 `-Ccmake.define.CIM22_ENABLE_USB=OFF`。
+
 ### Linux x86-64
 
 按 [Linux 构建依赖](../docs/BUILDING.md#环境与依赖) 准备 C/C++ 工具链及 libusb 开发库。
@@ -291,6 +292,7 @@ export CMAKE_GENERATOR=Ninja
 uv build --python 3.12 python --wheel --out-dir python/dist \
   "-Cbuild-dir=$PWD/build/wheel-linux" \
   "-Ccmake.build-type=Release" \
+  "-Ccmake.define.CIM22_ENABLE_USB=ON" \
   "-Ccmake.define.MLIR_DIR=$MLIR_DIR"
 ```
 
@@ -307,6 +309,7 @@ $cyapiRoot = (Resolve-Path "third_party/cyapi").Path
 uv build --python 3.12 python --wheel --out-dir python/dist `
   "-Cbuild-dir=$PWD/build/wheel-windows" `
   '-Ccmake.build-type=Release' `
+  "-Ccmake.define.CIM22_ENABLE_USB=ON" `
   "-Ccmake.define.MLIR_DIR=$env:MLIR_DIR" `
   "-Ccmake.define.CYAPI_ROOT=$cyapiRoot"
 ```
@@ -341,3 +344,5 @@ cd python
 修改 C++、TableGen、schema 或 CMake 后，复用原构建目录和配置，通过 `uv sync --reinstall-package mlir-cim22` 重装 editable 包。完整命令、Ruff、原生 lit 和 wheel 验收见 [BUILDING 的测试与开发](../docs/BUILDING.md#测试与开发)。软件执行、模拟 USB 配置及实板结果分开记录。
 
 Web 工作台开发见 [web/README.md](../web/README.md)。
+
+通用实板回归与时序复测见 [CIM22 实板测试说明](../.agents/skills/5-cim22-board-testing/references/workflow.md#运行通用-pytest)。

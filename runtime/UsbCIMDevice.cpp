@@ -5,6 +5,11 @@
 #include "CIM22/Runtime/CIMPacketCodec.h"
 #include "CIM22/Runtime/UsbRecordCodec.h"
 #include "UsbDriver.h"
+#ifdef CIM22_BOARD_OBSERVER
+#include "BoardUsbObserver.h"
+#include <filesystem>
+#include <fstream>
+#endif
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/bit.h"
@@ -45,6 +50,36 @@ llvm::Error usbError(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(), message);
 }
 
+#ifdef CIM22_BOARD_OBSERVER
+struct UsbCapture {
+  explicit UsbCapture(const detail::BoardUsbOptions &options)
+      : gate(options.gate), context(options.context) {
+    auto directory = std::filesystem::u8path(options.directory);
+    planned.open(directory / "planned.bin", std::ios::binary);
+    tx.open(directory / "tx.bin", std::ios::binary);
+    rx.open(directory / "rx.bin", std::ios::binary);
+    weights.open(directory / "weights.csv");
+    weights << "slot,begin,end\n";
+  }
+
+  bool good() const { return planned && tx && rx && weights; }
+
+  static bool save(std::ofstream &stream, llvm::ArrayRef<uint8_t> bytes) {
+    stream.write(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+    stream.flush();
+    return bool(stream);
+  }
+
+  detail::BoardUsbGate gate;
+  void *context;
+  std::ofstream planned, tx, rx, weights;
+  uint64_t plannedBytes = 0;
+  uint64_t txBytes = 0;
+  uint64_t rxBytes = 0; // Protected by the device receive mutex.
+  bool idlePollCompleted = false; // Protected by the device receive mutex.
+};
+#endif
+
 class UsbCIMDevice final : public CIMDevice {
 public:
   UsbCIMDevice(UsbCIMDeviceConfig config,
@@ -54,6 +89,12 @@ public:
 
   ~UsbCIMDevice() override { close(); }
 
+#ifdef CIM22_BOARD_OBSERVER
+  void observe(const detail::BoardUsbOptions &options) {
+    capture_ = std::make_unique<UsbCapture>(options);
+  }
+#endif
+
   llvm::Error open() override {
     std::lock_guard<std::mutex> executionLock(executionMutex_);
     closeUnlocked();
@@ -61,6 +102,10 @@ public:
       return error;
     if (!driver_)
       return usbError("CIM USB platform driver is unavailable");
+#ifdef CIM22_BOARD_OBSERVER
+    if (capture_ && !capture_->good())
+      return usbError("Cannot open USB observation files");
+#endif
     if (llvm::Error error = driver_->open(config_))
       return error;
 
@@ -76,6 +121,10 @@ public:
       stopRequested_ = false;
       opened_ = true;
       receiveLoopStarted_ = false;
+#ifdef CIM22_BOARD_OBSERVER
+      if (capture_)
+        capture_->idlePollCompleted = false;
+#endif
       receiveCodec_ = UsbRecordCodec(config_.wordByteOrder);
     }
     receiveBuffer_.resize(config_.receiveChunkBytes);
@@ -102,6 +151,20 @@ public:
           std::chrono::milliseconds(config_.startupDelayMs));
     {
       std::unique_lock<std::mutex> lock(receiveMutex_);
+#ifdef CIM22_BOARD_OBSERVER
+      if (capture_ &&
+          (!receiveCondition_.wait_for(
+               lock, std::chrono::milliseconds(config_.transferTimeoutMs),
+               [&] {
+                 return capture_->idlePollCompleted || capture_->rxBytes ||
+                        !receiveError_.empty();
+               }) ||
+           capture_->rxBytes)) {
+        lock.unlock();
+        closeUnlocked();
+        return usbError("CIM USB same-handle idle IN check failed");
+      }
+#endif
       if (!receiveError_.empty()) {
         std::string message = receiveError_;
         lock.unlock();
@@ -154,6 +217,23 @@ public:
       if (operation.phase == CIMDevicePhase::Work && !workPhase) {
         if (llvm::Error error = configurePhase(CIMDevicePhase::Work))
           return fault(llvm::toString(std::move(error)));
+#ifdef CIM22_BOARD_OBSERVER
+        if (capture_) {
+          uint64_t received;
+          {
+            std::lock_guard<std::mutex> lock(receiveMutex_);
+            received = capture_->rxBytes;
+            if (hasPendingResponse() || !receiveError_.empty())
+              return fault("CIM Work gate found unexpected IN data");
+          }
+          if (capture_->plannedBytes != capture_->txBytes ||
+              capture_->gate(capture_->context, capture_->txBytes, received))
+            return fault("CIM Work delivery gate failed");
+          std::lock_guard<std::mutex> lock(receiveMutex_);
+          if (capture_->rxBytes != received || !receiveError_.empty())
+            return fault("CIM Work gate received unexpected IN during capture");
+        }
+#endif
         workPhase = true;
       } else if (operation.phase != CIMDevicePhase::Work &&
                  (workPhase ||
@@ -280,8 +360,20 @@ private:
     if (llvm::Error error =
             appendCIMWeightWordsPacket(weight.identity->route, words, flits))
       return error;
+#ifdef CIM22_BOARD_OBSERVER
+    const uint64_t begin = capture_ ? capture_->txBytes : 0;
+#endif
     if (llvm::Error error = executeFlits(flits, operation.postDelayMs))
       return error;
+#ifdef CIM22_BOARD_OBSERVER
+    if (capture_) {
+      capture_->weights << weight.slot << ',' << begin << ','
+                        << capture_->txBytes << '\n';
+      capture_->weights.flush();
+      if (!capture_->weights)
+        return usbError("Cannot record completed USB weight write");
+    }
+#endif
     pendingWeights[weight.slot] = &weight;
     ++weightResidency_.stats.writes;
     return llvm::Error::success();
@@ -311,6 +403,13 @@ private:
       bytes.insert(bytes.end(), encoded.begin(), encoded.end());
     }
 
+#ifdef CIM22_BOARD_OBSERVER
+    if (capture_) {
+      if (!UsbCapture::save(capture_->planned, bytes))
+        return usbError("Cannot preserve planned USB OUT");
+      capture_->plannedBytes += bytes.size();
+    }
+#endif
     size_t offset = 0;
     while (offset < bytes.size()) {
       {
@@ -326,6 +425,14 @@ private:
         return transferred.takeError();
       if (*transferred == 0 || *transferred > request)
         return usbError("CIM USB write returned an invalid transfer length");
+#ifdef CIM22_BOARD_OBSERVER
+      if (capture_) {
+        if (!UsbCapture::save(capture_->tx,
+                              llvm::ArrayRef<uint8_t>(bytes).slice(offset, *transferred)))
+          return usbError("Cannot preserve completed USB OUT");
+        capture_->txBytes += *transferred;
+      }
+#endif
       offset += *transferred;
     }
     return llvm::Error::success();
@@ -466,8 +573,18 @@ private:
         receiveCondition_.notify_all();
         break;
       }
-      if (*count == 0)
+      if (*count == 0) {
+#ifdef CIM22_BOARD_OBSERVER
+        if (capture_) {
+          std::lock_guard<std::mutex> lock(receiveMutex_);
+          if (!capture_->idlePollCompleted) {
+            capture_->idlePollCompleted = true;
+            receiveCondition_.notify_all();
+          }
+        }
+#endif
         continue;
+      }
       if (!appendReceived(buffer, *count))
         break;
     }
@@ -481,9 +598,15 @@ private:
         receiveError_ = std::move(message);
       return false;
     };
-    if (count > buffer.size()) {
+    if (count > buffer.size())
       return fail("CIM USB read returned an invalid transfer length");
+#ifdef CIM22_BOARD_OBSERVER
+    if (capture_) {
+      if (!UsbCapture::save(capture_->rx, buffer.take_front(count)))
+        return fail("Cannot preserve completed USB IN");
+      capture_->rxBytes += count;
     }
+#endif
     llvm::SmallVector<UsbRecord, 16> decoded;
     if (auto error = receiveCodec_.append(buffer.take_front(count), decoded)) {
       return fail(llvm::toString(std::move(error)));
@@ -561,6 +684,9 @@ private:
   bool receiveLoopStarted_ = false;
   bool opened_ = false;
   bool faulted_ = false;
+#ifdef CIM22_BOARD_OBSERVER
+  std::unique_ptr<UsbCapture> capture_;
+#endif
 };
 } // namespace
 
@@ -571,6 +697,15 @@ createUsbCIMDevice(const UsbCIMDeviceConfig &config) {
 }
 
 namespace detail {
+#ifdef CIM22_BOARD_OBSERVER
+std::unique_ptr<CIMDevice>
+createObservedUsbDevice(const UsbCIMDeviceConfig &config,
+                        const BoardUsbOptions &options) {
+  auto device = std::make_unique<UsbCIMDevice>(config, createPlatformUsbDriver());
+  device->observe(options);
+  return device;
+}
+#endif
 std::unique_ptr<CIMDevice>
 createUsbCIMDevice(const UsbCIMDeviceConfig &config,
                    std::unique_ptr<UsbDriver> driver) {

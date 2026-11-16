@@ -17,7 +17,6 @@ static UsbCIMDeviceConfig config() {
   c.productId = 0x00f1;
   c.bulkInEndpoint = 0x81;
   c.bulkOutEndpoint = 0x01;
-  c.receivePollTimeoutMs = 1;
   c.receiveChunkBytes = 64;
   return c;
 }
@@ -27,6 +26,7 @@ static void expectError(llvm::Error error, const char *part) {
 }
 
 int main() {
+  assert(config().receivePollTimeoutMs == 100);
   // Selection must follow the profile, not blindly open device zero.
   fake::reset();
   fake::devices.insert(fake::devices.begin(), {0x1234, 0x5678, 2, 0});

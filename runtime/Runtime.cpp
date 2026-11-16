@@ -6,6 +6,9 @@
 #include "CIM22/Runtime/UsbCIMDevice.h"
 #include "ClockCallback.h"
 #include "Session.h"
+#ifdef CIM22_BOARD_OBSERVER
+#include "BoardUsbObserver.h"
+#endif
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
@@ -339,7 +342,11 @@ extern "C" int cim22_session_invoke(void *handle, void **buffers,
 static int configureUsb(void *handle, const CIM22UsbConfig *config,
                         const CIM22ClockControl *clock,
                         const CIM22HardwareConfig &hardware, char *error,
-                        size_t capacity) {
+                        size_t capacity
+#ifdef CIM22_BOARD_OBSERVER
+                        , const cim22::runtime::detail::BoardUsbOptions *observation = nullptr
+#endif
+                        ) {
   if (!handle || !config) {
     cim22::runtime::copyError("invalid USB runtime configuration", error,
                               capacity);
@@ -399,6 +406,12 @@ static int configureUsb(void *handle, const CIM22UsbConfig *config,
   // Release the interface before replacement. A failed open leaves dispatch
   // disabled; a previous transaction's failure was reported above.
   session.runner.reset();
+#ifdef CIM22_BOARD_OBSERVER
+  if (observation)
+    session.device = cim22::runtime::detail::createObservedUsbDevice(
+        deviceConfig, *observation);
+  else
+#endif
   session.device = cim22::runtime::createUsbCIMDevice(deviceConfig);
   if (auto failure = session.device->open()) {
     cim22::runtime::copyError(llvm::toString(std::move(failure)), error,
@@ -416,6 +429,38 @@ static int configureUsb(void *handle, const CIM22UsbConfig *config,
   return 1;
 #endif
 }
+
+#ifdef CIM22_BOARD_OBSERVER
+extern "C" int cim22_board_configure_usb(
+    void *handle, const CIM22UsbConfig *config,
+    const CIM22HardwareConfig *hardware, const CIM22ClockControl *clock,
+    char *error, size_t capacity, const char *directory,
+    cim22::runtime::detail::BoardUsbGate gate, void *context) {
+  if (!hardware || !directory || !gate) {
+    cim22::runtime::copyError("missing USB observation configuration", error,
+                              capacity);
+    return 1;
+  }
+  const cim22::runtime::detail::BoardUsbOptions observation{directory, gate,
+                                                           context};
+  return configureUsb(handle, config, clock, *hardware, error, capacity,
+                      &observation);
+}
+
+extern "C" int cim22_board_close_usb(void *handle) {
+  if (!handle)
+    return 1;
+  auto &session = *static_cast<Session *>(handle);
+  std::lock_guard<std::mutex> lock(session.mutex);
+  if (!session.device)
+    return 1;
+  session.runner.reset();
+  session.device->close();
+  const bool faulted = session.device->isFaulted();
+  session.device.reset();
+  return faulted ? 1 : 0;
+}
+#endif
 
 extern "C" int cim22_session_configure_usb(void *handle,
                                            const CIM22UsbConfig *config,

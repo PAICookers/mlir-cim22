@@ -1,8 +1,13 @@
 # Execution-only deployment library; Protobuf lite and LLVMSupport are static.
-option(CIM22_ENABLE_USB "Build the platform USB runtime" OFF)
+option(CIM22_ENABLE_USB "Build the platform USB runtime" ON)
+option(CIM22_BOARD_OBSERVER "Enable test-only USB transfer capture and Work gating" OFF)
+if(CIM22_BOARD_OBSERVER AND (NOT CIM22_ENABLE_USB OR SKBUILD))
+  message(FATAL_ERROR "Board observation requires a standalone USB-enabled build")
+endif()
 if(CIM22_ENABLE_USB)
   if(WIN32)
-    set(CYAPI_ROOT "" CACHE PATH "Root of the Cypress EZ-USB FX3 SDK")
+    set(CYAPI_ROOT "${PROJECT_SOURCE_DIR}/third_party/cyapi" CACHE PATH
+      "Root of the Cypress EZ-USB FX3 SDK")
     find_path(CYAPI_INCLUDE_DIR CyAPI.h HINTS "${CYAPI_ROOT}"
       PATH_SUFFIXES library/cpp/inc include REQUIRED)
     find_library(CYAPI_LIBRARY NAMES CyAPI HINTS "${CYAPI_ROOT}"
@@ -105,6 +110,9 @@ endif()
 if(CIM22_ENABLE_USB)
   target_compile_definitions(cim22_runtime PRIVATE CIM22_HAS_USB=1)
   target_link_libraries(cim22_runtime PRIVATE cim22_usb_driver Threads::Threads)
+endif()
+if(CIM22_BOARD_OBSERVER)
+  target_compile_definitions(cim22_runtime PRIVATE CIM22_BOARD_OBSERVER=1)
 endif()
 
 # Keep the device runtime independent from the compiler tool.
