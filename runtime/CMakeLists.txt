@@ -1,8 +1,9 @@
 # Execution-only deployment library; Protobuf lite and LLVMSupport are static.
-option(CIM22_ENABLE_USB "Build the platform USB runtime" OFF)
+option(CIM22_ENABLE_USB "Build the platform USB runtime" ON)
 if(CIM22_ENABLE_USB)
   if(WIN32)
-    set(CYAPI_ROOT "" CACHE PATH "Root of the Cypress EZ-USB FX3 SDK")
+    set(CYAPI_ROOT "${PROJECT_SOURCE_DIR}/third_party/cyapi" CACHE PATH
+      "Root of the Cypress EZ-USB FX3 SDK")
     find_path(CYAPI_INCLUDE_DIR CyAPI.h HINTS "${CYAPI_ROOT}"
       PATH_SUFFIXES library/cpp/inc include REQUIRED)
     find_library(CYAPI_LIBRARY NAMES CyAPI HINTS "${CYAPI_ROOT}"

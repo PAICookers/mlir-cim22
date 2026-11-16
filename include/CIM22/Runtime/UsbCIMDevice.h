@@ -44,7 +44,11 @@ struct UsbCIMDeviceConfig {
   uint32_t startupDelayMs = 20;
   // Transfer timeout and receive polling interval, both in milliseconds.
   uint32_t transferTimeoutMs = 5000;
+#ifdef _WIN32
+  uint32_t receivePollTimeoutMs = 100;
+#else
   uint32_t receivePollTimeoutMs = 200;
+#endif
   // One response deadline per Macro batch, measured after its requests.
   uint32_t responseTimeoutMs = 7000;
   // OUT transfer cap and IN buffer size, in bytes.

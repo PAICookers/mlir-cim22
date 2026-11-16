@@ -125,9 +125,23 @@ def test_usb_defaults_preserve_legacy_usb_abi(
 ) -> None:
     assert usb_config.physical_link == 0
     assert usb_config.logical_channel == 3
+    assert usb_config.receive_poll_timeout_ms == (
+        100 if os.name == "nt" else 200
+    )
+    assert (
+        _UsbConfig.from_config(usb_config).receive_poll_timeout_ms
+        == usb_config.receive_poll_timeout_ms
+    )
     assert usb_config.response_timeout_ms == 7000
-    assert usb_config.timing.work_delay_ms == 10
-    assert usb_config.timing.readback_select_delay_ms == 40
+    native_timing = _HardwareConfig.from_config(usb_config.timing)
+    assert (
+        native_timing.startup_delay_ms,
+        native_timing.cache_write_delay_ms,
+        native_timing.weight_write_delay_ms,
+        native_timing.work_delay_ms,
+        native_timing.readback_select_delay_ms,
+    ) == (20, 0, 0, 0, 2)
+    assert usb_config.clock_setting.actual_frequency_mhz == 128
     assert usb_config.pll is None
     # Existing native callers pass this unversioned structure by pointer.
     assert ctypes.sizeof(_UsbConfig) == 28
@@ -535,10 +549,15 @@ def test_frequency_selection_reaches_all_native_pll_phases(
     usb_config: UsbConfig, mock_usb_session: tuple[Session, Mock, Mock]
 ) -> None:
     session, legacy, with_hardware = mock_usb_session
+    defaults = replace(usb_config, pll_port="/dev/serial/by-id/pll")
+    session.configure_usb(defaults)
+    assert (
+        session._clock_resources.controller.commands
+        == (bytes.fromhex("3C08F4"),) * 3
+    )
     selected = replace(
-        usb_config,
+        defaults,
         clock_frequency_mhz=24,
-        pll_port="/dev/serial/by-id/pll",
     )
     assert selected.clock_setting.serial_hex == "2828A4"
     session.configure_usb(selected)
@@ -580,12 +599,13 @@ def test_frequency_without_serial_keeps_manual_clock(
     session.configure_usb(selected)
     legacy.assert_not_called()
     with_hardware.assert_called_once()
+    assert session._clock_resources.controller is None
 
 
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
-        ({"pll_port": "/dev/pll"}, "requires clock_frequency_mhz"),
+        ({"pll_port": ""}, "pll_port"),
         ({"clock_frequency_mhz": 24, "pll_port": ""}, "pll_port"),
         ({"clock_frequency_mhz": 24, "pll_port": "a\0b"}, "pll_port"),
     ],
@@ -604,6 +624,9 @@ def test_raw_pll_and_frequency_cannot_conflict(
 ) -> None:
     with pytest.raises(ValueError, match="either pll or clock_frequency_mhz"):
         replace(usb_config, pll=pll_config, clock_frequency_mhz=24)
+    with pytest.raises(ValueError, match="either pll or clock_frequency_mhz"):
+        replace(usb_config, pll=pll_config, pll_port="/dev/pll")
+    assert replace(usb_config, pll=pll_config).clock_setting is None
 
 
 def test_old_runtime_requires_reinstall(
