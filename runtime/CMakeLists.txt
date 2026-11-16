@@ -1,5 +1,9 @@
 # Execution-only deployment library; Protobuf lite and LLVMSupport are static.
 option(CIM22_ENABLE_USB "Build the platform USB runtime" ON)
+option(CIM22_BOARD_OBSERVER "Enable test-only USB transfer capture and Work gating" OFF)
+if(CIM22_BOARD_OBSERVER AND (NOT CIM22_ENABLE_USB OR SKBUILD))
+  message(FATAL_ERROR "Board observation requires a standalone USB-enabled build")
+endif()
 if(CIM22_ENABLE_USB)
   if(WIN32)
     set(CYAPI_ROOT "${PROJECT_SOURCE_DIR}/third_party/cyapi" CACHE PATH
@@ -106,6 +110,9 @@ endif()
 if(CIM22_ENABLE_USB)
   target_compile_definitions(cim22_runtime PRIVATE CIM22_HAS_USB=1)
   target_link_libraries(cim22_runtime PRIVATE cim22_usb_driver Threads::Threads)
+endif()
+if(CIM22_BOARD_OBSERVER)
+  target_compile_definitions(cim22_runtime PRIVATE CIM22_BOARD_OBSERVER=1)
 endif()
 
 # Keep the device runtime independent from the compiler tool.

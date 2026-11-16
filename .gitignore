@@ -58,6 +58,7 @@ dkms.conf
 .cache/
 __pycache__/
 .pytest_cache/
+/python/board-results/
 .ruff_cache/
 
 # Local editor configuration
