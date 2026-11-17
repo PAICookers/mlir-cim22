@@ -9,11 +9,13 @@ func.func private @consume(%buffer: memref<16384xf32>, %value: f32) {
 }
 
 // CHECK-LABEL: llvm.func @entry
+// Ownership deallocation remains conservative for Host graphs; the pipeline
+// intentionally does not run optimize-allocation-liveness.
+// CHECK: llvm.call @malloc
+// CHECK: llvm.call @consume
 // CHECK: llvm.call @malloc
 // CHECK: llvm.call @consume
 // CHECK: llvm.call @free
-// CHECK: llvm.call @malloc
-// CHECK: llvm.call @consume
 // CHECK: llvm.call @free
 func.func @entry(%value: f32) {
   %stack = memref.alloca() : memref<16xf32>
