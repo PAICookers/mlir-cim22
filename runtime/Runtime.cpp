@@ -437,7 +437,7 @@ static int configureUsb(void *handle, const CIM22UsbConfig *config,
 }
 
 #ifdef CIM22_BOARD_OBSERVER
-extern "C" int cim22_board_configure_usb(
+extern "C" CIM22_RUNTIME_API int cim22_board_configure_usb(
     void *handle, const CIM22UsbConfig *config,
     const CIM22HardwareConfig *hardware, const CIM22ClockControl *clock,
     char *error, size_t capacity, const char *directory,
@@ -453,7 +453,7 @@ extern "C" int cim22_board_configure_usb(
                       &observation);
 }
 
-extern "C" int cim22_board_close_usb(void *handle) {
+extern "C" CIM22_RUNTIME_API int cim22_board_close_usb(void *handle) {
   if (!handle)
     return 1;
   auto &session = *static_cast<Session *>(handle);

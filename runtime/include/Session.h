@@ -47,18 +47,18 @@ struct Session {
 void copyError(llvm::StringRef message, char *buffer, size_t capacity);
 } // namespace cim22::runtime
 
-extern "C" void
+extern "C" CIM22_RUNTIME_API void
 _mlir_ciface_cim22_dispatch(int64_t id, StridedMemRefType<uint16_t, 2> *input,
                             StridedMemRefType<uint16_t, 2> *output);
-extern "C" void
+extern "C" CIM22_RUNTIME_API void
 _mlir_ciface_cim22_dispatch_sign_split(int64_t id,
                                        StridedMemRefType<uint16_t, 2> *input,
                                        StridedMemRefType<uint16_t, 2> *output);
-extern "C" void
+extern "C" CIM22_RUNTIME_API void
 _mlir_ciface_cim22_dispatch_legacy(int64_t id,
                                    StridedMemRefType<uint16_t, 2> *input,
                                    StridedMemRefType<uint16_t, 2> *output);
-extern "C" void
+extern "C" CIM22_RUNTIME_API void
 _mlir_ciface_cim22_dispatch_int8(int64_t id,
                                  StridedMemRefType<int8_t, 2> *input,
                                  StridedMemRefType<int32_t, 2> *output);

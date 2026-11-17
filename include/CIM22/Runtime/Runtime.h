@@ -5,6 +5,17 @@
 #define CIM22_RUNTIME_RUNTIME_H
 #include <stddef.h>
 #include <stdint.h>
+
+#if defined(_WIN32)
+#if defined(CIM22_RUNTIME_BUILD)
+#define CIM22_RUNTIME_API __declspec(dllexport)
+#else
+#define CIM22_RUNTIME_API __declspec(dllimport)
+#endif
+#else
+#define CIM22_RUNTIME_API
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -63,48 +74,52 @@ typedef struct CIM22HardwareConfig {
 } CIM22HardwareConfig;
 // Shared models need only the execution runtime. Load and configure calls
 // accept an optional error buffer; its capacity includes the terminating NUL.
-void *cim22_session_load_shared(const char *model_file, char *error,
-                                size_t error_capacity);
-void cim22_session_destroy(void *session);
+CIM22_RUNTIME_API void *cim22_session_load_shared(const char *model_file,
+                                                  char *error,
+                                                  size_t error_capacity);
+CIM22_RUNTIME_API void cim22_session_destroy(void *session);
 // Results follow inputs in tensor metadata. Returns -1 for an invalid index.
-int64_t cim22_session_num_inputs(void *session);
-int64_t cim22_session_num_outputs(void *session);
-int64_t cim22_session_rank(void *session, int64_t tensor);
-int64_t cim22_session_dim(void *session, int64_t tensor, int64_t axis);
+CIM22_RUNTIME_API int64_t cim22_session_num_inputs(void *session);
+CIM22_RUNTIME_API int64_t cim22_session_num_outputs(void *session);
+CIM22_RUNTIME_API int64_t cim22_session_rank(void *session, int64_t tensor);
+CIM22_RUNTIME_API int64_t cim22_session_dim(void *session, int64_t tensor,
+                                            int64_t axis);
 // Artifact DataType value: INT8=1, FP32=3, INT32=4; -1 for an invalid index.
-int64_t cim22_session_dtype(void *session, int64_t tensor);
-int64_t cim22_session_num_transactions(void *session);
+CIM22_RUNTIME_API int64_t cim22_session_dtype(void *session, int64_t tensor);
+CIM22_RUNTIME_API int64_t cim22_session_num_transactions(void *session);
 // Counts CIM transaction dispatch attempts during the most recent invoke.
-uint64_t cim22_session_dispatch_count(void *session);
+CIM22_RUNTIME_API uint64_t cim22_session_dispatch_count(void *session);
 // Pass inputs followed by outputs in signature order. Counts are elements
 // per buffer. Zero indicates success. On failure, fetch the diagnostic with
 // cim22_session_error(); output contents are unspecified.
-int cim22_session_invoke(void *session, void **buffers, const int64_t *counts,
-                         int64_t num_buffers);
+CIM22_RUNTIME_API int cim22_session_invoke(void *session, void **buffers,
+                                           const int64_t *counts,
+                                           int64_t num_buffers);
 // Open or replace the USB device for a USB model using default pacing.
 // Returns nonzero on configuration or transport failure.
-int cim22_session_configure_usb(void *session, const CIM22UsbConfig *config,
-                                char *error, size_t error_capacity);
+CIM22_RUNTIME_API int cim22_session_configure_usb(
+    void *session, const CIM22UsbConfig *config, char *error,
+    size_t error_capacity);
 // Copies hardware and clock-control values. Null clock selects manual clock.
 // The caller owns callback/context until replacement or Session destruction.
 // Early validation failures retain the previous device. Once replacement
 // starts, failures leave dispatch disabled and do not retain the new callback.
-int cim22_session_configure_usb_with_clock(void *session,
-                                           const CIM22UsbConfig *config,
-                                           const CIM22HardwareConfig *hardware,
-                                           const CIM22ClockControl *clock,
-                                           char *error, size_t error_capacity);
-int64_t cim22_session_num_readbacks(void *session, int64_t transaction);
+CIM22_RUNTIME_API int cim22_session_configure_usb_with_clock(
+    void *session, const CIM22UsbConfig *config,
+    const CIM22HardwareConfig *hardware, const CIM22ClockControl *clock,
+    char *error, size_t error_capacity);
+CIM22_RUNTIME_API int64_t cim22_session_num_readbacks(void *session,
+                                                      int64_t transaction);
 // Capture one USB transaction with BF16 input bits in binding order (64 per
 // input). Returns one header and six raw body flits per readback, in binding
 // order. Capture bypasses Host IR, numeric restoration and weight reuse.
 // Counts are elements of the respective uint16_t and uint64_t arrays.
-int cim22_session_capture_usb(void *session, int64_t transaction,
-                              const uint16_t *inputs, size_t input_count,
-                              uint64_t *flits, size_t flit_count);
+CIM22_RUNTIME_API int cim22_session_capture_usb(
+    void *session, int64_t transaction, const uint16_t *inputs,
+    size_t input_count, uint64_t *flits, size_t flit_count);
 // Borrowed error string. Copy it before another call can update the error or
 // before destroying the session.
-const char *cim22_session_error(void *session);
+CIM22_RUNTIME_API const char *cim22_session_error(void *session);
 #ifdef __cplusplus
 }
 #endif
