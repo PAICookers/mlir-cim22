@@ -16,6 +16,7 @@ def BindCIMParameters : Pass<"bind-cim-parameters", "::mlir::ModuleOp"> {
   let options = [Option<"parameterFile", "file", "std::string", "\"\"",
                         "MLIR module containing cim.parameters function/arg dictionaries">];
   let dependentDialects = ["::mlir::arith::ArithDialect",
+                           "::mlir::cim::CIMDialect",
                            "::mlir::func::FuncDialect"];
 }
 
