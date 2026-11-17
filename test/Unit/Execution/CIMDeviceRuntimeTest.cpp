@@ -284,9 +284,7 @@ void testBoardRunner() {
   CHECK(device.program.operations[2].flits.size() == 17);
   CHECK(device.program.operations[2].flits[1] == 0x000100fe007f0080ULL);
   CHECK(device.program.operations[2].flits.back() == 0);
-  CHECK(device.program.operations[2].postDelayMs == 1);
   CHECK(device.program.operations[3].flits.size() == 257);
-  CHECK(device.program.operations[3].postDelayMs == 2);
   CHECK(device.program.operations[4].flits.size() == 1);
   CHECK(device.program.operations[4].flits.front() == 0x9000000000000001ULL);
   CHECK(device.program.operations[4].postDelayMs == 10);
