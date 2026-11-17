@@ -23,7 +23,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .example_manager import ExampleManager
 from .manager import USE_DEFAULT_CIM_LAYERS, TaskManager
 from .mnist_manager import MnistManager
-from .storage import Document
+from .storage import Document, read_bytes
 
 
 class ImportRequest(BaseModel):
@@ -264,7 +264,7 @@ def create_app(
             # Read one immutable version so a simultaneous atomic replacement
             # cannot change Content-Length between stat and streaming.
             return Response(
-                (manager.current / "results.csv").read_bytes(),
+                read_bytes(manager.current / "results.csv"),
                 media_type="text/csv",
                 headers={
                     "Content-Disposition": f'attachment; filename="dvs-{manager.current.name}.csv"'
