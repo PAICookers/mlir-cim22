@@ -42,15 +42,18 @@ struct UsbCIMDeviceConfig {
   UsbWordByteOrder wordByteOrder = UsbWordByteOrder::BigEndian;
   // Allow the receive path to settle before open() returns.
   uint32_t startupDelayMs = 20;
-  // Transfer timeout and receive polling interval, both in milliseconds.
-  uint32_t transferTimeoutMs = 5000;
-#ifdef _WIN32
-  uint32_t receivePollTimeoutMs = 100;
-#else
-  uint32_t receivePollTimeoutMs = 200;
-#endif
+  // Common lifecycle deadlines, in milliseconds.
+  uint32_t receiveReadyTimeoutMs = 5000;
   // One response deadline per Macro batch, measured after its requests.
   uint32_t responseTimeoutMs = 7000;
+  // Linux libcyusb transport policy, in milliseconds.
+  uint32_t linuxAsyncInTimeoutMs = 5000;
+  uint32_t linuxSyncOutTimeoutMs = 5000;
+  uint32_t linuxEventPollTimeoutMs = 100;
+  // Windows CyAPI transport policy, in milliseconds.
+  uint32_t windowsAsyncInTimeoutMs = 5000;
+  uint32_t windowsSyncOutTimeoutMs = 5000;
+  uint32_t windowsEventWaitTimeoutMs = 100;
   // OUT transfer cap and IN buffer size, in bytes.
   size_t maxTransferBytes = 512;
   size_t receiveChunkBytes = 32 * 1024;

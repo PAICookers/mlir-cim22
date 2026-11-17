@@ -23,11 +23,17 @@ typedef struct CIM22UsbConfig {
   uint8_t logical_channel;
   // USB record word order: 0 for big-endian, 1 for little-endian.
   uint8_t word_byte_order;
-  // Per-transfer timeout, receive polling interval, and response deadline
-  // per Macro batch after its requests have been sent, all in milliseconds.
-  uint32_t transfer_timeout_ms;
-  uint32_t receive_poll_timeout_ms;
+  // Common receive startup and response deadlines, in milliseconds.
+  uint32_t receive_ready_timeout_ms;
   uint32_t response_timeout_ms;
+  // Linux libcyusb transport policy, in milliseconds.
+  uint32_t linux_async_in_timeout_ms;
+  uint32_t linux_sync_out_timeout_ms;
+  uint32_t linux_event_poll_timeout_ms;
+  // Windows CyAPI transport policy, in milliseconds.
+  uint32_t windows_async_in_timeout_ms;
+  uint32_t windows_sync_out_timeout_ms;
+  uint32_t windows_event_wait_timeout_ms;
 } CIM22UsbConfig;
 // Invoked synchronously before the first USB command in each phase.
 typedef enum CIM22ClockPhase {

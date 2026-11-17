@@ -397,9 +397,15 @@ static int configureUsb(void *handle, const CIM22UsbConfig *config,
       config->word_byte_order == 1
           ? cim22::runtime::UsbWordByteOrder::LittleEndian
           : cim22::runtime::UsbWordByteOrder::BigEndian;
-  deviceConfig.transferTimeoutMs = config->transfer_timeout_ms;
-  deviceConfig.receivePollTimeoutMs = config->receive_poll_timeout_ms;
+  deviceConfig.receiveReadyTimeoutMs = config->receive_ready_timeout_ms;
   deviceConfig.responseTimeoutMs = config->response_timeout_ms;
+  deviceConfig.linuxAsyncInTimeoutMs = config->linux_async_in_timeout_ms;
+  deviceConfig.linuxSyncOutTimeoutMs = config->linux_sync_out_timeout_ms;
+  deviceConfig.linuxEventPollTimeoutMs = config->linux_event_poll_timeout_ms;
+  deviceConfig.windowsAsyncInTimeoutMs = config->windows_async_in_timeout_ms;
+  deviceConfig.windowsSyncOutTimeoutMs = config->windows_sync_out_timeout_ms;
+  deviceConfig.windowsEventWaitTimeoutMs =
+      config->windows_event_wait_timeout_ms;
   deviceConfig.startupDelayMs = hardware.startup_delay_ms;
   deviceConfig.configureClock =
       cim22::runtime::detail::makeClockCallback(clock);

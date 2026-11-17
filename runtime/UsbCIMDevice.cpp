@@ -75,7 +75,7 @@ struct UsbCapture {
   std::ofstream planned, tx, rx, weights;
   uint64_t plannedBytes = 0;
   uint64_t txBytes = 0;
-  uint64_t rxBytes = 0; // Protected by the device receive mutex.
+  uint64_t rxBytes = 0;           // Protected by the device receive mutex.
   bool idlePollCompleted = false; // Protected by the device receive mutex.
 };
 #endif
@@ -133,7 +133,7 @@ public:
     {
       std::unique_lock<std::mutex> lock(receiveMutex_);
       if (!receiveCondition_.wait_for(
-              lock, std::chrono::milliseconds(config_.transferTimeoutMs),
+              lock, std::chrono::milliseconds(config_.receiveReadyTimeoutMs),
               [&] { return receiveLoopStarted_ || !receiveError_.empty(); })) {
         lock.unlock();
         closeUnlocked();
@@ -154,7 +154,7 @@ public:
 #ifdef CIM22_BOARD_OBSERVER
       if (capture_ &&
           (!receiveCondition_.wait_for(
-               lock, std::chrono::milliseconds(config_.transferTimeoutMs),
+               lock, std::chrono::milliseconds(config_.receiveReadyTimeoutMs),
                [&] {
                  return capture_->idlePollCompleted || capture_->rxBytes ||
                         !receiveError_.empty();
@@ -321,8 +321,18 @@ private:
       return usbError("CIM USB link or channel is outside the record format");
     if (config_.maxTransferBytes == 0 ||
         config_.maxTransferBytes > kUsbRecordBytes * 256 ||
-        config_.receiveChunkBytes == 0 || config_.transferTimeoutMs == 0 ||
-        config_.receivePollTimeoutMs == 0 || config_.responseTimeoutMs == 0)
+        config_.receiveChunkBytes == 0 || config_.receiveReadyTimeoutMs == 0 ||
+        config_.responseTimeoutMs == 0
+#ifdef _WIN32
+        || config_.windowsAsyncInTimeoutMs == 0 ||
+        config_.windowsSyncOutTimeoutMs == 0 ||
+        config_.windowsEventWaitTimeoutMs == 0
+#else
+        || config_.linuxAsyncInTimeoutMs == 0 ||
+        config_.linuxSyncOutTimeoutMs == 0 ||
+        config_.linuxEventPollTimeoutMs == 0
+#endif
+    )
       return usbError("CIM USB transfer sizes and timeouts must be non-zero");
     return llvm::Error::success();
   }
@@ -427,8 +437,9 @@ private:
         return usbError("CIM USB write returned an invalid transfer length");
 #ifdef CIM22_BOARD_OBSERVER
       if (capture_) {
-        if (!UsbCapture::save(capture_->tx,
-                              llvm::ArrayRef<uint8_t>(bytes).slice(offset, *transferred)))
+        if (!UsbCapture::save(
+                capture_->tx,
+                llvm::ArrayRef<uint8_t>(bytes).slice(offset, *transferred)))
           return usbError("Cannot preserve completed USB OUT");
         capture_->txBytes += *transferred;
       }
@@ -701,7 +712,8 @@ namespace detail {
 std::unique_ptr<CIMDevice>
 createObservedUsbDevice(const UsbCIMDeviceConfig &config,
                         const BoardUsbOptions &options) {
-  auto device = std::make_unique<UsbCIMDevice>(config, createPlatformUsbDriver());
+  auto device =
+      std::make_unique<UsbCIMDevice>(config, createPlatformUsbDriver());
   device->observe(options);
   return device;
 }

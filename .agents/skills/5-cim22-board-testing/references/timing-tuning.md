@@ -36,6 +36,20 @@
 以下 **24 MHz / 20/1/2/40/100 ms** 保守档也经过实板验证。可用于换板或时序诊断。
 在基于频率表或手动设钟的 USB 配置上覆盖如下。手动路径同步把板卡设为 24 MHz。
 
+### USB 平台时延
+
+平台传输参数分开记录，避免把一个平台的等待值解释成另一个平台的
+传输截止时间：
+
+| 平台 | IN 请求 | OUT 请求 | 事件等待 |
+| --- | --- | --- | --- |
+| Linux/libcyusb | `linux_async_in_timeout_ms` | `linux_sync_out_timeout_ms` | `linux_event_poll_timeout_ms` |
+| Windows/CyAPI | `windows_async_in_timeout_ms` | `windows_sync_out_timeout_ms` | `windows_event_wait_timeout_ms` |
+
+`receive_ready_timeout_ms` 只表示接收线程启动期限，`response_timeout_ms` 表示
+一次 CIM Macro 批次的协议回包期限。Linux IN timeout 到期时是可恢复的空闲请求
+周期；验证中应观察请求重提交，而不是把一次空闲周期报告为设备故障。
+
 ```python
 from dataclasses import replace
 

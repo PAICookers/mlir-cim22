@@ -26,7 +26,7 @@ static void expectError(llvm::Error error, const char *part) {
 }
 
 int main() {
-  assert(config().receivePollTimeoutMs == 100);
+  assert(config().windowsEventWaitTimeoutMs == 100);
   // Selection must follow the profile, not blindly open device zero.
   fake::reset();
   fake::devices.insert(fake::devices.begin(), {0x1234, 0x5678, 2, 0});

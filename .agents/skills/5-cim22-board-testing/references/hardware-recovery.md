@@ -41,6 +41,7 @@ Linux 的 CyUSB 是 libusb 用户态封装。权限问题应按当前发行版�
 - Windows 记录 CyAPI 失败步骤、`NTSTATUS`、`USBD_STATUS` 和完成长度。轮询超时可能
   仍在等待同一 IN；`FinishDataXfer` 失败属于传输故障，即使预期字节已经齐全。
 - Linux 保留 libusb 状态、提交与完成长度；必要时用 usbmon 的 URB 完成记录辅助定位。
+  取消返回硬错误时还要记录该错误，并确认运行时没有无限等待 transfer callback。
   libusb status 1 不能单独判定内核 EPROTO。若重开后首个 IN 报 EPROTO 或零字节，
   检查所加载 runtime 是否重复发送相同的 `SET_INTERFACE`。条件设置路径先用
   `GET_INTERFACE`，仅在实际 alternate setting 不符时切换。

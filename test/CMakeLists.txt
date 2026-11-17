@@ -159,17 +159,6 @@ if(WIN32)
   target_compile_definitions(mlir-cim22-cyapi-driver-test PRIVATE NOMINMAX)
   target_link_libraries(mlir-cim22-cyapi-driver-test PRIVATE LLVMSupport)
 endif()
-if(TARGET PkgConfig::LIBUSB)
-  add_executable(mlir-cim22-libusb-driver-test EXCLUDE_FROM_ALL
-    Unit/Execution/LibusbUsbDriverTest.cpp)
-  llvm_update_compile_flags(mlir-cim22-libusb-driver-test)
-  target_include_directories(mlir-cim22-libusb-driver-test PRIVATE
-    "${PROJECT_SOURCE_DIR}/runtime/include"
-    $<TARGET_PROPERTY:PkgConfig::LIBUSB,INTERFACE_INCLUDE_DIRECTORIES>)
-  target_link_libraries(mlir-cim22-libusb-driver-test PRIVATE LLVMSupport
-    Threads::Threads)
-  target_compile_options(mlir-cim22-libusb-driver-test PRIVATE -fno-rtti)
-endif()
 if(TARGET cim22_usb_driver AND NOT WIN32)
   add_executable(mlir-cim22-libcyusb-driver-test EXCLUDE_FROM_ALL
     Unit/Execution/LibcyusbUsbDriverTest.cpp)
@@ -203,9 +192,6 @@ set(MLIRCIM22_TEST_DEPENDS
 )
 if(TARGET mlir-cim22-usb-runtime-test)
   list(APPEND MLIRCIM22_TEST_DEPENDS mlir-cim22-usb-runtime-test)
-endif()
-if(TARGET mlir-cim22-libusb-driver-test)
-  list(APPEND MLIRCIM22_TEST_DEPENDS mlir-cim22-libusb-driver-test)
 endif()
 if(TARGET mlir-cim22-libcyusb-driver-test)
   list(APPEND MLIRCIM22_TEST_DEPENDS mlir-cim22-libcyusb-driver-test)
