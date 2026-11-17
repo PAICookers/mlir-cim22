@@ -1,0 +1,7 @@
+{
+  "vendor_id": 1204,
+  "product_id": 241,
+  "bulk_in_endpoint": 129,
+  "bulk_out_endpoint": 1,
+  "pll_port": "COM5"
+}

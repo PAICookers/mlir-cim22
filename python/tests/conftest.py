@@ -21,6 +21,67 @@ from ._generated import cim22_model_pb2 as proto
 type ModelLibrary = Callable[[bytes, int], Path]
 type EmbeddedModel = Callable[[Path], proto.ModelArtifact]
 
+_board_failed = pytest.StashKey[str]()
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    group = parser.getgroup("CIM22 board")
+    group.addoption(
+        "--run-board", action="store_true", help="Enable physical USB tests"
+    )
+    group.addoption(
+        "--board-config", help="Path to a local USB configuration JSON"
+    )
+    group.addoption(
+        "--board-output", default="board-results", help="Evidence directory"
+    )
+    group.addoption(
+        "--board-ila-config", help="Local ILA capture configuration JSON"
+    )
+    group.addoption(
+        "--board-repeats",
+        type=int,
+        default=6,
+        help="Calls in the repeated workload, including warmup",
+    )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if config.getoption("run_board"):
+        workers = getattr(config.option, "numprocesses", 0)
+        if workers not in (0, None, "0"):
+            raise pytest.UsageError(
+                "Board tests require a single pytest process"
+            )
+        if config.getoption("board_repeats") < 2:
+            raise pytest.UsageError(
+                "--board-repeats must include warmup and at least one measured call"
+            )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    if config.getoption("run_board"):
+        return
+    for item in items:
+        if item.get_closest_marker("board") is not None:
+            item.add_marker(pytest.mark.skip(reason="requires --run-board"))
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    failure = item.config.stash.get(_board_failed, None)
+    if failure is not None and item.get_closest_marker("board") is not None:
+        pytest.skip(f"board run stopped after failure in {failure}")
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
+    report = yield
+    if report.failed and item.get_closest_marker("board") is not None:
+        item.config.stash.setdefault(_board_failed, item.nodeid)
+    return report
+
 
 @pytest.fixture(
     params=[torch.no_grad, torch.inference_mode], ids=["no-grad", "inference"]

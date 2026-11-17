@@ -227,16 +227,15 @@ PLL_CLOCK_TABLE: tuple[PLLClockSetting, ...] = (
 
 
 def select_pll_clock(frequency_mhz: float) -> PLLClockSetting:
-    """Look up an exact clock target and warn on provisional presets.
+    """Select a listed target or the nearest available clock preset.
 
     Args:
-        frequency_mhz: Target frequency in MHz, as listed in the table.
+        frequency_mhz: Requested clock frequency in MHz.
 
     Returns:
-        The supplier table row and its serial command.
-
-    Raises:
-        ValueError: The table contains no matching target.
+        The supplier table row and its serial command. Unlisted requests
+        use the nearest actual frequency marked available, with ties resolved
+        toward the lower frequency, and emit a RuntimeWarning.
     """
     setting = next(
         (
@@ -247,10 +246,22 @@ def select_pll_clock(frequency_mhz: float) -> PLLClockSetting:
         None,
     )
     if setting is None:
-        raise ValueError(
-            "clock_frequency_mhz is not a listed target in PLL_CLOCK_TABLE "
-            "(199 presets, 15.75–1000 MHz); select a table entry"
+        setting = min(
+            (row for row in PLL_CLOCK_TABLE if row.status == "available"),
+            key=lambda row: (
+                abs(row.actual_frequency_mhz - frequency_mhz),
+                row.actual_frequency_mhz,
+            ),
         )
+        warnings.warn(
+            f"PLL target {frequency_mhz:g} MHz is not listed; using nearest "
+            f"available table frequency {setting.actual_frequency_mhz:g} MHz "
+            f"(target row {setting.target_frequency_mhz:g} MHz, "
+            f"serial {setting.serial_hex})",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return setting
     if setting.status == "maybe available":
         warnings.warn(
             f"PLL table marks target {frequency_mhz:g} MHz as maybe available"

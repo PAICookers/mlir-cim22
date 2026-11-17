@@ -496,3 +496,82 @@ def test_resume_rejects_changed_python_backend(
     revisions[changed_source] = "updated"
     with pytest.raises(ValueError, match="运行环境已变化"):
         engine.DvsEngine(config, tmp_path)
+
+
+def test_layer_defaults_overrides_and_recovery(tmp_path, inputs, monkeypatch):
+    import torch
+
+    from cim22.web import engine
+    from cim22.web.engine import validate_cim_layers
+
+    model = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.ReLU())
+    monkeypatch.setattr(
+        engine,
+        "validate_cim_layer_names",
+        lambda _, selected: validate_cim_layers(model, selected),
+    )
+    root = tmp_path / "results"
+    app = create_app(root, inputs[0], default_cim_layers=["0"])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        body = {"weights": str(inputs[1]), "dataset": str(inputs[2])}
+        assert client.get("/api/defaults").json()["cim_layers"] == ["0"]
+        task = client.post("/api/import", json=body).json()["task"]
+        assert task["cim_layers"] == ["0"]
+        assert task["execution_mode"] == "hybrid"
+        for names in ([], ["0", "0"], ["missing"], ["1"]):
+            response = client.post(
+                "/api/import", json={**body, "cim_layers": names}
+            )
+            assert response.status_code == 409
+            assert client.get("/api/state").json()["task"]["id"] == task["id"]
+        response = client.post("/api/import", json={**body, "cim_layers": None})
+        assert response.json()["task"]["execution_mode"] == "full_model"
+        response = client.post(
+            "/api/import", json={**body, "cim_layers": ["0"]}
+        )
+        task = response.json()["task"]
+    manager = TaskManager(root, inputs[0])
+    try:
+        assert manager.snapshot()["task"]["cim_layers"] == ["0"]
+        assert read_json(manager.current / "config.json")["cim_layers"] == ["0"]
+    finally:
+        manager.close()
+
+
+def test_mnist_api_configuration_and_state(
+    tmp_path: Path, inputs: Inputs
+) -> None:
+    app = create_app(
+        tmp_path / "results", inputs[0], examples_dir=tmp_path / "examples"
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/api/mnist/state").json() == {"task": None}
+        response = client.post(
+            "/api/mnist/run",
+            json={"model": "standard", "epochs": 0},
+        )
+        assert response.status_code == 409
+        assert "训练轮数" in response.json()["detail"]
+        response = client.post(
+            "/api/mnist/run",
+            json={"model": "unknown", "epochs": 1},
+        )
+        assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"epochs": True},
+        {"epochs": 1.5},
+        {"learning_rate": "bad"},
+        {"model": "unknown"},
+    ],
+)
+def test_mnist_rejects_invalid_input_in_chinese(tmp_path, inputs, invalid):
+    app = create_app(tmp_path / "results", inputs[0])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post("/api/mnist/run", json=invalid)
+        assert response.status_code == 422
+        assert "训练配置无效" in response.json()["detail"]
+        assert client.get("/api/mnist/state").json() == {"task": None}

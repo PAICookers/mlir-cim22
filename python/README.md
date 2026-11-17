@@ -136,6 +136,44 @@ INT8 CIM 降低要求显式 `i8 × i8 → i32`、冻结权重和可证明的有�
 
 PyTorch 的 `reference` 忽略 BF16 补偿策略，且不生成原生制品。TensorFlow 可直接调用原 `tf.function` 取得参考结果。
 
+## 按模块名选择 CIM 执行
+
+`cim22.layers` 提供通用 PyTorch 分层执行接口，DVS Web 是它的一个应用。
+对其他网络同样使用完整的 `named_modules()` 名称选择 `Conv2d`、`Linear`
+叶子模块；其余模块继续由 PyTorch CPU 执行。
+
+```python
+import torch
+from cim22.layers import LayerOffload, discover_cim_layers
+
+model = torch.nn.Sequential(
+    torch.nn.Linear(4, 4), torch.nn.ReLU(), torch.nn.Linear(4, 2)
+).cpu().eval()
+x = torch.ones(1, 4)
+print(discover_cim_layers(model, (x,)))
+compiled = LayerOffload(
+    model, ["0", "2"], (x,),
+    runtime="simulator", artifact_dir="artifacts/selected",
+)
+y = compiled(x)
+print(compiled.layer_artifacts, compiled.layer_compile_seconds)
+print(compiled.dispatch_count)
+```
+
+- `LayerOffload` 原地编译选中的叶子层，构造时完成预热；参考模型请事先单独
+  构造或深拷贝。层名不可为空、重复、未知或指向共享模块实例。
+- 模型使用 CPU、eval、固定权重及后端支持的静态输入签名，执行采用
+  `torch.inference_mode()`；模块之外的控制流和输出结构由 PyTorch 保留。
+  不提供通用模型导入器，也不保证所有网络算子均可在 CIM 上执行。
+- 不传 `example_inputs` 的发现接口只枚举结构，尺寸列表为空。传入样本会
+  执行一次模型并通过临时 hook 记录尺寸；有状态模型由应用负责重置。
+- 有状态模型可传 `reset(model)` 回调，在每轮预热前和全部预热结束后重置；
+  正式推理的序列边界仍由应用负责重置，不假定所有网络都使用脉冲状态。
+- 每层独立保存产物及 IR，检查实际 CIM dispatch；后续调用若新增编译产物
+  会报错。使用不同输入尺寸或改变冻结权重时，请重新构造模型并编译。
+- 默认运行时为 `usb`，可传 `usb_config`；软件验证显式使用 `simulator`。
+  这些参数复用现有后端，未增加精度或量化选项。
+
 ## TensorFlow 接口
 
 在 editable 环境的安装命令上加 `--extra tensorflow`。安装 wheel 时使用同一版本的项目 wheel 并指定 `[tensorflow]` extra。两套最小示例分别在新 Python 进程中运行。
@@ -181,25 +219,36 @@ with compile_tf(infer, options={"runtime": "simulator"}) as compiled:
 前端通过 `options={"runtime": "usb", "usb_config": config}` 交给公共运行时。直接加载 USB 模型动态库时，在首次 CIM dispatch 前调用 `session.configure_usb(config)`。
 
 ```python
-from cim22 import CIMTimingConfig, UsbConfig
+from cim22 import UsbConfig
 
 config = UsbConfig(
     vendor_id=0x04B4,
     product_id=0x00F1,
     bulk_in_endpoint=0x81,
     bulk_out_endpoint=0x01,
-    timing=CIMTimingConfig(
-        work_delay_ms=10,
-        readback_select_delay_ms=40,
-    ),
+    pll_port="COM5",  # Linux 示例为 /dev/ttyUSB0，按实际设备替换
 )
 ```
 
-按实际 FPGA/FX3 固件设置 VID/PID、端点和接口。Linux 为对应设备配置 USB 访问权限，Windows 使用 CyAPI 与 CyUSB3 驱动。上述配置使用手动时钟。Linux 如需自动配置，传入 `clock_frequency_mhz` 与实际 `pll_port`，或使用 `PLLConfig` 指定三个阶段的命令。频率选择和设备字段校验见 [pll.py](cim22/pll.py) 和 [runtime.py](cim22/runtime.py)。
+按实际 FPGA/FX3 固件设置 VID/PID、端点和接口。运行时通过配置的串口同步设钟。
 
-`UsbConfig.timing` 统一管理板卡时序：`startup_delay_ms`、
-`cache_write_delay_ms`、`weight_write_delay_ms`、`work_delay_ms` 和
-`readback_select_delay_ms`。默认值分别为 `20/1/2/10/40`，单位为毫秒，允许设为 `0`。
+USB 时延参数按平台分别配置：Linux 使用 `linux_async_in_timeout_ms`、
+`linux_sync_out_timeout_ms` 和 `linux_event_poll_timeout_ms`；Windows 使用
+`windows_async_in_timeout_ms`、`windows_sync_out_timeout_ms` 和
+`windows_event_wait_timeout_ms`。接收线程启动期限由 `receive_ready_timeout_ms`
+设置，回包期限由 `response_timeout_ms` 单独设置。
+
+`session.configure_usb()` 打开 USB 设备并绑定时钟回调。Python 使用随 wheel 依赖自动安装的 pyserial，串口在首次执行阶段打开，随 Session 保持连接。C++ 在写入、计算、回读阶段的第一条 USB 命令前同步调用配置回调。首次命令要求匹配回显；后续变化的命令不读取或等待回显，相同的当前命令跳过发送。三个阶段使用相同频率时，首次只需发送一次。重新配置会恢复首次回显要求。
+
+串口连接、配置写入或所需回显失败时，运行时停止该阶段。恢复后须重新调用 `session.configure_usb()`。
+
+每条串口命令采用 200 ms 的写入及首次回显期限。后续无回显发送检查驱动输出队列为空，再保留三字节 9600/8N1 的 4 ms 发送等待。驱动队列不一定覆盖 USB 转串口适配器内部缓冲区；该等待是主机发送保障，不是实测校准、PLL 锁定或芯片已切换频率的证明。
+
+原生 C/C++ 使用 `cim22_session_configure_usb_with_clock` 和 `CIM22ClockControl` 注册同步阶段回调；调用方保持函数指针和上下文有效，直到设备被替换或 Session 销毁，且不能在回调中重入同一 Session。旧的 PLL 串口配置 ABI 已移除，原生调用方需要迁移并重新编译，Python 包也必须与新运行库一起重新安装。
+
+### 调整板卡时序
+
+[板卡时钟与等待调整指南](../.agents/skills/5-cim22-board-testing/references/timing-tuning.md#配置默认值与覆盖方式)
 
 ## 安装
 
@@ -235,6 +284,8 @@ uv sync --project python --python 3.12 --locked "-Ccmake.define.MLIR_DIR=<MLIR_D
 
 在各自的目标平台从仓库根目录执行。准备 Python 3.12、CMake、Ninja 和本平台的 LLVM/MLIR 工具链。当前验证的 LLVM/MLIR 版本为 22.1.8，`MLIR_DIR` 指向含 `MLIRConfig.cmake` 的目录。两条命令使用独立的 CMake 缓存并将 wheel 写入 `python/dist/`。TensorFlow 依赖通过同一 wheel 的 `[tensorflow]` extra 在安装时选择。
 
+USB 默认开启，下面的命令显式传入 `CIM22_ENABLE_USB=ON`。只构建软件运行时时可改为 `-Ccmake.define.CIM22_ENABLE_USB=OFF`。
+
 ### Linux x86-64
 
 按 [Linux 构建依赖](../docs/BUILDING.md#环境与依赖) 准备 C/C++ 工具链及 libusb 开发库。
@@ -245,6 +296,7 @@ export CMAKE_GENERATOR=Ninja
 uv build --python 3.12 python --wheel --out-dir python/dist \
   "-Cbuild-dir=$PWD/build/wheel-linux" \
   "-Ccmake.build-type=Release" \
+  "-Ccmake.define.CIM22_ENABLE_USB=ON" \
   "-Ccmake.define.MLIR_DIR=$MLIR_DIR"
 ```
 
@@ -261,6 +313,7 @@ $cyapiRoot = (Resolve-Path "third_party/cyapi").Path
 uv build --python 3.12 python --wheel --out-dir python/dist `
   "-Cbuild-dir=$PWD/build/wheel-windows" `
   '-Ccmake.build-type=Release' `
+  "-Ccmake.define.CIM22_ENABLE_USB=ON" `
   "-Ccmake.define.MLIR_DIR=$env:MLIR_DIR" `
   "-Ccmake.define.CYAPI_ROOT=$cyapiRoot"
 ```
@@ -295,3 +348,5 @@ cd python
 修改 C++、TableGen、schema 或 CMake 后，复用原构建目录和配置，通过 `uv sync --reinstall-package mlir-cim22` 重装 editable 包。完整命令、Ruff、原生 lit 和 wheel 验收见 [BUILDING 的测试与开发](../docs/BUILDING.md#测试与开发)。软件执行、模拟 USB 配置及实板结果分开记录。
 
 Web 工作台开发见 [web/README.md](../web/README.md)。
+
+通用实板回归与时序复测见 [CIM22 实板测试说明](../.agents/skills/5-cim22-board-testing/references/workflow.md#运行通用-pytest)。

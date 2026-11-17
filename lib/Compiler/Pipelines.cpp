@@ -4,22 +4,26 @@
 #include "CIM22/Conversion/LinalgToCIM/Passes.h"
 #include "CIM22/Dialect/CIM/IR/CIMDialect.h"
 #include "CIM22/Dialect/CIM/IR/CIMOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetVector.h"
-#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <mutex>
 
@@ -54,14 +58,6 @@ constexpr StringLiteral packetPipeline =
     "func.func(materialize-cim-schedule,map-cim-schedule),"
     "materialize-cim-execution-plan,materialize-cim-static-weight-section,"
     "lower-cimframe-commands-to-packets,verify-cimframe";
-constexpr StringLiteral hostBufferization =
-    "convert-elementwise-to-linalg,"
-    "one-shot-bufferize{bufferize-function-boundaries "
-    "function-boundary-type-conversion=identity-layout-map "
-    "analysis-heuristic=top-down},"
-    "buffer-results-to-out-params{modify-public-functions=true},"
-    "buffer-deallocation-pipeline,"
-    "convert-bufferization-to-memref,lower-cim-host-copies";
 constexpr StringLiteral hostLLVMLowering =
     "convert-linalg-to-loops,expand-strided-metadata,"
     // Fold static descriptors and loop bounds before expanding control flow.
@@ -78,6 +74,113 @@ constexpr StringLiteral hostLLVMLowering =
 void appendPipeline(OpPassManager &pm, StringRef pipeline) {
   if (failed(parsePassPipeline(pipeline, pm)))
     llvm::report_fatal_error("invalid built-in CIM22 pipeline");
+}
+
+// Split only when every released buffer has a provable allocation origin.
+// Aliases stay in one bucket; unknown origins stay in MLIR's simplifier.
+class SplitCIMKnownDeallocs final
+    : public PassWrapper<SplitCIMKnownDeallocs, OperationPass<func::FuncOp>> {
+public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SplitCIMKnownDeallocs)
+
+  StringRef getArgument() const final {
+    return "cim-simplify-independent-deallocs";
+  }
+  StringRef getDescription() const final {
+    return "Split deallocs with known independent allocation buckets";
+  }
+  void getDependentDialects(DialectRegistry &registry) const final {
+    registry.insert<arith::ArithDialect, bufferization::BufferizationDialect,
+                    memref::MemRefDialect>();
+  }
+
+  void runOnOperation() final {
+    SmallVector<bufferization::DeallocOp> candidates;
+    getOperation().walk(
+        [&](bufferization::DeallocOp op) { candidates.push_back(op); });
+
+    for (bufferization::DeallocOp dealloc : candidates) {
+      // Keep control-flow-local releases for the upstream, path-aware pass.
+      if (!dealloc || !dealloc.getRetained().empty() ||
+          dealloc.getMemrefs().empty() ||
+          dealloc->getBlock() != &getOperation().getBody().front())
+        continue;
+
+      struct Bucket {
+        Value allocation;
+        SmallVector<Value> conditions;
+      };
+      SmallVector<Bucket> buckets;
+      llvm::DenseMap<Value, unsigned> bucketIndices;
+      bool allKnownAllocs = true;
+      for (auto [memref, condition] :
+           llvm::zip(dealloc.getMemrefs(), dealloc.getConditions())) {
+        Value allocation = getAllocation(memref);
+        if (!allocation) {
+          allKnownAllocs = false;
+          break;
+        }
+        auto [it, inserted] =
+            bucketIndices.try_emplace(allocation, buckets.size());
+        if (inserted) {
+          buckets.push_back({allocation, {condition}});
+        } else {
+          buckets[it->second].conditions.push_back(condition);
+        }
+      }
+      if (!allKnownAllocs || buckets.size() <= 1)
+        continue;
+
+      PatternRewriter rewriter(&getContext());
+      rewriter.setInsertionPoint(dealloc);
+      for (const Bucket &bucket : buckets) {
+        Value condition = bucket.conditions.front();
+        for (Value additional : llvm::drop_begin(bucket.conditions)) {
+          if (additional != condition)
+            condition = arith::OrIOp::create(rewriter, dealloc.getLoc(),
+                                             condition, additional);
+        }
+        bufferization::DeallocOp::create(rewriter, dealloc.getLoc(),
+                                         bucket.allocation, condition,
+                                         ValueRange{});
+      }
+      rewriter.replaceOp(dealloc, ValueRange{});
+    }
+  }
+
+private:
+  static Value getAllocation(Value value) {
+    while (auto view = value.getDefiningOp<ViewLikeOpInterface>()) {
+      if (value != view.getViewDest())
+        return {};
+      value = view.getViewSource();
+    }
+    return value.getDefiningOp<memref::AllocOp>() ? value : Value();
+  }
+};
+
+void appendHostBufferizationPipeline(OpPassManager &pm) {
+  appendPipeline(pm,
+                 "convert-elementwise-to-linalg,"
+                 // Drop unit iterators before fusion so compatible Host chains
+                 // share a loop nest. CIM kernels have already been split out.
+                 "linalg-fold-unit-extent-dims,linalg-fuse-elementwise-ops,"
+                 "one-shot-bufferize{bufferize-function-boundaries "
+                 "function-boundary-type-conversion=identity-layout-map "
+                 "analysis-heuristic=bottom-up},"
+                 "buffer-results-to-out-params{modify-public-functions=true}");
+  memref::ExpandReallocPassOptions reallocOptions;
+  reallocOptions.emitDeallocs = false;
+  pm.addPass(memref::createExpandReallocPass(reallocOptions));
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(bufferization::createOwnershipBasedBufferDeallocationPass());
+  pm.addPass(createCanonicalizerPass());
+  pm.addNestedPass<func::FuncOp>(std::make_unique<SplitCIMKnownDeallocs>());
+  pm.addPass(bufferization::createBufferDeallocationSimplificationPass());
+  pm.addPass(bufferization::createLowerDeallocationsPass());
+  pm.addPass(createCSEPass());
+  pm.addPass(createCanonicalizerPass());
+  appendPipeline(pm, "convert-bufferization-to-memref,lower-cim-host-copies");
 }
 
 class MarkResidencyLinear final
@@ -456,7 +559,7 @@ public:
   }
   void getDependentDialects(DialectRegistry &registry) const final {
     OpPassManager pm(ModuleOp::getOperationName());
-    appendHostPipeline(pm, /*earlyFree=*/true);
+    appendHostPipeline(pm);
     pm.getDependentDialects(registry);
   }
   void runOnOperation() final {
@@ -476,6 +579,15 @@ public:
       host.emitError("Host LLVM lowering requires outlined CIM kernels");
       return signalPassFailure();
     }
+    if (host.lookupSymbol<func::FuncOp>("__cim_resident_linear")) {
+      // Resident scheduling clones branches into this helper. Run the generic
+      // cleanup only for modules that actually pay for that expansion.
+      OpPassManager residentPM(ModuleOp::getOperationName());
+      appendPipeline(residentPM,
+                     "canonicalize,cse,func.func(canonicalize,cse)");
+      if (failed(runPipeline(residentPM, host)))
+        return signalPassFailure();
+    }
     // Inference inputs belong to the caller, including private C-interface
     // entries. Let One-Shot Bufferize copy before a helper writes to them.
     for (func::FuncOp function : host.getOps<func::FuncOp>()) {
@@ -490,7 +602,7 @@ public:
               BoolAttr::get(host.getContext(), false));
     }
     OpPassManager pm(ModuleOp::getOperationName());
-    appendHostPipeline(pm, canReleaseAfterLastUse(host));
+    appendHostPipeline(pm);
     if (failed(runPipeline(pm, host)))
       return signalPassFailure();
     // Do not silently claim LLVM output when an unsupported Host op survives.
@@ -506,63 +618,11 @@ public:
   }
 
 private:
-  static void appendHostPipeline(OpPassManager &pm, bool earlyFree) {
-    appendPipeline(pm, hostBufferization);
-    if (earlyFree)
-      appendPipeline(pm, "func.func(optimize-allocation-liveness)");
+  static void appendHostPipeline(OpPassManager &pm) {
+    appendHostBufferizationPipeline(pm);
+    // Allocation liveness is expensive across the many transaction wrappers;
+    // ownership deallocation still preserves correctness without this move.
     appendPipeline(pm, hostLLVMLowering);
-  }
-
-  // The upstream pass tracks SSA aliases, not addresses kept by opaque code.
-  // Prove that source IR has no such escapes before bufferization. Native CIM
-  // wrappers may pass numeric stack buffers to their synchronous dispatch.
-  static bool canReleaseAfterLastUse(ModuleOp host) {
-    SymbolTableCollection symbols;
-    auto numericBuffer = [](Type type) {
-      auto buffer = dyn_cast<BaseMemRefType>(type);
-      return !buffer ||
-             isa<IntegerType, FloatType, IndexType>(buffer.getElementType());
-    };
-    return !host.walk([&](Operation *op) {
-                  if (auto call = dyn_cast<func::CallOp>(op)) {
-                    auto callee = symbols.lookupNearestSymbolFrom<func::FuncOp>(
-                        call, call.getCalleeAttr());
-                    if (callee && !callee.isDeclaration())
-                      return WalkResult::advance();
-                    for (Value operand : call.getOperands()) {
-                      if (isa<IntegerType, FloatType, IndexType>(
-                              operand.getType()))
-                        continue;
-                      while (auto cast =
-                                 operand.getDefiningOp<memref::CastOp>())
-                        operand = cast.getSource();
-                      if (!operand.getDefiningOp<memref::AllocaOp>())
-                        return WalkResult::interrupt();
-                    }
-                    return llvm::all_of(
-                               call.getResultTypes(),
-                               [](Type type) {
-                                 return isa<IntegerType, FloatType, IndexType>(
-                                     type);
-                               })
-                               ? WalkResult::advance()
-                               : WalkResult::interrupt();
-                  }
-                  if (isa<ModuleOp, func::FuncOp, func::ReturnOp>(op))
-                    return WalkResult::advance();
-                  if (isa<memref::AllocOp, memref::AllocaOp, memref::CastOp,
-                          memref::CopyOp, memref::DeallocOp, memref::DimOp,
-                          memref::LoadOp, memref::StoreOp>(op) &&
-                      llvm::all_of(op->getOperandTypes(), numericBuffer) &&
-                      llvm::all_of(op->getResultTypes(), numericBuffer))
-                    return WalkResult::advance();
-                  StringRef dialect = op->getName().getDialectNamespace();
-                  return llvm::StringSwitch<WalkResult>(dialect)
-                      .Cases({"arith", "cf", "linalg", "math", "scf", "tensor"},
-                             WalkResult::advance())
-                      .Default(WalkResult::interrupt());
-                })
-                .wasInterrupted();
   }
 };
 
@@ -661,6 +721,7 @@ struct BF16PipelineOptions : PassPipelineOptions<BF16PipelineOptions> {
 void registerCIM22Pipelines() {
   static std::once_flag registration;
   std::call_once(registration, [] {
+    PassRegistration<SplitCIMKnownDeallocs>();
     PassRegistration<LowerHostCopiesPass>();
     PassRegistration<LowerCIMHostToLLVM>();
     PassRegistration<CompileCIMParts>();

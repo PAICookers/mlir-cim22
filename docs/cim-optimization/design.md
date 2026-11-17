@@ -24,6 +24,14 @@ floor(C / B) × ceil(B × t / 40) + ceil((C mod B) × t / 40)
 
 [编译流水线](../../lib/Compiler/Pipelines.cpp) · [对象生成工具](../../tools/mlir-cim22-compile/mlir-cim22-compile.cpp) · [模型 artifact 编解码](../../runtime/src/ModelArtifact.cpp)
 
+### Transaction 输入布局
+
+对象生成器为内部 CIM transaction wrapper 的输入 memref 声明动态正 stride 和 offset。
+wrapper 按输入槽位逐元素打包到连续的 CIM 缓冲区，因此不需要在 bufferization 前为
+非连续 view 额外连续化；输出仍保持原有连续布局。这个属性只作用于内部 wrapper，
+不改变公开 Session 的连续输入要求、权重驻留身份、dispatch 顺序或运行时 ABI。
+负 stride 不在当前 MLIR memref 契约内，遇到不满足布局证明的输入仍由上游流程处理。
+
 ### 模拟器状态与静态绑定
 
 首次执行时解析静态输入、权重、读回绑定及包位置，后续复用。为实际参与计算的 Macro 按需分配输出 Cache 状态。动态输入和数值准备按次更新，跨次保留的权重由 [驻留规则](#驻留身份与生命周期)管理。驻留计算直接读取槽内权重。
@@ -34,11 +42,28 @@ floor(C / B) × ceil(B × t / 40) + ceil((C mod B) × t / 40)
 
 ### Host 缓冲区与 LIF 切片
 
-在所有权缓冲区释放处理后、结构化循环降级前运行提前释放优化。只对能排除堆缓冲区地址逃逸的 Host IR 启用。遇到显式取地址或向不透明函数传递堆缓冲区，保留所有权释放顺序。生成的 CIM 调度 wrapper 使用数值栈暂存区。
+所有权缓冲区释放仍由上游 ownership-based deallocation 处理；针对当前包含大量
+transaction wrapper 的 Host 图，不再额外运行 `optimize-allocation-liveness`。该 pass
+只移动释放位置，不改变计算语义，但在 DVS 用例中会重复扫描大量小函数。生成的 CIM
+调度 wrapper 使用数值栈暂存区。
+
+共用 Host 降级流水线在上游释放简化前运行 `cim-simplify-independent-deallocs`。它只拆分
+没有 retain、且所有释放值沿 `ViewLikeOpInterface` 追溯到明确 `memref.alloc` 的
+`bufferization.dealloc`；同一分配的别名留在同一桶，未知来源、函数参数、分支和循环释放
+原样交给上游路径感知流程。该变换只改变释放分析的输入，不改变权重装载、dispatch 顺序、
+输出绑定或数值归约顺序。
+
+CIM 拆分完成后，Host 侧在 One-Shot Bufferize 前运行上游
+`linalg-fold-unit-extent-dims` 和 `linalg-fuse-elementwise-ops`。只有实际生成
+`__cim_resident_linear` helper 时，才运行 `canonicalize`/`cse` 清理重复 tensor view。
+One-Shot Bufferize 使用 `bottom-up` 分析；在 DVS packet-stage 用例中，较 `top-down`
+显著降低跨 180 个 transaction wrapper 的分析开销。实测仍需保持函数边界和布局
+约束，不能据此放宽输入输出 ABI。这些 pass 不触碰已提取的 CIM kernel；无法证明的
+融合或释放继续走原路径。
 
 LIF 等时间栈中的静态单索引写入可从 `aten.select_scatter` 降到单步 `aten.slice_scatter` 和 `tensor.insert_slice`。先验证索引、形状及类型，不符合条件时沿用原分解。目标和源均可证明非负时，切片插入保持非负性，可供 BF16 符号分析使用。
 
-[Host 降级](../../lib/Compiler/Pipelines.cpp) · [PyTorch 分解](../../python/cim22/backend.py)
+[Host 降级](../../lib/Compiler/Pipelines.cpp) · [Host 优化测试](../../test/Unit/Compiler/host-elementwise-fusion.mlir) · [释放拆分测试](../../test/Unit/Compiler/split-cim-known-deallocs.mlir) · [PyTorch 分解](../../python/cim22/backend.py)
 
 ### 跨算子融合边界
 

@@ -94,7 +94,8 @@ public:
     }
     if (!in_ || !out_)
       return failOpen("CyAPI configured bulk endpoints are unavailable");
-    out_->TimeOut = config.transferTimeoutMs;
+    in_->TimeOut = config.windowsAsyncInTimeoutMs;
+    out_->TimeOut = config.windowsSyncOutTimeoutMs;
     request_ = std::make_unique<ReadRequest>(config.receiveChunkBytes);
     if (!request_->overlapped.hEvent)
       return failOpen("CyAPI IN CreateEvent failed");
@@ -134,7 +135,7 @@ public:
       if (auto error = beginRead())
         return std::move(error);
     const DWORD result = WaitForSingleObject(request_->overlapped.hEvent,
-                                             config_.receivePollTimeoutMs);
+                                             config_.windowsEventWaitTimeoutMs);
     if (result == WAIT_TIMEOUT)
       return 0;
     if (result != WAIT_OBJECT_0)

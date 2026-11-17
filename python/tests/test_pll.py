@@ -87,25 +87,22 @@ def test_stored_serial_fields_agree_with_table_frequencies(
 
 
 @pytest.mark.parametrize(
-    "value",
+    ("requested", "selected", "serial"),
     [
-        0,
-        -1,
-        15.74,
-        26,
-        283.2,
-        1001,
-        float("inf"),
-        float("nan"),
-        10**400,
-        True,
-        False,
-        "24",
-        None,
-        object(),
+        (26, 24, "2828A4"),
+        (283.2, 280, "880A24"),
+        (1001, 984, "A00284"),
     ],
 )
-def test_unlisted_frequencies_are_not_synthesized(value: object) -> None:
-    # 26 MHz is physically synthesizable but absent from the supplier target rows.
-    with pytest.raises(ValueError, match="not a listed target"):
-        select_pll_clock(value)
+def test_unlisted_frequencies_use_nearest_available_preset(
+    requested: float, selected: float, serial: str
+) -> None:
+    with pytest.warns(RuntimeWarning, match="not listed") as emitted:
+        setting = select_pll_clock(requested)
+    assert setting.actual_frequency_mhz == selected
+    assert setting.serial_hex == serial
+    assert setting.status == "available"
+    message = str(emitted[0].message)
+    assert f"{requested:g} MHz" in message
+    assert f"{selected:g} MHz" in message
+    assert serial in message

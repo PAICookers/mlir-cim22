@@ -61,6 +61,7 @@ def worker_main(
         engine = DvsEngine(config, directory)
         seconds = engine.compile(lambda phase: update(status=phase))
         attempts = state.get("compile_attempts", []) + [seconds]
+        metadata = engine.metadata() if hasattr(engine, "metadata") else {}
         update(
             status="running"
             if first_action != "compile"
@@ -70,6 +71,7 @@ def worker_main(
             compile_seconds=seconds,
             compile_attempts=attempts,
             compiled=True,
+            **metadata,
         )
         if first_action != "compile":
             run_samples(directory, config, engine, cancel, update, first_action)
@@ -145,7 +147,14 @@ def run_samples(
             / (len(rows) - initial)
             * (stop - len(rows))
         )
-        update(completed=len(rows), eta_seconds=eta)
+        update(
+            completed=len(rows),
+            eta_seconds=eta,
+            dispatch_count=getattr(engine, "dispatch_count", None),
+            numeric_max_abs_error=getattr(
+                engine, "max_abs_error", lambda: None
+            )(),
+        )
     update(
         status="completed"
         if len(rows) == len(entries)

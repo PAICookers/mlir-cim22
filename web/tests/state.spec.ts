@@ -1,5 +1,9 @@
 import { expect, test, type Route } from "@playwright/test";
 
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/cim-layers", (route) => route.fulfill({ json: [] }));
+});
+
 const ready = {
   id: "fixture",
   status: "ready",
@@ -158,4 +162,50 @@ test("framework verification exposes the USB configuration", async ({
     bulk_in_endpoint: 129,
     bulk_out_endpoint: 1,
   });
+});
+
+
+test("DVS defaults and reimport draft survive same-task SSE", async ({ page }) => {
+  await page.addInitScript(() => {
+    const streams = new Set<{ onmessage?: (event: MessageEvent) => void }>();
+    window.EventSource = class {
+      onopen?: (event: Event) => void;
+      onmessage?: (event: MessageEvent) => void;
+      constructor() { streams.add(this); queueMicrotask(() => this.onopen?.(new Event("open"))); }
+      close() { streams.delete(this); }
+    } as unknown as typeof EventSource;
+    window.addEventListener("test:snapshot", (event) => {
+      for (const stream of streams) stream.onmessage?.(new MessageEvent("message", { data: JSON.stringify((event as CustomEvent).detail) }));
+    });
+  });
+  await page.route("**/api/defaults", (route) => route.fulfill({ json: { weights: ready.weights, dataset: ready.dataset, cim_layers: ["head"] } }));
+  await page.route("**/api/cim-layers", (route) => route.fulfill({ json: [{ name: "head", type: "Linear", input_shape: [32, 1, 4], output_shape: [32, 1, 11], weight_shape: [11, 4] }] }));
+  const bodies: unknown[] = [];
+  await page.route("**/api/import", async (route) => {
+    bodies.push(route.request().postDataJSON());
+    await route.fulfill({ json: { task: ready } });
+  });
+  await page.goto("/#dvs");
+  const mode = page.getByRole("checkbox", { name: "仅将选定叶子层部署到 CIM，其余层在 CPU 执行" });
+  await expect(mode).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: /head Linear/ })).toBeChecked();
+  await page.getByRole("button", { name: "导入模型与测试集" }).click();
+  await expect.poll(() => bodies.length).toBe(1);
+  expect(bodies[0]).toMatchObject({ cim_layers: ["head"] });
+  await page.evaluate((task) => window.dispatchEvent(new CustomEvent("test:snapshot", { detail: { task } })), { ...ready, cim_layers: ["head"], execution_mode: "hybrid" });
+  await page.getByRole("button", { name: "更换输入 / 新建测试" }).click();
+  await mode.uncheck();
+  await page.evaluate((task) => window.dispatchEvent(new CustomEvent("test:snapshot", { detail: { task } })), { ...ready, cim_layers: ["head"], execution_mode: "hybrid" });
+  await expect(mode).not.toBeChecked();
+  await expect(page.getByRole("button", { name: "导入模型与测试集" })).toBeVisible();
+  await page.getByRole("button", { name: "导入模型与测试集" }).click();
+  await expect.poll(() => bodies.length).toBe(2);
+  expect(bodies[1]).toMatchObject({ cim_layers: null });
+});
+
+test("DVS layer discovery errors stay visible without crashing", async ({ page }) => {
+  await page.route("**/api/cim-layers", (route) => route.fulfill({ status: 409, json: { detail: "候选层读取失败" } }));
+  await page.goto("/#dvs");
+  await expect(page.getByRole("alert")).toContainText("候选层读取失败");
+  await expect(page.getByRole("heading", { name: "DVS 推理对比" })).toBeVisible();
 });

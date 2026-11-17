@@ -76,3 +76,48 @@ pnpm test
 ```
 
 构建结果写入 `python/cim22/web/static/`，Python 服务不需要常驻 Node.js。
+
+## DVS 指定层执行
+
+列出固定模型可选的 `Conv2d`、`Linear` 叶子层及实际多步输入/输出尺寸：
+
+```sh
+cim22-web --model-dir /path/to/model-package --list-cim-layers
+cim22-web --model-dir /path/to/model-package --cim-layers classifier.head.5
+```
+
+`--cim-layers` 接受一个或多个不同的完整模块名，作为新任务的默认选择。
+DVS 导入表单可以修改选择，或关闭指定层模式以使用原整模型路径。
+选定层经 CIM 后端执行，其余层由 PyTorch CPU 执行；当前 DVS 页面继续使用
+`simulator`，框架示例页面的 USB 配置语义不变。
+
+`POST /api/import` 的 `cim_layers` 字段省略时使用服务默认值，`null` 表示整模型，
+非空字符串列表表示指定层。空列表、重复、未知、非叶子、不支持的模块类型及
+模块别名均会被拒绝。`GET /api/cim-layers` 返回候选层及尺寸。
+
+任务目录的 `config.json` 和 `state.json` 保存实际层名、运行模式和后端。
+每层产物及 IR 位于 `artifacts/<完整层名中的点替换为双下划线>/`；
+状态记录每层编译及预热耗时、最新调用的 dispatch 总数和最新样本输出最大绝对误差。
+编译与预热不计入正式样本推理耗时。选中任一层没有 artifact 或 CIM dispatch
+会报错，正式样本触发新编译也会报错。软件结果不能作为实板执行证据。
+
+### 分层执行的软件回归
+
+依赖和原生工具链就绪后，在 `python/` 执行：
+
+```sh
+python -m pytest -q tests/test_dvs_layers.py
+```
+
+测试覆盖单层、连续两个 Linear 和中间保留 CPU Linear 的不连续选择，
+逐层检查真实 simulator dispatch、独立产物、重复执行及 CPU 数值对比。
+
+
+## MNIST 模型训练
+
+Web 工作台的“MNIST 训练”页面提供固定的 PyTorch 两层全连接模型：`small`
+为 `784 -> 64 -> 10`，`standard` 为 `784 -> 128 -> 10`。页面可设置训练轮数、
+batch size、学习率和数据缓存目录；数据不存在时会自动联网下载到缓存目录。训练
+过程显示文本日志，每轮保存 Loss 和测试集准确率，并保留 `model.pt`、`config.json`、
+`metrics.jsonl`、`summary.json` 和 `train.log`。该入口用于模型配置和训练验收，
+不提供命令行训练选项、量化配置或任意拓扑编辑。

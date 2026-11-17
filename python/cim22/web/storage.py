@@ -10,8 +10,15 @@ import io
 import json
 import math
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, TypedDict
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 # Match the verified DatasetFolder lexicographic class mapping, including '10'.
 CLASSES = sorted(map(str, range(11)))
@@ -35,6 +42,30 @@ class Result(TypedDict):
 FIELDS = list(Result.__annotations__)
 
 
+@contextmanager
+def _storage_lock(directory: Path) -> Iterator[None]:
+    """Serialize state-file reads and replacements across processes."""
+    lock_path = directory / ".storage.lock"
+    with lock_path.open("a+b") as stream:
+        if os.name == "nt":
+            stream.seek(0, 2)
+            if stream.tell() == 0:
+                stream.write(b"\0")
+                stream.flush()
+            stream.seek(0)
+            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
 def digest(path: Path) -> str:
     """Hash file contents for restart identity checks."""
     with path.open("rb") as stream:
@@ -43,19 +74,20 @@ def digest(path: Path) -> str:
 
 def atomic_text(path: Path, content: str) -> None:
     """Publish a durable whole file, never a partially written CSV/JSON."""
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="") as stream:
-        stream.write(content)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
-    if os.name == "nt":
-        return
-    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    with _storage_lock(path.parent):
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        with temporary.open("w", encoding="utf-8", newline="") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        if os.name == "nt":
+            return
+        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
 
 def save_json(path: Path, value: object) -> None:
@@ -63,7 +95,14 @@ def save_json(path: Path, value: object) -> None:
 
 
 def read_json(path: Path) -> Document:
-    return json.loads(path.read_text(encoding="utf-8"))
+    with _storage_lock(path.parent):
+        return json.loads(path.read_text(encoding="utf-8"))
+
+
+def read_bytes(path: Path) -> bytes:
+    """Read one published result while excluding a concurrent replacement."""
+    with _storage_lock(path.parent):
+        return path.read_bytes()
 
 
 def save_rows(directory: Path, rows: list[Result]) -> None:
@@ -76,13 +115,14 @@ def save_rows(directory: Path, rows: list[Result]) -> None:
 
 def read_rows(directory: Path) -> list[Result]:
     path = directory / "results.csv"
-    if not path.exists():
-        return []
-    with path.open(encoding="utf-8", newline="") as stream:
-        reader = csv.DictReader(stream)
-        if reader.fieldnames != FIELDS:
-            raise ValueError("结果 CSV 表头无效，无法续跑")
-        raw = list(reader)
+    with _storage_lock(directory):
+        if not path.exists():
+            return []
+        with path.open(encoding="utf-8", newline="") as stream:
+            reader = csv.DictReader(stream)
+            if reader.fieldnames != FIELDS:
+                raise ValueError("结果 CSV 表头无效，无法续跑")
+            raw = list(reader)
     rows: list[Result] = []
     for i, row in enumerate(raw):
         if any(value is None for value in row.values()) or None in row:
@@ -129,7 +169,12 @@ def totals(rows: list[Result]) -> Document:
     }
 
 
-def make_config(model_dir: Path, weights: Path, dataset: Path) -> Document:
+def make_config(
+    model_dir: Path,
+    weights: Path,
+    dataset: Path,
+    cim_layers: list[str] | None = None,
+) -> Document:
     """Index cached frames using the fixed training label order."""
     source = model_dir / "model_mobilenet_snn_deploy.py"
     for path in (source, weights):
@@ -161,6 +206,7 @@ def make_config(model_dir: Path, weights: Path, dataset: Path) -> Document:
         "classes": CLASSES,
         "input_shape": INPUT_SHAPE,
         "runtime": "simulator",
+        "cim_layers": list(cim_layers) if cim_layers is not None else None,
     }
 
 
@@ -170,6 +216,9 @@ def validate_config(config: Document) -> None:
         Path(config["model_dir"]),
         Path(config["weights"]),
         Path(config["dataset"]),
+        config.get("cim_layers"),
     )
-    if current != config:
+    expected = dict(config)
+    expected.setdefault("cim_layers", None)
+    if current != expected:
         raise ValueError("模型、权重或测试集已变化，请重新导入为新任务")

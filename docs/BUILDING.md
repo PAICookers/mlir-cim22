@@ -11,13 +11,13 @@
 
 ## 环境与依赖
 
-需要 Git、C++17 编译器、**CMake >=3.28**、Ninja，以及 Python 后端和测试所需的 Python 3.12 与 [uv](https://docs.astral.sh/uv/getting-started/installation/)。USB 构建按需开启；默认关闭时不需要 CyUSB SDK。开启 Linux USB 时需要仓库 `third_party/cyusb-linux` 中的最小依赖（或外部 SDK）以及系统 `libusb-1.0` 开发文件。
+需要 Git、C++17 编译器、**CMake >=3.28**、Ninja，以及 Python 后端和测试所需的 Python 3.12 与 [uv](https://docs.astral.sh/uv/getting-started/installation/)。新构建目录默认开启 USB。Linux 需要仓库 `third_party/cyusb-linux` 中的最小依赖（或外部 SDK）以及系统 `libusb-1.0` 开发文件。只构建软件运行时时，CMake 传入 `-DCIM22_ENABLE_USB=OFF`，通过 uv 构建或安装时传入 `-Ccmake.define.CIM22_ENABLE_USB=OFF`。已有构建目录会保留缓存中的 USB 选项，可显式传入 `ON` 更新。
 
 Linux USB 后端通过 `libcyusb` 使用系统 libusb。设置 `-DCIM22_ENABLE_USB=ON` 后，CMake 默认使用仓库的 [third_party/cyusb-linux](../third_party/cyusb-linux/README.md)；也可设置 `-DCYUSB_ROOT=/path/to/cyusb_linux_1.0.5`，或分别设置 `CYUSB_INCLUDE_DIR` 和 `CYUSB_LIBRARY`。仓库 bundle 会自动安装许可证；使用外部 SDK 构建私有 wheel 时许可证文件可省略，分发该 wheel 时应通过 `CYUSB_LICENSE_FILE` 保留对应许可证文本。不需要执行 SDK 的 `install.sh`。设备访问权限和板卡配套的 FX3 固件需另行准备；构建主机库不会下载设备固件。
 
 运行源码构建出的程序时，动态加载器还必须能找到 `libcyusb.so`；如果 SDK 不在系统库目录中，请设置 `LD_LIBRARY_PATH`，或使用发行版/部署系统提供的等效库路径。wheel 会将仓库或指定 SDK 的 `libcyusb.so` 安装到 `cim22/lib`，并保留第三方许可证。
 
-PLL 自动串口控制仅支持 Linux，使用 POSIX 接口，不需要 PyUSB 或 pyserial。Linux 上未提供串口或指定设备不存在时，使用用户手动设置的时钟，不计为程序已配置或校验 PLL。Windows 保留 CyAPI USB 支持，省略串口选项并手动设钟；请求自动串口控制会报错。设备权限及可选串口的使用方法见 [USB 与 PLL 配置](../python/README.md#usb-与-pll-配置)。
+[板卡测试、USB 与 PLL 操作指南](../.agents/skills/5-cim22-board-testing/SKILL.md)
 
 例如 Ubuntu 24.04：
 
@@ -135,7 +135,7 @@ PyTorch 后端使用 `stage=packet` 和自动列宽。上述参数由优化器 C
 
 ### 构建 wheel
 
-发布包含 Web 界面的 wheel 前，先按 [Web 构建说明](../web/README.md#从源码构建) 生成静态页面。
+构建 wheel 前，先按 [Web 构建说明](../web/README.md#开发) 生成静态页面。本地构建和 CI 打包都使用这些文件。
 
 在当前终端设置 `MLIR_DIR`，并显式传给 wheel 构建。将下面的路径替换为实际 LLVM/MLIR 工具链路径；若按上文构建，使用 `$(cd ../llvm-build && pwd)/lib/cmake/mlir`：
 
@@ -166,7 +166,7 @@ cim22/
 
 ## GitHub Actions 预编译 wheel
 
-[wheel 工作流](../.github/workflows/wheels.yml) 在 `main` 更新或推送 `v*` 标签时自动构建，也支持从 Actions 页面手动运行；没有每日定时任务。Linux 使用 manylinux_2_28 x86-64，Windows 使用 Windows Server 2022 / MSVC x64；两者均为 Release、USB 开启、测试和 ONNX 导入器关闭。两平台的 validate job 都下载独立 wheel 和 checksum，在干净 Python 3.12 环境中运行相同的框架示例、focused pytest 和 Web UI smoke check。
+[wheel 工作流](../.github/workflows/wheels.yml) 在 `main` 的 wheel 输入发生变化或推送 `v*` 标签时自动构建，也支持从 Actions 页面手动运行；没有每日定时任务。Linux 使用 manylinux_2_28 x86-64，Windows 使用 Windows Server 2022 / MSVC x64；两者均为 Release、USB 开启、测试和 ONNX 导入器关闭。两平台的 validate job 都下载独立 wheel 和 checksum，在干净 Python 3.12 环境中运行相同的框架示例、focused pytest 和 Web UI smoke check。
 
 源码 `python/pyproject.toml` 的版本是当前开发目标，例如 `1.0.0`：
 
@@ -269,7 +269,7 @@ CMAKE_BUILD_PARALLEL_LEVEL=4 uv build --python 3.12 python \
   -Ccmake.define.CIM22_ENABLE_USB=ON
 ```
 
-默认 USB 关闭时，源码构建不需要 CyUSB SDK。启用 Linux 或 Windows USB 时，分别通过 `CYUSB_ROOT` 或 `CYAPI_ROOT` 指向本地供应方 SDK；GitHub Actions 的预编译 wheel 直接使用 checkout 中的 `third_party` 依赖。
+USB 构建默认使用 checkout 中的 `third_party` 依赖。可通过 `CYUSB_ROOT`（Linux）或 `CYAPI_ROOT`（Windows）指定外部 SDK。设置 `CIM22_ENABLE_USB=OFF` 时可省去板卡 SDK。
 
 `uv --offline` 只限制 Python 下载，不能阻止 CMake FetchContent 访问网络。离线构建应预先准备固定版本及其传递依赖源码，并通过以下构建参数指定本地路径；仅启用 ONNX 时需要最后一项：
 
@@ -302,7 +302,7 @@ cmake --build ../llvm-build-windows --parallel 2 --target mlir-opt `
   MLIRLLVMToLLVMIRTranslation MLIRTargetLLVMIRExport
 ```
 
-Windows USB 使用 **Cypress CyAPI / CyUSB3** 驱动。仓库的 `third_party/cyapi` 已包含构建所需的官方 x64 依赖；也可自备匹配 x64 和 MSVC 运行库的 Cypress EZ-USB FX3 SDK。`CYAPI_ROOT` 指向该目录或 SDK 根目录（`library/cpp/inc`、`library/cpp/lib/x64/CyAPI.lib`），也可分别指定 `CYAPI_INCLUDE_DIR` 和 `CYAPI_LIBRARY`。
+Windows USB 使用 **Cypress CyAPI / CyUSB3** 驱动。CMake 默认从仓库的 `third_party/cyapi` 查找官方 x64 依赖。`CYAPI_ROOT` 可改为匹配 x64 和 MSVC 运行库的 Cypress EZ-USB FX3 SDK 根目录（`library/cpp/inc`、`library/cpp/lib/x64/CyAPI.lib`），也可分别指定 `CYAPI_INCLUDE_DIR` 和 `CYAPI_LIBRARY`。
 
 ```powershell
 cmake -G Ninja -S . -B build/windows -DCMAKE_BUILD_TYPE=Release `
@@ -326,6 +326,7 @@ $env:CMAKE_GENERATOR = "Ninja"
 uv build --python 3.12 python --wheel --out-dir python/dist `
   -C build-dir=build/windows-wheel `
   -C cmake.define.MLIR_DIR=C:/path/to/llvm-build-windows/lib/cmake/mlir `
+  -C cmake.define.CIM22_ENABLE_USB=ON `
   -C "cmake.define.CYAPI_ROOT=$PWD/third_party/cyapi"
 ```
 
@@ -337,6 +338,7 @@ Windows wheel 包含 `mlir-cim22-opt.exe`、`mlir-cim22-compile.exe`、`cim22_ru
 uv sync --project python --python 3.12 --locked --group dev `
   -C build-dir=build/windows `
   -C cmake.define.MLIR_DIR=C:/path/to/llvm-build-windows/lib/cmake/mlir `
+  -C cmake.define.CIM22_ENABLE_USB=ON `
   -C "cmake.define.CYAPI_ROOT=$PWD/third_party/cyapi"
 uv run --directory python --no-sync pytest tests/test_artifacts.py tests/test_backend.py tests/test_convolution.py tests/test_model_format.py tests/test_compile_tool.py tests/test_usb_runtime.py
 ```

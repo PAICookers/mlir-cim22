@@ -14,6 +14,7 @@ from typing import Literal, Self
 import numpy as np
 from numpy.typing import NDArray
 
+from ._pll_serial import ClockControl, ClockResources, PLLSerial
 from .pll import PLLClockSetting, select_pll_clock
 
 type TensorArray = NDArray[np.float32 | np.int8 | np.int32]
@@ -25,6 +26,7 @@ _BOUNDARY_DTYPES = {
 }
 
 MODEL_SUFFIX = ".dll" if os.name == "nt" else ".so"
+_DEFAULT_BOARD_CLOCK_MHZ = 128
 
 
 def _load_library(path: Path) -> ctypes.CDLL:
@@ -51,14 +53,15 @@ def _release_session(
 class PLLConfig:
     """Serial PLL commands for the configuration, work and readback phases.
 
-    The native runtime checks PLL limits before opening USB. On Linux, a
-    missing serial device uses the manually configured clock. A present
-    device must echo the command exactly. An echoed word can be reused
-    across phases and transactions within the open USB session. Configure
-    the clock manually on Windows.
+    Python checks PLL limits before opening USB and uses pyserial for
+    Linux and Windows 9600/8N1 serial ports. An explicitly selected port
+    must exist and be accessible. The first successful configuration in
+    an open USB session requires an exact echo; later changed commands are
+    sent without waiting for echo. An unchanged current command is reused.
+    Reopening the session requires a new initial echo.
 
     Attributes:
-        port: Linux serial device path.
+        port: Linux serial device path or Windows COM name (for example COM10).
         config_hex: Six-digit hexadecimal word for the configuration phase.
         work_hex: Six-digit hexadecimal word for the WorkOnce phase.
         readback_hex: Six-digit hexadecimal word for the readback phase.
@@ -81,6 +84,11 @@ class PLLConfig:
                 char not in "0123456789abcdefABCDEF" for char in value
             ):
                 raise ValueError(f"{name} must be a six-digit HEX string")
+            word = int(value, 16)
+            nf = ((word >> 18) & 63) + 1
+            nr = ((word >> 14) & 15) + 1
+            if 24 * nf < 250 * nr:
+                raise ValueError("PLL VCO must be at least 250 MHz")
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,10 +106,10 @@ class CIMTimingConfig:
     """
 
     startup_delay_ms: int = 20
-    cache_write_delay_ms: int = 1
-    weight_write_delay_ms: int = 2
-    work_delay_ms: int = 10
-    readback_select_delay_ms: int = 40
+    cache_write_delay_ms: int = 0
+    weight_write_delay_ms: int = 0
+    work_delay_ms: int = 0
+    readback_select_delay_ms: int = 2
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -135,17 +143,23 @@ class UsbConfig:
         logical_channel: Bridge transmit-channel index (0–7).
         word_byte_order: Record word order, 0 for big-endian and 1 for
             little-endian.
-        transfer_timeout_ms: Timeout for a USB write transfer.
-        receive_poll_timeout_ms: Poll timeout for the USB receive loop.
+        receive_ready_timeout_ms: Deadline for the receive loop to start.
         response_timeout_ms: Deadline for collecting one Macro readback batch.
+        linux_async_in_timeout_ms: Linux libcyusb IN transfer timeout.
+        linux_sync_out_timeout_ms: Linux libcyusb OUT transfer timeout.
+        linux_event_poll_timeout_ms: Linux libusb event poll interval.
+        windows_async_in_timeout_ms: Windows CyAPI IN endpoint timeout.
+        windows_sync_out_timeout_ms: Windows CyAPI OUT endpoint timeout.
+        windows_event_wait_timeout_ms: Windows event wait interval.
         pll: Optional serial PLL words, one per phase.
-        clock_frequency_mhz: Optional table target in MHz for all three phases.
-            Mutually exclusive with pll.
-        pll_port: Optional Linux serial path for clock_frequency_mhz. Without
-            it the caller sets the clock manually.
+        clock_frequency_mhz: Frequency in MHz for configuration, work and
+            readback. None selects 128 MHz when pll is omitted. Unlisted
+            values use the nearest available table entry with a warning.
+        pll_port: Serial port for the table-selected clock. Without it the
+            caller sets the clock manually or supplies a PLLConfig.
         timing: Board startup and operation pacing.
-        clock_setting: Resolved table entry, if requested. It records nominal
-            table settings. Readback timing still uses the configured delays.
+        clock_setting: Resolved nominal table entry. None when the caller
+            supplies a PLLConfig.
     """
 
     vendor_id: int
@@ -159,9 +173,14 @@ class UsbConfig:
     physical_link: int = 0
     logical_channel: int = 3
     word_byte_order: Literal[0, 1] = 0
-    transfer_timeout_ms: int = 5000
-    receive_poll_timeout_ms: int = 200
+    receive_ready_timeout_ms: int = 5000
     response_timeout_ms: int = 7000
+    linux_async_in_timeout_ms: int = 5000
+    linux_sync_out_timeout_ms: int = 5000
+    linux_event_poll_timeout_ms: int = 100
+    windows_async_in_timeout_ms: int = 5000
+    windows_sync_out_timeout_ms: int = 5000
+    windows_event_wait_timeout_ms: int = 100
     pll: PLLConfig | None = None
     clock_frequency_mhz: float | None = None
     pll_port: str | None = None
@@ -182,14 +201,49 @@ class UsbConfig:
             ("physical_link", self.physical_link, 0, 3),
             ("logical_channel", self.logical_channel, 0, 7),
             ("word_byte_order", self.word_byte_order, 0, 1),
-            ("transfer_timeout_ms", self.transfer_timeout_ms, 1, 0xFFFFFFFF),
             (
-                "receive_poll_timeout_ms",
-                self.receive_poll_timeout_ms,
+                "receive_ready_timeout_ms",
+                self.receive_ready_timeout_ms,
                 1,
                 0xFFFFFFFF,
             ),
             ("response_timeout_ms", self.response_timeout_ms, 1, 0xFFFFFFFF),
+            (
+                "linux_async_in_timeout_ms",
+                self.linux_async_in_timeout_ms,
+                1,
+                0xFFFFFFFF,
+            ),
+            (
+                "linux_sync_out_timeout_ms",
+                self.linux_sync_out_timeout_ms,
+                1,
+                0xFFFFFFFF,
+            ),
+            (
+                "linux_event_poll_timeout_ms",
+                self.linux_event_poll_timeout_ms,
+                1,
+                0xFFFFFFFF,
+            ),
+            (
+                "windows_async_in_timeout_ms",
+                self.windows_async_in_timeout_ms,
+                1,
+                0xFFFFFFFF,
+            ),
+            (
+                "windows_sync_out_timeout_ms",
+                self.windows_sync_out_timeout_ms,
+                1,
+                0xFFFFFFFF,
+            ),
+            (
+                "windows_event_wait_timeout_ms",
+                self.windows_event_wait_timeout_ms,
+                1,
+                0xFFFFFFFF,
+            ),
         ):
             if type(value) is not int:
                 raise TypeError(f"{name} must be an integer")
@@ -200,20 +254,28 @@ class UsbConfig:
                 raise ValueError("bus_number is not supported by Windows CyAPI")
         elif (self.bus_number == 0xFF) != (self.device_address == 0xFF):
             raise ValueError("Specify both bus_number and device_address")
-        if self.pll_port is not None:
-            if not self.pll_port or "\0" in self.pll_port:
+        if self.pll_port is not None and (
+            not self.pll_port or "\0" in self.pll_port
+        ):
+            raise ValueError("pll_port must be non-empty and contain no NUL")
+        if self.pll is not None:
+            if (
+                self.clock_frequency_mhz is not None
+                or self.pll_port is not None
+            ):
                 raise ValueError(
-                    "pll_port must be non-empty and contain no NUL"
+                    "Specify either pll or clock_frequency_mhz/pll_port"
                 )
-            if self.clock_frequency_mhz is None:
-                raise ValueError("pll_port requires clock_frequency_mhz")
-        if self.clock_frequency_mhz is not None:
-            if self.pll is not None:
-                raise ValueError("Specify either pll or clock_frequency_mhz")
+        else:
+            frequency = (
+                _DEFAULT_BOARD_CLOCK_MHZ
+                if self.clock_frequency_mhz is None
+                else self.clock_frequency_mhz
+            )
             object.__setattr__(
                 self,
                 "clock_setting",
-                select_pll_clock(self.clock_frequency_mhz),
+                select_pll_clock(frequency),
             )
         if not isinstance(self.timing, CIMTimingConfig):
             raise TypeError("timing must be a CIMTimingConfig")
@@ -361,6 +423,8 @@ class Session:
         if not self._handle:
             raise RuntimeError(error.value.decode(errors="replace"))
         self._resources = ExitStack()
+        self._clock_resources = ClockResources()
+        self._resources.callback(self._clock_resources.close)
         self._finalizer = weakref.finalize(
             self, _release_session, lib, self._handle, self._resources
         )
@@ -402,33 +466,70 @@ class Session:
                 word = config.clock_setting.serial_hex
                 pll = PLLConfig(config.pll_port, word, word, word)
             try:
-                native = self._library.cim22_session_configure_usb_with_hardware
+                native = self._library.cim22_session_configure_usb_with_clock
             except AttributeError as error:
                 raise RuntimeError(
-                    "runtime library lacks CIM22 hardware configuration ABI"
+                    "runtime library lacks CIM22 clock callback ABI; reinstall mlir-cim22"
                 ) from error
-            native_pll = (
-                _PLLConfig.from_config(pll) if pll is not None else None
+            controller = (
+                PLLSerial(
+                    pll.port,
+                    tuple(
+                        bytes.fromhex(word)
+                        for word in (
+                            pll.config_hex,
+                            pll.work_hex,
+                            pll.readback_hex,
+                        )
+                    ),
+                )
+                if pll is not None
+                else None
             )
             native_hardware = _HardwareConfig.from_config(config.timing)
             native.argtypes = [
                 ctypes.c_void_p,
                 ctypes.POINTER(_UsbConfig),
-                ctypes.POINTER(_PLLConfig),
                 ctypes.POINTER(_HardwareConfig),
+                ctypes.POINTER(ClockControl),
                 ctypes.c_char_p,
                 ctypes.c_size_t,
             ]
             native.restype = ctypes.c_int
-            arguments = [
-                self._handle,
-                ctypes.byref(native_config),
-                ctypes.byref(native_pll) if native_pll is not None else None,
-                ctypes.byref(native_hardware),
-            ]
             error = ctypes.create_string_buffer(16384)
-            if native(*arguments, error, len(error)):
-                raise RuntimeError(error.value.decode(errors="replace"))
+            try:
+                status = native(
+                    self._handle,
+                    ctypes.byref(native_config),
+                    ctypes.byref(native_hardware),
+                    ctypes.byref(controller.native)
+                    if controller is not None
+                    else None,
+                    error,
+                    len(error),
+                )
+                if status:
+                    raise RuntimeError(error.value.decode(errors="replace"))
+            except BaseException as failure:
+                self._clock_resources.fail(failure)
+                if controller is not None:
+                    try:
+                        controller.close()
+                    except Exception as cleanup:
+                        failure.add_note(
+                            f"PLL serial cleanup failed: {cleanup}"
+                        )
+                raise
+            previous = self._clock_resources.controller
+            self._clock_resources.controller = controller
+            self._clock_resources.failed = False
+            self._clock_resources.configured = True
+            if previous is not None:
+                try:
+                    previous.close()
+                except Exception as failure:
+                    self._clock_resources.fail(failure)
+                    raise
 
     def capture_usb(
         self, transaction: int, inputs: NDArray[np.uint16]
@@ -453,6 +554,7 @@ class Session:
         """
         with self._lock:
             self._require_open()
+            self._clock_resources.require_ready()
             if type(transaction) is not int:
                 raise TypeError("transaction must be an integer")
             if not 0 <= transaction < self.num_transactions:
@@ -495,7 +597,10 @@ class Session:
                 outputs.size,
             ):
                 message = self._library.cim22_session_error(self._handle)
-                raise RuntimeError(message.decode(errors="replace"))
+                failure = RuntimeError(message.decode(errors="replace"))
+                if self._clock_resources.configured:
+                    self._clock_resources.fail(failure)
+                raise failure
             return outputs
 
     @property
@@ -526,6 +631,7 @@ class Session:
         """
         with self._lock:
             self._require_open()
+            self._clock_resources.require_ready()
             if len(inputs) != len(self.input_shapes):
                 raise ValueError("Input count differs from compiled signature")
             for index, (array, shape, dtype) in enumerate(
@@ -558,7 +664,10 @@ class Session:
                 self._handle, pointers, counts, len(arrays)
             ):
                 message = self._library.cim22_session_error(self._handle)
-                raise RuntimeError(message.decode(errors="replace"))
+                failure = RuntimeError(message.decode(errors="replace"))
+                if self._clock_resources.configured:
+                    self._clock_resources.fail(failure)
+                raise failure
             return outputs
 
     def close(self) -> None:
@@ -612,9 +721,14 @@ class _UsbConfig(ctypes.Structure):
         ("physical_link", ctypes.c_uint8),
         ("logical_channel", ctypes.c_uint8),
         ("word_byte_order", ctypes.c_uint8),
-        ("transfer_timeout_ms", ctypes.c_uint32),
-        ("receive_poll_timeout_ms", ctypes.c_uint32),
+        ("receive_ready_timeout_ms", ctypes.c_uint32),
         ("response_timeout_ms", ctypes.c_uint32),
+        ("linux_async_in_timeout_ms", ctypes.c_uint32),
+        ("linux_sync_out_timeout_ms", ctypes.c_uint32),
+        ("linux_event_poll_timeout_ms", ctypes.c_uint32),
+        ("windows_async_in_timeout_ms", ctypes.c_uint32),
+        ("windows_sync_out_timeout_ms", ctypes.c_uint32),
+        ("windows_event_wait_timeout_ms", ctypes.c_uint32),
     ]
 
     @classmethod
@@ -631,27 +745,14 @@ class _UsbConfig(ctypes.Structure):
             config.physical_link,
             config.logical_channel,
             config.word_byte_order,
-            config.transfer_timeout_ms,
-            config.receive_poll_timeout_ms,
+            config.receive_ready_timeout_ms,
             config.response_timeout_ms,
-        )
-
-
-class _PLLConfig(ctypes.Structure):
-    _fields_ = [
-        ("port", ctypes.c_char_p),
-        ("configuration_word", ctypes.c_uint32),
-        ("work_word", ctypes.c_uint32),
-        ("readback_word", ctypes.c_uint32),
-    ]
-
-    @classmethod
-    def from_config(cls, config: PLLConfig) -> Self:
-        return cls(
-            os.fsencode(config.port),
-            int(config.config_hex, 16),
-            int(config.work_hex, 16),
-            int(config.readback_hex, 16),
+            config.linux_async_in_timeout_ms,
+            config.linux_sync_out_timeout_ms,
+            config.linux_event_poll_timeout_ms,
+            config.windows_async_in_timeout_ms,
+            config.windows_sync_out_timeout_ms,
+            config.windows_event_wait_timeout_ms,
         )
 
 

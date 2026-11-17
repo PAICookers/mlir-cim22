@@ -163,7 +163,14 @@ public:
   void runOnOperation() override {
     func::FuncOp function = getOperation();
     SmallVector<cim::VMMOp> vmms;
-    function.walk([&](cim::VMMOp op) { vmms.push_back(op); });
+    bool anyMapped = false;
+    bool allMapped = true;
+    function.walk([&](cim::VMMOp op) {
+      vmms.push_back(op);
+      const unsigned mappingAttrs = countPresent(op, kMappingAttrs);
+      anyMapped |= mappingAttrs != 0;
+      allMapped &= mappingAttrs == std::size(kMappingAttrs);
+    });
     const unsigned functionAttrCount = countPresent(function, kFunctionAttrs);
     if (vmms.empty()) {
       if (functionAttrCount != 0) {
@@ -183,12 +190,6 @@ public:
       return signalPassFailure();
     }
 
-    const bool anyMapped = llvm::any_of(vmms, [](cim::VMMOp op) {
-      return countPresent(op, kMappingAttrs) != 0;
-    });
-    const bool allMapped = llvm::all_of(vmms, [](cim::VMMOp op) {
-      return countPresent(op, kMappingAttrs) == std::size(kMappingAttrs);
-    });
     if (anyMapped != allMapped) {
       function.emitError(
           "map-cim-schedule rejects mixed mapped and unmapped cim.vmm work");
