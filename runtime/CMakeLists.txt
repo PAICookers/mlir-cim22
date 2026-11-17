@@ -103,6 +103,7 @@ target_include_directories(cim22_runtime PRIVATE
   "${PROJECT_SOURCE_DIR}/include")
 target_link_libraries(cim22_runtime PRIVATE MLIRCIM22RuntimeModel LLVMSupport
   ${CMAKE_DL_LIBS})
+target_compile_definitions(cim22_runtime PRIVATE CIM22_RUNTIME_BUILD=1)
 if(WIN32)
   # Keep Windows min/max macros out of the runtime sources that use std::min.
   target_compile_definitions(cim22_runtime PRIVATE NOMINMAX)
@@ -120,7 +121,7 @@ set_target_properties(cim22_runtime PROPERTIES
   ARCHIVE_OUTPUT_DIRECTORY "${LLVM_LIBRARY_OUTPUT_INTDIR}"
   LIBRARY_OUTPUT_DIRECTORY "${LLVM_LIBRARY_OUTPUT_INTDIR}"
   RUNTIME_OUTPUT_DIRECTORY "${LLVM_LIBRARY_OUTPUT_INTDIR}"
-  WINDOWS_EXPORT_ALL_SYMBOLS ON)
+  WINDOWS_EXPORT_ALL_SYMBOLS OFF)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # LLVM/MLIR internals must not interpose TensorFlow or other compiler wheels.

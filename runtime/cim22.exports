@@ -3,16 +3,16 @@
     cim22_*;
     _mlir_ciface_cim22_*;
     extern "C++" {
-      cim22::*;
-      mlir::cim22::*;
       /* Address-only tags for the locked runtime/compiler C++ error ABI.
          Registry state and LLVM functions remain private. */
       llvm::ErrorInfoBase::ID;
       llvm::ErrorList::ID;
       llvm::StringError::ID;
+      /* The native board-runner test links this shared runtime directly. */
+      cim22::runtime::CIMBoardRunner::*;
+      "vtable for cim22::runtime::CIMBoardRunner";
+      "typeinfo for cim22::runtime::CIMBoardRunner";
+      "typeinfo name for cim22::runtime::CIMBoardRunner";
     };
-    _ZTVN5cim22*;
-    _ZTIN5cim22*;
-    _ZTSN5cim22*;
   local: *;
 };
