@@ -166,7 +166,7 @@ cim22/
 
 ## GitHub Actions 预编译 wheel
 
-[wheel 工作流](../.github/workflows/wheels.yml) 在 `main` 更新或推送 `v*` 标签时自动构建，也支持从 Actions 页面手动运行；没有每日定时任务。Linux 使用 manylinux_2_28 x86-64，Windows 使用 Windows Server 2022 / MSVC x64；两者均为 Release、USB 开启、测试和 ONNX 导入器关闭。两平台的 validate job 都下载独立 wheel 和 checksum，在干净 Python 3.12 环境中运行相同的框架示例、focused pytest 和 Web UI smoke check。
+[wheel 工作流](../.github/workflows/wheels.yml) 在 `main` 的 wheel 输入发生变化或推送 `v*` 标签时自动构建，也支持从 Actions 页面手动运行；没有每日定时任务。Linux 使用 manylinux_2_28 x86-64，Windows 使用 Windows Server 2022 / MSVC x64；两者均为 Release、USB 开启、测试和 ONNX 导入器关闭。两平台的 validate job 都下载独立 wheel 和 checksum，在干净 Python 3.12 环境中运行相同的框架示例、focused pytest 和 Web UI smoke check。
 
 源码 `python/pyproject.toml` 的版本是当前开发目标，例如 `1.0.0`：
 

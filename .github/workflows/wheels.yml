@@ -1,9 +1,40 @@
-name: Build Linux and Windows wheels
+name: Build wheels
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     tags: ['v*']
+    # Branch pushes are limited to inputs that can change the wheel bytes.
+    # GitHub ignores paths for tag pushes, so release tags remain enabled.
+    paths:
+      - '.github/workflows/wheels.yml'
+      - '.github/manylinux/**'
+      - '.github/scripts/build-llvm-sdk.sh'
+      - '.github/scripts/build-llvm-sdk.ps1'
+      - '.github/scripts/build-manylinux.sh'
+      - '.github/scripts/build-windows-wheel.ps1'
+      - '.github/scripts/prepare-wheel.py'
+      - 'CMakeLists.txt'
+      - 'LICENSE'
+      - 'cmake/**'
+      - 'include/**'
+      - 'lib/**'
+      - 'runtime/**'
+      - 'schema/**'
+      - 'tools/**'
+      - 'python/cim22/**'
+      - 'python/pyproject.toml'
+      - 'python/uv.lock'
+      - 'web/components.json'
+      - 'web/index.html'
+      - 'web/package.json'
+      - 'web/pnpm-lock.yaml'
+      - 'web/pnpm-workspace.yaml'
+      - 'web/src/**'
+      - 'web/tsconfig.json'
+      - 'web/vite.config.ts'
+      - 'third_party/cyapi/**'
+      - 'third_party/cyusb-linux/**'
   workflow_dispatch:
 
 env:
