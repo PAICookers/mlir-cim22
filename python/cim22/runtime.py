@@ -143,10 +143,14 @@ class UsbConfig:
         logical_channel: Bridge transmit-channel index (0–7).
         word_byte_order: Record word order, 0 for big-endian and 1 for
             little-endian.
-        transfer_timeout_ms: Timeout for a USB write transfer.
-        receive_poll_timeout_ms: Receive poll interval. Defaults to 100 ms on
-            Windows and 200 ms on Linux.
+        receive_ready_timeout_ms: Deadline for the receive loop to start.
         response_timeout_ms: Deadline for collecting one Macro readback batch.
+        linux_async_in_timeout_ms: Linux libcyusb IN transfer timeout.
+        linux_sync_out_timeout_ms: Linux libcyusb OUT transfer timeout.
+        linux_event_poll_timeout_ms: Linux libusb event poll interval.
+        windows_async_in_timeout_ms: Windows CyAPI IN endpoint timeout.
+        windows_sync_out_timeout_ms: Windows CyAPI OUT endpoint timeout.
+        windows_event_wait_timeout_ms: Windows event wait interval.
         pll: Optional serial PLL words, one per phase.
         clock_frequency_mhz: Frequency in MHz for configuration, work and
             readback. None selects 128 MHz when pll is omitted. Unlisted
@@ -169,9 +173,14 @@ class UsbConfig:
     physical_link: int = 0
     logical_channel: int = 3
     word_byte_order: Literal[0, 1] = 0
-    transfer_timeout_ms: int = 5000
-    receive_poll_timeout_ms: int = 100 if os.name == "nt" else 200
+    receive_ready_timeout_ms: int = 5000
     response_timeout_ms: int = 7000
+    linux_async_in_timeout_ms: int = 5000
+    linux_sync_out_timeout_ms: int = 5000
+    linux_event_poll_timeout_ms: int = 100
+    windows_async_in_timeout_ms: int = 5000
+    windows_sync_out_timeout_ms: int = 5000
+    windows_event_wait_timeout_ms: int = 100
     pll: PLLConfig | None = None
     clock_frequency_mhz: float | None = None
     pll_port: str | None = None
@@ -192,14 +201,49 @@ class UsbConfig:
             ("physical_link", self.physical_link, 0, 3),
             ("logical_channel", self.logical_channel, 0, 7),
             ("word_byte_order", self.word_byte_order, 0, 1),
-            ("transfer_timeout_ms", self.transfer_timeout_ms, 1, 0xFFFFFFFF),
             (
-                "receive_poll_timeout_ms",
-                self.receive_poll_timeout_ms,
+                "receive_ready_timeout_ms",
+                self.receive_ready_timeout_ms,
                 1,
                 0xFFFFFFFF,
             ),
             ("response_timeout_ms", self.response_timeout_ms, 1, 0xFFFFFFFF),
+            (
+                "linux_async_in_timeout_ms",
+                self.linux_async_in_timeout_ms,
+                1,
+                0xFFFFFFFF,
+            ),
+            (
+                "linux_sync_out_timeout_ms",
+                self.linux_sync_out_timeout_ms,
+                1,
+                0xFFFFFFFF,
+            ),
+            (
+                "linux_event_poll_timeout_ms",
+                self.linux_event_poll_timeout_ms,
+                1,
+                0xFFFFFFFF,
+            ),
+            (
+                "windows_async_in_timeout_ms",
+                self.windows_async_in_timeout_ms,
+                1,
+                0xFFFFFFFF,
+            ),
+            (
+                "windows_sync_out_timeout_ms",
+                self.windows_sync_out_timeout_ms,
+                1,
+                0xFFFFFFFF,
+            ),
+            (
+                "windows_event_wait_timeout_ms",
+                self.windows_event_wait_timeout_ms,
+                1,
+                0xFFFFFFFF,
+            ),
         ):
             if type(value) is not int:
                 raise TypeError(f"{name} must be an integer")
@@ -677,9 +721,14 @@ class _UsbConfig(ctypes.Structure):
         ("physical_link", ctypes.c_uint8),
         ("logical_channel", ctypes.c_uint8),
         ("word_byte_order", ctypes.c_uint8),
-        ("transfer_timeout_ms", ctypes.c_uint32),
-        ("receive_poll_timeout_ms", ctypes.c_uint32),
+        ("receive_ready_timeout_ms", ctypes.c_uint32),
         ("response_timeout_ms", ctypes.c_uint32),
+        ("linux_async_in_timeout_ms", ctypes.c_uint32),
+        ("linux_sync_out_timeout_ms", ctypes.c_uint32),
+        ("linux_event_poll_timeout_ms", ctypes.c_uint32),
+        ("windows_async_in_timeout_ms", ctypes.c_uint32),
+        ("windows_sync_out_timeout_ms", ctypes.c_uint32),
+        ("windows_event_wait_timeout_ms", ctypes.c_uint32),
     ]
 
     @classmethod
@@ -696,9 +745,14 @@ class _UsbConfig(ctypes.Structure):
             config.physical_link,
             config.logical_channel,
             config.word_byte_order,
-            config.transfer_timeout_ms,
-            config.receive_poll_timeout_ms,
+            config.receive_ready_timeout_ms,
             config.response_timeout_ms,
+            config.linux_async_in_timeout_ms,
+            config.linux_sync_out_timeout_ms,
+            config.linux_event_poll_timeout_ms,
+            config.windows_async_in_timeout_ms,
+            config.windows_sync_out_timeout_ms,
+            config.windows_event_wait_timeout_ms,
         )
 
 

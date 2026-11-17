@@ -549,8 +549,13 @@ void testFailedOpenDisablesDispatch() {
   config.bulk_in_endpoint = 0x81;
   config.bulk_out_endpoint = 0x01;
   config.logical_channel = 3;
-  config.transfer_timeout_ms = 1000;
-  config.receive_poll_timeout_ms = 200;
+  config.receive_ready_timeout_ms = 1000;
+  config.linux_async_in_timeout_ms = 1000;
+  config.linux_sync_out_timeout_ms = 1000;
+  config.linux_event_poll_timeout_ms = 200;
+  config.windows_async_in_timeout_ms = 1000;
+  config.windows_sync_out_timeout_ms = 1000;
+  config.windows_event_wait_timeout_ms = 200;
   config.response_timeout_ms = 7000;
   std::array<char, 256> error{};
   assert(cim22_session_configure_usb(&session, &config, error.data(),
@@ -576,8 +581,13 @@ void testNativeClockConfiguration() {
   config.bulk_in_endpoint = 0x81;
   config.bulk_out_endpoint = 0x01;
   config.logical_channel = 2;
-  config.transfer_timeout_ms = 1000;
-  config.receive_poll_timeout_ms = 200;
+  config.receive_ready_timeout_ms = 1000;
+  config.linux_async_in_timeout_ms = 1000;
+  config.linux_sync_out_timeout_ms = 1000;
+  config.linux_event_poll_timeout_ms = 200;
+  config.windows_async_in_timeout_ms = 1000;
+  config.windows_sync_out_timeout_ms = 1000;
+  config.windows_event_wait_timeout_ms = 200;
   config.response_timeout_ms = 1000;
   const CIM22HardwareConfig hardware{};
   std::vector<uint32_t> phases;
@@ -692,6 +702,28 @@ void testRejectsInvalidTransferConfig() {
   auto device =
       detail::createUsbCIMDevice(config, std::make_unique<FakeUsbDriver>());
   assert(takeError(device->open()).find("transfer sizes") != std::string::npos);
+}
+
+void testIgnoresInactivePlatformTimeouts() {
+#ifndef _WIN32
+  UsbCIMDeviceConfig config = makeConfig();
+  config.windowsAsyncInTimeoutMs = 0;
+  config.windowsSyncOutTimeoutMs = 0;
+  config.windowsEventWaitTimeoutMs = 0;
+  auto device =
+      detail::createUsbCIMDevice(config, std::make_unique<FakeUsbDriver>());
+  expectSuccess(device->open());
+  device->close();
+#else
+  UsbCIMDeviceConfig config = makeConfig();
+  config.linuxAsyncInTimeoutMs = 0;
+  config.linuxSyncOutTimeoutMs = 0;
+  config.linuxEventPollTimeoutMs = 0;
+  auto device =
+      detail::createUsbCIMDevice(config, std::make_unique<FakeUsbDriver>());
+  expectSuccess(device->open());
+  device->close();
+#endif
 }
 
 void testRejectsInvalidEndpointAddresses() {
@@ -1264,6 +1296,7 @@ int main() {
 #endif
   testRejectsUnsolicitedAndOverflowResponses();
   testRejectsInvalidTransferConfig();
+  testIgnoresInactivePlatformTimeouts();
   testRejectsInvalidEndpointAddresses();
   testRejectsInvalidWordByteOrder();
   testPreservesRawBF16Readback();

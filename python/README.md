@@ -232,7 +232,11 @@ config = UsbConfig(
 
 按实际 FPGA/FX3 固件设置 VID/PID、端点和接口。运行时通过配置的串口同步设钟。
 
-USB 接收轮询默认在 Windows 上为 100 ms，在 Linux 上为 200 ms。Windows 轮询超时后继续等待同一个 Bulk IN 请求，回包期限由 `response_timeout_ms` 单独设置。
+USB 时延参数按平台分别配置：Linux 使用 `linux_async_in_timeout_ms`、
+`linux_sync_out_timeout_ms` 和 `linux_event_poll_timeout_ms`；Windows 使用
+`windows_async_in_timeout_ms`、`windows_sync_out_timeout_ms` 和
+`windows_event_wait_timeout_ms`。接收线程启动期限由 `receive_ready_timeout_ms`
+设置，回包期限由 `response_timeout_ms` 单独设置。
 
 `session.configure_usb()` 打开 USB 设备并绑定时钟回调。Python 使用随 wheel 依赖自动安装的 pyserial，串口在首次执行阶段打开，随 Session 保持连接。C++ 在写入、计算、回读阶段的第一条 USB 命令前同步调用配置回调。首次命令要求匹配回显；后续变化的命令不读取或等待回显，相同的当前命令跳过发送。三个阶段使用相同频率时，首次只需发送一次。重新配置会恢复首次回显要求。
 

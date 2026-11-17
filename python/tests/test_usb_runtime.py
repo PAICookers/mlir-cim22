@@ -62,8 +62,8 @@ def usb_config() -> UsbConfig:
         ("physical_link", 4, ValueError),
         ("logical_channel", 8, ValueError),
         ("word_byte_order", 2, ValueError),
-        ("transfer_timeout_ms", 0, ValueError),
-        ("receive_poll_timeout_ms", 2**32, ValueError),
+        ("receive_ready_timeout_ms", 0, ValueError),
+        ("linux_async_in_timeout_ms", 2**32, ValueError),
         ("response_timeout_ms", 1.5, TypeError),
         ("vendor_id", True, TypeError),
         ("bus_number", 1, ValueError),
@@ -120,18 +120,16 @@ def test_pll_config_rejects_invalid_commands(
         replace(pll_config, **{field: value})
 
 
-def test_usb_defaults_preserve_legacy_usb_abi(
+def test_usb_defaults_match_platform_usb_abi(
     usb_config: UsbConfig,
 ) -> None:
     assert usb_config.physical_link == 0
     assert usb_config.logical_channel == 3
-    assert usb_config.receive_poll_timeout_ms == (
-        100 if os.name == "nt" else 200
-    )
-    assert (
-        _UsbConfig.from_config(usb_config).receive_poll_timeout_ms
-        == usb_config.receive_poll_timeout_ms
-    )
+    assert usb_config.receive_ready_timeout_ms == 5000
+    assert usb_config.linux_event_poll_timeout_ms == 100
+    assert usb_config.windows_event_wait_timeout_ms == 100
+    native = _UsbConfig.from_config(usb_config)
+    assert native.linux_event_poll_timeout_ms == 100
     assert usb_config.response_timeout_ms == 7000
     native_timing = _HardwareConfig.from_config(usb_config.timing)
     assert (
@@ -143,10 +141,9 @@ def test_usb_defaults_preserve_legacy_usb_abi(
     ) == (20, 0, 0, 0, 2)
     assert usb_config.clock_setting.actual_frequency_mhz == 128
     assert usb_config.pll is None
-    # Existing native callers pass this unversioned structure by pointer.
-    assert ctypes.sizeof(_UsbConfig) == 28
-    assert _UsbConfig.transfer_timeout_ms.offset == 16
-    assert _UsbConfig.response_timeout_ms.offset == 24
+    assert ctypes.sizeof(_UsbConfig) == 48
+    assert _UsbConfig.receive_ready_timeout_ms.offset == 16
+    assert _UsbConfig.response_timeout_ms.offset == 20
 
 
 def _make_mock_usb_session() -> tuple[Session, Mock, Mock]:
