@@ -76,6 +76,7 @@ def test_example_logging(
     assert "[[[" not in result.stdout
     evidence = json.loads((tmp_path / "custom-result.json").read_text())
     assert len(evidence["cases"]) == count
+    assert isinstance(evidence["dispatch_count"], int)
     assert all(case["max_abs_error"] == 0 for case in evidence["cases"])
     assert list((tmp_path / "artifacts").glob(f"graph-*{MODEL_SUFFIX}"))
     assert (tmp_path / "artifacts/ir").is_dir()
@@ -124,3 +125,18 @@ runpy.run_path(sys.argv[0], run_name='__main__')
     )
     assert "Completed inference" not in result.stdout
     assert not (tmp_path / "artifacts/result.json").exists()
+
+
+def test_torch_usb_requires_board_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import runpy
+
+    import torch
+
+    example = Path(__file__).resolve().parents[1] / "examples/torch_compile.py"
+    run = runpy.run_path(str(example))["run"]
+    monkeypatch.setattr(torch, "compile", lambda model, **kwargs: model)
+    with pytest.raises(RuntimeError, match="no CIM board computation"):
+        run(tmp_path, runtime="usb")
+    assert not (tmp_path / "result.json").exists()

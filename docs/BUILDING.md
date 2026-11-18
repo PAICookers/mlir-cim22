@@ -7,7 +7,7 @@
 | 编译器本体       | CMake/Ninja            | 原生优化器、compile tool、runtime 库，可选 ONNX 工具  |
 | PyTorch 编译后端 | uv + scikit-build-core | 包含上述原生组件的 Python wheel 或 editable 安装 |
 
-仅使用预编译包时，直接阅读 [Python 安装指南](../python/README.md#安装)。以下命令除另有说明外，均在**仓库根目录**执行。
+仅使用预编译包时，直接阅读 [Python 用户快速开始](../python/README.md#用户快速开始)。以下命令除另有说明外，均在**仓库根目录**执行。
 
 ## 环境与依赖
 

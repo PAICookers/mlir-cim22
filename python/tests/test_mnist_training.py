@@ -6,7 +6,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from cim22.mnist_training import MnistConfig, build_model
+from cim22.apps.mnist_training import MnistConfig, build_model
 
 
 def test_model_presets_have_fixed_shapes() -> None:
@@ -29,7 +29,7 @@ def test_configuration_rejects_invalid_values(tmp_path: Path) -> None:
 def test_training_artifacts_and_metrics(tmp_path: Path, monkeypatch) -> None:
     import json
 
-    import cim22.mnist_training as training
+    import cim22.apps.mnist_training as training
 
     dataset = torch.utils.data.TensorDataset(
         torch.zeros(8, 1, 28, 28), torch.zeros(8, dtype=torch.long)

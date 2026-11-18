@@ -22,10 +22,10 @@ def main() -> None:
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=Path("cim22-web-data"),
+        default=Path("cim22-web"),
         help=(
             "Output directory for task state, models, logs, results and MNIST "
-            "training/cache data; created if missing (default: ./cim22-web-data)"
+            "training/cache data; created if missing (default: ./cim22-web)"
         ),
     )
     parser.add_argument(

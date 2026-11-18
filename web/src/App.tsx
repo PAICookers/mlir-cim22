@@ -48,6 +48,8 @@ type CimLayer = {
   output_shape: number[];
 };
 type DvsTask = {
+  runtime: "usb";
+  usb_config: UsbConfig;
   id: string;
   status: string;
   weights: string;
@@ -136,7 +138,7 @@ type MnistTask = {
   last_message?: string;
   log_text?: string;
   cancel_requested?: boolean;
-  files?: Record<string, string>;
+  download_url?: string | null;
 };
 type MnistSnapshot = { task: MnistTask | null };
 
@@ -241,6 +243,7 @@ export default function App() {
   const [task, setTask] = useState<DvsTask | null>(null);
   const [exampleTask, setExampleTask] = useState<ExampleTask | null>(null);
   const [mnistTask, setMnistTask] = useState<MnistTask | null>(null);
+  const [dvsUsb, setDvsUsb] = useState<UsbConfig>(initialUsb);
   const [weights, setWeights] = useState("");
   const [dataset, setDataset] = useState("");
   const [cimLayers, setCimLayers] = useState<CimLayer[]>([]);
@@ -304,6 +307,11 @@ export default function App() {
       if (snapshot.task && importedTask.current !== snapshot.task.id) {
         importedTask.current = snapshot.task.id;
         setWeights(snapshot.task.weights);
+        setDvsUsb({
+          ...initialUsb,
+          ...snapshot.task.usb_config,
+          timing: { ...initialUsb.timing, ...snapshot.task.usb_config.timing },
+        });
         setDataset(snapshot.task.dataset);
         setSelectedCimLayers(snapshot.task.cim_layers ?? []);
         setHybridMode(snapshot.task.execution_mode === "hybrid");
@@ -374,7 +382,9 @@ export default function App() {
             </div>
             <div>
               <span className="text-lg font-bold tracking-tight">CIM22</span>
-              <span className="ml-3 text-sm font-medium">编译验证工作台</span>
+              <span className="ml-3 text-sm font-medium">
+                本地编译验证工作台
+              </span>
             </div>
           </div>
           <nav className="order-3 flex w-full gap-1 overflow-x-auto rounded-xl bg-muted p-1 sm:order-none sm:w-auto">
@@ -407,6 +417,8 @@ export default function App() {
       </header>
       {view === "dvs" ? (
         <DvsPage
+          usb={dvsUsb}
+          setUsb={setDvsUsb}
           connected={dvsConnected}
           error={error}
           pending={pending}
@@ -503,11 +515,11 @@ function MnistPage({
         </div>
       )}
       <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
-        <Card>
+        <Card className="min-w-0">
           <CardHeader>
             <div className="flex items-center justify-between">
               <h2 className="text-base font-semibold">模型配置</h2>
-              <span className="eyebrow">01 / CONFIG</span>
+              <span className="eyebrow">01 / 配置</span>
             </div>
           </CardHeader>
           <CardContent>
@@ -598,11 +610,11 @@ function MnistPage({
             </div>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="min-w-0">
           <CardHeader>
             <div className="flex items-center justify-between">
               <h2 className="text-base font-semibold">训练状态</h2>
-              <span className="eyebrow">02 / RESULT</span>
+              <span className="eyebrow">02 / 结果</span>
             </div>
           </CardHeader>
           <CardContent>
@@ -654,22 +666,19 @@ function MnistPage({
               <p className="mb-2 text-xs font-medium text-foreground">
                 训练日志
               </p>
-              <pre className="max-h-64 overflow-auto rounded-xl bg-slate-950 p-4 text-[11px] leading-5 text-slate-100">
+              <pre className="max-h-64 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-950 p-4 text-[13px] leading-5 text-slate-100">
                 {task?.log_text || "等待训练开始"}
               </pre>
             </div>
-            {task?.files && (
+            {task?.download_url && (
               <div className="mt-5 flex flex-wrap gap-2 border-t border-border pt-4 text-xs">
-                {Object.entries(task.files).map(([name, url]) => (
-                  <a
-                    key={name}
-                    href={url}
-                    download
-                    className="rounded-lg border border-border px-3 py-2 text-primary hover:bg-blue-50"
-                  >
-                    下载 {name}
-                  </a>
-                ))}
+                <a
+                  href={task.download_url}
+                  download
+                  className="rounded-lg border border-border px-3 py-2 text-primary hover:bg-blue-50"
+                >
+                  下载训练结果
+                </a>
               </div>
             )}
           </CardContent>
@@ -677,16 +686,99 @@ function MnistPage({
       </div>
       <Card className="mt-6">
         <CardHeader>
-          <h2 className="text-base font-semibold">验收说明</h2>
+          <h2 className="text-base font-semibold">说明</h2>
         </CardHeader>
         <CardContent>
           <p className="text-sm leading-6 text-muted-foreground">
-            默认 standard 模型训练 10 轮，目标测试集准确率不低于
+            默认 standard 模型，训练 10 轮，目标测试集准确率不低于
             97%。训练结束后会保存模型权重、配置、逐轮指标、最终摘要与完整日志。
           </p>
         </CardContent>
       </Card>
     </main>
+  );
+}
+
+function UsbFields({
+  usb,
+  setUsb,
+  disabled,
+}: {
+  usb: UsbConfig;
+  setUsb: (update: (current: UsbConfig) => UsbConfig) => void;
+  disabled: boolean;
+}) {
+  const updateUsb = <K extends keyof UsbConfig>(key: K, value: number) =>
+    setUsb((current) => ({ ...current, [key]: value }));
+  const updateTiming = (key: keyof UsbConfig["timing"], value: number) =>
+    setUsb((current) => ({
+      ...current,
+      timing: { ...current.timing, [key]: value },
+    }));
+  return (
+    <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50/60 p-4">
+      <p className="mb-3 text-xs font-semibold text-blue-900">板卡配置</p>
+      <p className="mb-3 text-[13px] leading-5 text-blue-800">
+        Linux 可运行 <code className="rounded bg-white/80 px-1">lsusb</code>{" "}
+        查看 VID/PID、总线号和设备地址，再运行{" "}
+        <code className="rounded bg-white/80 px-1">lsusb -v -d VID:PID</code>{" "}
+        查找标记为 <code className="rounded bg-white/80 px-1">Bulk IN/OUT</code>{" "}
+        的 Endpoint。
+      </p>
+      <div className="grid gap-3 sm:grid-cols-3">
+        {(
+          [
+            ["vendor_id", "VID"],
+            ["product_id", "PID"],
+            ["bulk_in_endpoint", "Bulk IN"],
+            ["bulk_out_endpoint", "Bulk OUT"],
+            ["bus_number", "总线号（255=自动）"],
+            ["device_address", "设备地址（255=自动）"],
+          ] as const
+        ).map(([key, label]) => (
+          <label key={key} className="text-xs text-muted-foreground">
+            {label}
+            <Input
+              className="mt-1 bg-white"
+              type="number"
+              value={usb[key]}
+              onChange={(event) => updateUsb(key, Number(event.target.value))}
+              disabled={disabled}
+            />
+          </label>
+        ))}
+      </div>
+      <p className="mt-3 text-[13px] leading-5 text-blue-800">
+        请预先配置板卡时钟，并按已验证的板卡配置设置以下等待时间。
+      </p>
+      <p className="mb-2 mt-4 text-xs font-medium text-blue-900">
+        时序（毫秒）
+      </p>
+      <div className="grid gap-3 sm:grid-cols-3">
+        {(
+          [
+            ["startup_delay_ms", "启动"],
+            ["cache_write_delay_ms", "缓存写入"],
+            ["weight_write_delay_ms", "权重写入"],
+            ["work_delay_ms", "计算"],
+            ["readback_select_delay_ms", "读回选择"],
+          ] as const
+        ).map(([key, label]) => (
+          <label key={key} className="text-xs text-muted-foreground">
+            {label}
+            <Input
+              className="mt-1 bg-white"
+              type="number"
+              value={usb.timing[key]}
+              onChange={(event) =>
+                updateTiming(key, Number(event.target.value))
+              }
+              disabled={disabled}
+            />
+          </label>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -715,8 +807,8 @@ function FrameworkPage({
   const title = framework === "tensorflow" ? "TensorFlow" : "PyTorch";
   const description =
     framework === "tensorflow"
-      ? "验证本软件对 TensorFlow 的支持"
-      : "验证本软件对 PyTorch 的支持";
+      ? "验证 TensorFlow 框架支持"
+      : "验证 PyTorch 框架支持";
   const structure =
     framework === "tensorflow"
       ? "INT8 BatchMatMul(1×4×16,16×32) → 截断 ReLU → BatchMatMul(32×16)"
@@ -726,13 +818,6 @@ function FrameworkPage({
       ? "加载数据"
       : (names[task.status] ?? task.status)
     : "等待开始";
-  const updateUsb = <K extends keyof UsbConfig>(key: K, value: number) =>
-    setUsb((current) => ({ ...current, [key]: value }));
-  const updateTiming = (key: keyof UsbConfig["timing"], value: number) =>
-    setUsb((current) => ({
-      ...current,
-      timing: { ...current.timing, [key]: value },
-    }));
   async function run() {
     await operate("/api/examples/run", {
       framework,
@@ -820,74 +905,7 @@ function FrameworkPage({
               ))}
             </div>
             {runtime === "usb" && (
-              <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50/60 p-4">
-                <p className="mb-3 text-xs font-semibold text-blue-900">
-                  板卡配置
-                </p>
-                <p className="mb-3 text-[11px] leading-5 text-blue-800">
-                  Linux 可运行{" "}
-                  <code className="rounded bg-white/80 px-1">lsusb</code> 查看
-                  VID/PID、总线号和设备地址，再运行{" "}
-                  <code className="rounded bg-white/80 px-1">
-                    lsusb -v -d VID:PID
-                  </code>{" "}
-                  查找标记为{" "}
-                  <code className="rounded bg-white/80 px-1">Bulk IN/OUT</code>{" "}
-                  的 Endpoint。
-                </p>
-                <div className="grid gap-3 sm:grid-cols-3">
-                  {(
-                    [
-                      ["vendor_id", "VID"],
-                      ["product_id", "PID"],
-                      ["bulk_in_endpoint", "Bulk IN"],
-                      ["bulk_out_endpoint", "Bulk OUT"],
-                      ["bus_number", "总线号（255=自动）"],
-                      ["device_address", "设备地址（255=自动）"],
-                    ] as const
-                  ).map(([key, label]) => (
-                    <label key={key} className="text-xs text-muted-foreground">
-                      {label}
-                      <Input
-                        className="mt-1 bg-white"
-                        type="number"
-                        value={usb[key]}
-                        onChange={(event) =>
-                          updateUsb(key, Number(event.target.value))
-                        }
-                        disabled={disabled}
-                      />
-                    </label>
-                  ))}
-                </div>
-                <p className="mb-2 mt-4 text-xs font-medium text-blue-900">
-                  时序（毫秒）
-                </p>
-                <div className="grid gap-3 sm:grid-cols-3">
-                  {(
-                    [
-                      ["startup_delay_ms", "启动"],
-                      ["cache_write_delay_ms", "缓存写入"],
-                      ["weight_write_delay_ms", "权重写入"],
-                      ["work_delay_ms", "计算"],
-                      ["readback_select_delay_ms", "读回选择"],
-                    ] as const
-                  ).map(([key, label]) => (
-                    <label key={key} className="text-xs text-muted-foreground">
-                      {label}
-                      <Input
-                        className="mt-1 bg-white"
-                        type="number"
-                        value={usb.timing[key]}
-                        onChange={(event) =>
-                          updateTiming(key, Number(event.target.value))
-                        }
-                        disabled={disabled}
-                      />
-                    </label>
-                  ))}
-                </div>
-              </div>
+              <UsbFields usb={usb} setUsb={setUsb} disabled={disabled} />
             )}
             <div className="mt-5 flex items-center justify-between gap-3 border-t border-border pt-4">
               <Button disabled={disabled} onClick={() => void run()}>
@@ -976,7 +994,7 @@ function ExampleResults({ task }: { task: ExampleTask | null }) {
         <div>
           <h2 className="text-lg font-semibold">参考结果对比</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            参考结果由软件直接计算，CIM 结果由编译后的模型执行得到。
+            参考结果由软件直接计算，CIM 结果由编译后的模型执行得到
           </p>
         </div>
         <div className="flex gap-2 text-xs">
@@ -1007,7 +1025,7 @@ function ExampleResults({ task }: { task: ExampleTask | null }) {
             <h3 className="text-sm font-semibold">日志</h3>
           </div>
         </CardHeader>
-        <pre className="max-h-72 overflow-auto whitespace-pre-wrap border-t border-border bg-slate-950 px-5 py-4 font-mono text-[11px] leading-5 text-slate-100">
+        <pre className="max-h-72 overflow-auto whitespace-pre-wrap border-t border-border bg-slate-950 px-5 py-4 font-mono text-[13px] leading-5 text-slate-100">
           {task?.log_text || "等待示例启动日志"}
         </pre>
       </Card>
@@ -1018,7 +1036,7 @@ function ExampleResults({ task }: { task: ExampleTask | null }) {
               <tr>
                 <th>测试项目</th>
                 <th>参考输出</th>
-                <th>CIM 输出</th>
+                <th>CIM 板卡输出</th>
                 <th>最大绝对误差</th>
                 <th>CIM 调用次数</th>
                 <th>状态</th>
@@ -1031,12 +1049,12 @@ function ExampleResults({ task }: { task: ExampleTask | null }) {
                     {item.name ?? `case-${index + 1}`}
                   </td>
                   <td>
-                    <code className="break-all text-[11px]">
+                    <code className="break-all text-[13px]">
                       {formatValue(item.reference)}
                     </code>
                   </td>
                   <td>
-                    <code className="break-all text-[11px]">
+                    <code className="break-all text-[13px]">
                       {formatValue(item.actual ?? item.cim)}
                     </code>
                   </td>
@@ -1080,6 +1098,8 @@ function formatValue(value: unknown): string {
 }
 
 type DvsPageProps = {
+  usb: UsbConfig;
+  setUsb: (update: (current: UsbConfig) => UsbConfig) => void;
   connected: boolean;
   error: string;
   pending: boolean;
@@ -1102,6 +1122,8 @@ type DvsPageProps = {
   operate: (path: string, body?: object) => Promise<void>;
 };
 function DvsPage({
+  usb,
+  setUsb,
   connected,
   error,
   pending,
@@ -1124,6 +1146,7 @@ function DvsPage({
   operate,
 }: DvsPageProps) {
   const active = !!task && activeStates.has(task.status);
+  const preparing = active && task?.status !== "running";
   const disabled = active || pending || !connected;
   const finished = task?.completed === task?.total;
   const rows = (task?.rows ?? []).filter(
@@ -1147,12 +1170,12 @@ function DvsPage({
             DVS 模型编译与执行
           </h1>
           <p className="mt-3 text-sm text-muted-foreground">
-            导入固定 DVS 模型，对比软件参考与 CIM 运行结果
+            导入固定 DVS 模型，对比软件参考与 CIM 板卡计算结果
           </p>
         </div>
         <div className="flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-4 py-2 text-xs font-medium text-primary">
           <Cpu size={14} />
-          软件参考 <span className="mx-1 text-blue-200">|</span> CIM 仿真
+          软件参考 <span className="mx-1 text-blue-200">|</span> CIM 板卡
         </div>
       </div>
       {(!connected || error || task?.error) && (
@@ -1183,7 +1206,7 @@ function DvsPage({
               <div>
                 <p className="text-sm font-semibold">MobileNet SNN</p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  C16 · T32 · 11 类 · 固定模型
+                  T=32 · 11 分类 · 固定模型
                 </p>
               </div>
             </div>
@@ -1194,6 +1217,7 @@ function DvsPage({
                   void operate("/api/import", {
                     weights,
                     dataset,
+                    usb_config: usb,
                     cim_layers: hybridMode ? selectedCimLayers : null,
                   });
                 }}
@@ -1275,6 +1299,7 @@ function DvsPage({
                     </div>
                   )}
                 </div>
+                <UsbFields usb={usb} setUsb={setUsb} disabled={disabled} />
                 <Button
                   type="submit"
                   disabled={
@@ -1310,7 +1335,7 @@ function DvsPage({
                   </span>
                   {task?.execution_mode === "hybrid"
                     ? `混合执行：${task.cim_layers?.join(", ")}`
-                    : "整模型 CIM"}
+                    : "CIM 执行"}
                 </p>
                 <Button
                   variant="ghost"
@@ -1324,14 +1349,13 @@ function DvsPage({
                 </Button>
               </div>
             )}
-            <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4 text-xs">
+            <div className="mt-5 border-t border-border pt-4 text-xs">
               <span className="text-muted-foreground">
                 固定输入{" "}
                 <code className="ml-2 rounded bg-muted px-2 py-1 text-foreground">
                   32 × 1 × 2 × 128 × 128
                 </code>
               </span>
-              <span className="text-muted-foreground">T · B · C · H · W</span>
             </div>
             <div className="mt-5 flex items-center justify-between gap-3">
               <Button
@@ -1341,15 +1365,20 @@ function DvsPage({
                   void operate("/api/action", { action: "compile" })
                 }
               >
-                {active && task?.status !== "running" ? (
+                {preparing ? (
                   <LoaderCircle className="animate-spin" />
                 ) : (
                   <Cpu />
                 )}
-                {task?.compiled ? "编译已就绪" : "编译模型"}
+                {preparing
+                  ? task?.cancel_requested
+                    ? "正在停止"
+                    : status
+                  : task?.compiled
+                    ? "编译已就绪"
+                    : "编译模型"}
               </Button>
               <div className="text-right">
-                <p className="text-xs text-muted-foreground">编译与首次执行</p>
                 <p className="number mt-1 text-sm font-medium">
                   {seconds(task?.compile_seconds)}
                 </p>
@@ -1368,16 +1397,18 @@ function DvsPage({
             </div>
           </CardHeader>
           <CardContent className="flex flex-1 flex-col">
-            <div className="flex items-center justify-between">
-              <span className="inline-flex items-center gap-2 rounded-md bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-primary">
-                {active ? (
-                  <LoaderCircle size={13} className="animate-spin" />
-                ) : (
-                  <span className="size-1.5 rounded-full bg-current" />
-                )}
-                {task?.cancel_requested ? "正在停止" : status}
-              </span>
-              <span className="text-xs text-muted-foreground">
+            <div className="flex min-h-7 items-center justify-between">
+              {!preparing && (
+                <span className="inline-flex items-center gap-2 rounded-md bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-primary">
+                  {active ? (
+                    <LoaderCircle size={13} className="animate-spin" />
+                  ) : (
+                    <span className="size-1.5 rounded-full bg-current" />
+                  )}
+                  {task?.cancel_requested ? "正在停止" : status}
+                </span>
+              )}
+              <span className="ml-auto text-xs text-muted-foreground">
                 {task?.total ?? "—"} 个测试样本
               </span>
             </div>
@@ -1386,7 +1417,7 @@ function DvsPage({
                 <span className="text-4xl font-semibold tracking-tight">
                   {task?.completed ?? 0}
                 </span>
-                <span className="ml-2 text-sm text-muted-foreground">
+                <span className="ml-2 text-lg text-muted-foreground">
                   / {task?.total ?? "—"} 已完成
                 </span>
               </p>
@@ -1418,8 +1449,8 @@ function DvsPage({
               >
                 {task?.completed ? <RotateCcw /> : <Play />}
                 {task?.completed || task?.status === "interrupted"
-                  ? "继续剩余测试"
-                  : "开始完整测试"}
+                  ? "继续测试"
+                  : "开始测试"}
               </Button>
               <Button
                 variant="outline"
@@ -1480,10 +1511,10 @@ function DvsPage({
               <CardContent className="pt-5">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold">
-                    {side === "original" ? "软件参考" : "CIM 模型"}
+                    {side === "original" ? "软件参考" : "CIM 板卡"}
                   </h3>
-                  <span className="rounded-md bg-muted px-2 py-1 text-[11px] text-muted-foreground">
-                    {side === "original" ? "PyTorch · CPU" : "CIM 仿真"}
+                  <span className="rounded-md bg-muted px-2 py-1 text-[13px] text-muted-foreground">
+                    {side === "original" ? "软件参考" : "CIM 板卡"}
                   </span>
                 </div>
                 <div className="mt-5 grid grid-cols-2 gap-4">
@@ -1543,9 +1574,9 @@ function DvsPage({
               <tr>
                 <th>样本</th>
                 <th>真实类别</th>
-                <th>纯软件预测</th>
+                <th>软件预测</th>
                 <th>耗时</th>
-                <th>CIM 预测</th>
+                <th>CIM 板卡预测</th>
                 <th>耗时</th>
               </tr>
             </thead>
@@ -1630,9 +1661,6 @@ function DvsPage({
           </div>
         </div>
       </Card>
-      <footer className="mt-6 flex flex-wrap justify-between gap-2 text-[11px] text-muted-foreground">
-        <span>CIM22 · 本地模型工作台</span>
-      </footer>
     </main>
   );
 }
@@ -1643,7 +1671,7 @@ function Verdict({ correct, label }: { correct: boolean; label: string }) {
     >
       {correct ? <Check size={14} /> : <X size={14} />}
       {label}
-      <span className="text-[10px]">{correct ? "正确" : "错误"}</span>
+      <span className="text-[12px]">{correct ? "正确" : "错误"}</span>
     </span>
   );
 }

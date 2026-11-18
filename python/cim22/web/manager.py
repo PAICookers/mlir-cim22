@@ -21,6 +21,7 @@ from .storage import (
     save_json,
     totals,
 )
+from .usb import parse_usb_config
 from .worker import worker_main
 
 USE_DEFAULT_CIM_LAYERS = object()
@@ -66,8 +67,16 @@ class TaskManager:
         self.external_idle = None
         pointer = self.root / "current.json"
         if pointer.exists():
-            self.current = self.root / read_json(pointer)["id"]
-            self._recover("服务已重启，已保存结果可以续跑")
+            try:
+                self.current = self.root / read_json(pointer)["id"]
+                config = read_json(self.current / "config.json")
+                if config.get("runtime") != "usb":
+                    raise ValueError("DVS 任务配置无效：runtime 必须为 usb")
+                parse_usb_config(config.get("usb_config"))
+                self._recover("服务已重启，已保存结果可以续跑")
+            except BaseException:
+                self._lock_file.close()
+                raise
 
     def _recover(self, message: str) -> None:
         if self.current is None:
@@ -122,6 +131,8 @@ class TaskManager:
         weights: Path,
         dataset: Path,
         cim_layers: list[str] | None | object = USE_DEFAULT_CIM_LAYERS,
+        *,
+        usb_config: Document,
     ) -> Document:
         with self.lock:
             self._ensure_idle()
@@ -139,6 +150,7 @@ class TaskManager:
                 weights.expanduser().resolve(),
                 dataset.expanduser().resolve(),
                 selected_layers,
+                usb_config=usb_config,
             )
             self._stop()
             task_id = uuid4().hex
@@ -157,7 +169,8 @@ class TaskManager:
                     "completed": 0,
                     "input_shape": config["input_shape"],
                     "classes": config["classes"],
-                    "runtime": "simulator",
+                    "runtime": config["runtime"],
+                    "usb_config": config["usb_config"],
                     "cim_layers": config["cim_layers"],
                     "execution_mode": (
                         "hybrid" if config["cim_layers"] else "full_model"
@@ -192,6 +205,18 @@ class TaskManager:
             if state["status"] in ACTIVE:
                 raise ValueError("已有计算任务，请等待完成或取消后再操作")
 
+    def release_board(self) -> None:
+        """Release a warm DVS session before another task opens the board."""
+        with self.lock:
+            self.ensure_dvs_idle()
+            if self.process is not None:
+                # EOF lets the worker leave its command loop and close the board.
+                self.commands.close()
+                self.commands = None
+                self.process.join(timeout=5)
+                self._stop()
+                self._recover("已释放 CIM 板卡")
+
     def start(self, action: str) -> Document:
         with self.lock:
             if action not in {"compile", "single", "full"}:
@@ -200,6 +225,8 @@ class TaskManager:
             if self.current is None:
                 raise ValueError("请先导入权重和测试集")
             state = read_json(self.current / "state.json")
+            if read_json(self.current / "config.json").get("runtime") != "usb":
+                raise ValueError("DVS 任务配置无效：runtime 必须为 usb")
             rows = read_rows(self.current)
             if action != "compile" and len(rows) == state["total"]:
                 raise ValueError("所有样本已完成；重新导入可创建新测试")

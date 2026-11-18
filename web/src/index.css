@@ -59,10 +59,16 @@ select {
 }
 
 .eyebrow {
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.14em;
   color: #8490a3;
+}
+
+/* Keep small explanatory and metadata text readable across every page. */
+.text-xs {
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 .number {

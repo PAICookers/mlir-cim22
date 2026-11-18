@@ -11,6 +11,8 @@ from typing import Any
 import torch
 from torch import nn
 
+from cim22.backend import session_for_artifact
+
 logger = logging.getLogger(__name__)
 
 
@@ -102,10 +104,15 @@ def run(
         options=options,
     )
     rows: list[dict[str, Any]] = []
+    dispatch_count = 0
     with torch.inference_mode():
         for case_name, inputs in _cases():
             reference = model(inputs)
             actual = compiled(inputs)
+            session = session_for_artifact(output)
+            dispatch_count = session.dispatch_count if session else 0
+            if runtime == "usb" and not dispatch_count:
+                raise RuntimeError(f"{case_name}: no CIM board computation")
             torch.testing.assert_close(
                 actual,
                 reference,
@@ -128,9 +135,6 @@ def run(
                 difference,
             )
     compile_seconds = time.perf_counter() - started
-    # shortcut: torch.compile hides dispatch_count; expose it when the backend
-    # gains a stable public session hook.
-    dispatch_count = None
     result: dict[str, Any] = {
         "framework": "pytorch",
         "runtime": runtime,
@@ -152,7 +156,7 @@ def run(
     logger.info(
         "Completed inference (cases=%d, outputs match reference)", len(rows)
     )
-    logger.info("CIM dispatch count: unavailable")
+    logger.info("CIM dispatch count: %d", dispatch_count)
     logger.info("Model directory: %s", output)
     logger.info("IR directory: %s", output / "ir")
     logger.info("Results saved to %s", destination)

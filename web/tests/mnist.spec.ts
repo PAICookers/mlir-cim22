@@ -67,6 +67,8 @@ test("MNIST active stages allow cancellation and show actual results", async ({
       test_accuracy: 0.98,
       train_loss: 0.02,
       total_seconds: 12.34,
+      log_text: `${"epoch=1 loss=0.1234567890 ".repeat(500)}\n训练完成`,
+      download_url: "/api/mnist/archive?task_id=test",
     },
   );
   await expect(page.getByText("98.00%")).toBeVisible();
@@ -74,4 +76,12 @@ test("MNIST active stages allow cancellation and show actual results", async ({
   await expect(
     page.getByText("实际配置：small · 3 轮 · batch 64 · lr 0.002"),
   ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "下载训练结果", exact: true }),
+  ).toHaveCount(1);
+  const width = await page.evaluate(() => ({
+    viewport: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+  }));
+  expect(width.scroll).toBeLessThanOrEqual(width.viewport);
 });

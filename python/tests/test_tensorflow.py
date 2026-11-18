@@ -71,7 +71,7 @@ assert "torch_mlir.fx" not in sys.modules
 print("safe rejection and TensorFlow recovery: PASS")
 """
     result = subprocess.run(
-        [sys.executable, "-c", script, first],
+        [sys.executable, "-P", "-c", script, first],
         capture_output=True,
         text=True,
         check=False,
@@ -152,7 +152,7 @@ with torch.inference_mode():
     )
 """
     result = subprocess.run(
-        [sys.executable, "-c", script],
+        [sys.executable, "-P", "-c", script],
         capture_output=True,
         text=True,
         check=False,
@@ -582,8 +582,14 @@ def test_worker_temp_lifetime_and_failure_cleanup(
 def test_example_keeps_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The small example leaves a reloadable model and IR in its output folder."""
+    """Keep reloadable artifacts even when the cwd has a shadow package."""
     monkeypatch.chdir(tmp_path)
+    shadow = tmp_path / "cim22"
+    shadow.mkdir()
+    (shadow / "__init__.py").write_text(
+        'raise AssertionError("compiler imported the working directory")\n',
+        encoding="utf-8",
+    )
     example = (
         Path(__file__).resolve().parents[1] / "examples/tensorflow_compile.py"
     )

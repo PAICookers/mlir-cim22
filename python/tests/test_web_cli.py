@@ -33,7 +33,7 @@ def test_workspace_paths(
         else Path(cli.__file__).resolve().parents[2] / "examples"
     )
     create.assert_called_once_with(
-        Path(data_dir or "cim22-web-data").expanduser().resolve(),
+        Path(data_dir or "cim22-web").expanduser().resolve(),
         tmp_path / "model",
         expected_examples,
         None,
@@ -54,5 +54,5 @@ def test_help_is_english(
     assert error.value.code == 0
     help_text = capsys.readouterr().out
     assert help_text.isascii()
-    assert "./cim22-web-data" in help_text
+    assert "./cim22-web" in help_text
     assert "read-only" in help_text

@@ -1,6 +1,7 @@
 """Session-owned pyserial PLL exchange and its synchronous C callback."""
 
 import ctypes
+import threading
 import time
 
 import serial
@@ -141,9 +142,11 @@ class PLLSerial:
 
 
 class ClockResources:
-    """Keep a native callback alive through destruction without owning Session."""
+    """Shared connection clock state; leases never own model Sessions."""
 
     def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.owners = 1
         self.controller: PLLSerial | None = None
         self.failed = False
         self.configured = False

@@ -339,14 +339,14 @@ extern "C" int cim22_session_invoke(void *handle, void **buffers,
   return s.error.empty() ? 0 : 1;
 }
 
-static int configureUsb(void *handle, const CIM22UsbConfig *config,
-                        const CIM22ClockControl *clock,
-                        const CIM22HardwareConfig &hardware, char *error,
-                        size_t capacity
+static int configureUsb(
+    void *handle, const CIM22UsbConfig *config, const CIM22ClockControl *clock,
+    const CIM22HardwareConfig &hardware, char *error, size_t capacity
 #ifdef CIM22_BOARD_OBSERVER
-                        , const cim22::runtime::detail::BoardUsbOptions *observation = nullptr
+    ,
+    const cim22::runtime::detail::BoardUsbOptions *observation = nullptr
 #endif
-                        ) {
+) {
   if (!handle || !config) {
     cim22::runtime::copyError("invalid USB runtime configuration", error,
                               capacity);
@@ -365,6 +365,13 @@ static int configureUsb(void *handle, const CIM22UsbConfig *config,
   }
   if (clock && !clock->callback) {
     cim22::runtime::copyError("missing CIM22 clock callback", error, capacity);
+    return 1;
+  }
+  if (session.device && session.device.use_count() > 1) {
+    cim22::runtime::copyError(
+        "USB connection is shared; close the other sessions before "
+        "reconfiguration",
+        error, capacity);
     return 1;
   }
   // Stop the receive loop before checking so late errors cannot be discarded.
@@ -418,7 +425,7 @@ static int configureUsb(void *handle, const CIM22UsbConfig *config,
         deviceConfig, *observation);
   else
 #endif
-  session.device = cim22::runtime::createUsbCIMDevice(deviceConfig);
+    session.device = cim22::runtime::createUsbCIMDevice(deviceConfig);
   if (auto failure = session.device->open()) {
     cim22::runtime::copyError(llvm::toString(std::move(failure)), error,
                               capacity);
@@ -428,6 +435,7 @@ static int configureUsb(void *handle, const CIM22UsbConfig *config,
   }
   session.runner = std::make_unique<cim22::runtime::CIMBoardRunner>(
       *session.device, hardware);
+  session.hardware = hardware;
   return 0;
 #else
   cim22::runtime::copyError("CIM22 runtime was built without USB support",
@@ -448,7 +456,7 @@ extern "C" CIM22_RUNTIME_API int cim22_board_configure_usb(
     return 1;
   }
   const cim22::runtime::detail::BoardUsbOptions observation{directory, gate,
-                                                           context};
+                                                            context};
   return configureUsb(handle, config, clock, *hardware, error, capacity,
                       &observation);
 }
@@ -461,7 +469,8 @@ extern "C" CIM22_RUNTIME_API int cim22_board_close_usb(void *handle) {
   if (!session.device)
     return 1;
   session.runner.reset();
-  session.device->close();
+  if (session.device.use_count() == 1)
+    session.device->close();
   const bool faulted = session.device->isFaulted();
   session.device.reset();
   return faulted ? 1 : 0;
@@ -485,6 +494,39 @@ extern "C" int cim22_session_configure_usb_with_clock(
     return 1;
   }
   return configureUsb(handle, config, clock, *hardware, error, capacity);
+}
+
+extern "C" int cim22_session_share_usb(void *target, void *source, char *error,
+                                       size_t capacity) {
+  if (!target || !source || target == source) {
+    cim22::runtime::copyError("USB sharing requires two distinct sessions",
+                              error, capacity);
+    return 1;
+  }
+  auto &destination = *static_cast<Session *>(target);
+  auto &owner = *static_cast<Session *>(source);
+  std::scoped_lock lock(destination.mutex, owner.mutex);
+  if (destination.model.backend != cim22::runtime::RuntimeBackend::USB ||
+      owner.model.backend != cim22::runtime::RuntimeBackend::USB) {
+    cim22::runtime::copyError("USB sharing requires USB model artifacts", error,
+                              capacity);
+    return 1;
+  }
+  if (destination.device || destination.runner) {
+    cim22::runtime::copyError("USB sharing target is already configured", error,
+                              capacity);
+    return 1;
+  }
+  if (!owner.device || !owner.runner || owner.device->isFaulted()) {
+    cim22::runtime::copyError("USB sharing source is unconfigured or faulted",
+                              error, capacity);
+    return 1;
+  }
+  destination.device = owner.device;
+  destination.hardware = owner.hardware;
+  destination.runner = std::make_unique<cim22::runtime::CIMBoardRunner>(
+      *destination.device, destination.hardware);
+  return 0;
 }
 
 extern "C" int64_t cim22_session_num_readbacks(void *handle, int64_t id) {
