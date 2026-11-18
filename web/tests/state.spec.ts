@@ -5,6 +5,13 @@ test.beforeEach(async ({ page }) => {
 });
 
 const ready = {
+  runtime: "usb",
+  usb_config: {
+    vendor_id: 1204,
+    product_id: 241,
+    bulk_in_endpoint: 129,
+    bulk_out_endpoint: 1,
+  },
   id: "fixture",
   status: "ready",
   weights: "/model/weights.pt",
@@ -35,8 +42,8 @@ test("a delayed action response cannot replace a newer SSE state", async ({
     window.EventSource = class {
       onopen?: (event: Event) => void;
       onmessage?: (event: MessageEvent) => void;
-      constructor() {
-        streams.add(this);
+      constructor(url: string | URL) {
+        if (String(url) === "/api/events") streams.add(this);
         queueMicrotask(() => this.onopen?.(new Event("open")));
       }
       close() {
@@ -67,7 +74,7 @@ test("a delayed action response cannot replace a newer SSE state", async ({
       new CustomEvent("test:snapshot", { detail: { task } }),
     );
   }, ready);
-  await page.getByRole("button", { name: "开始完整测试" }).click();
+  await page.getByRole("button", { name: "开始测试", exact: true }).click();
   await expect.poll(() => !!action).toBe(true);
   await page.evaluate(
     (task) => {
@@ -97,8 +104,8 @@ test("framework verification starts the fixed example with simulator by default"
     window.EventSource = class {
       onopen?: (event: Event) => void;
       onmessage?: (event: MessageEvent) => void;
-      constructor() {
-        streams.add(this);
+      constructor(url: string | URL) {
+        if (String(url) === "/api/examples/events") streams.add(this);
         queueMicrotask(() => this.onopen?.(new Event("open")));
       }
       close() {
@@ -200,8 +207,8 @@ test("DVS defaults and reimport draft survive same-task SSE", async ({
     window.EventSource = class {
       onopen?: (event: Event) => void;
       onmessage?: (event: MessageEvent) => void;
-      constructor() {
-        streams.add(this);
+      constructor(url: string | URL) {
+        if (String(url) === "/api/events") streams.add(this);
         queueMicrotask(() => this.onopen?.(new Event("open")));
       }
       close() {
@@ -230,6 +237,13 @@ test("DVS defaults and reimport draft survive same-task SSE", async ({
     route.fulfill({
       json: [
         {
+          name: "second",
+          type: "Linear",
+          input_shape: [32, 1, 4],
+          output_shape: [32, 1, 11],
+          weight_shape: [11, 4],
+        },
+        {
           name: "head",
           type: "Linear",
           input_shape: [32, 1, 4],
@@ -252,24 +266,49 @@ test("DVS defaults and reimport draft survive same-task SSE", async ({
   await expect(
     page.getByRole("checkbox", { name: /head Linear/ }),
   ).toBeChecked();
+  await page.getByRole("checkbox", { name: /second Linear/ }).check();
+  await expect(
+    page.getByRole("checkbox", { name: /head Linear/ }),
+  ).toBeChecked();
   await page.getByRole("button", { name: "导入模型与测试集" }).click();
   await expect.poll(() => bodies.length).toBe(1);
-  expect(bodies[0]).toMatchObject({ cim_layers: ["head"] });
+  expect(bodies[0]).toMatchObject({
+    cim_layers: ["head", "second"],
+    usb_config: { vendor_id: 1204, product_id: 241 },
+  });
   await page.evaluate(
     (task) =>
       window.dispatchEvent(
         new CustomEvent("test:snapshot", { detail: { task } }),
       ),
-    { ...ready, cim_layers: ["head"], execution_mode: "hybrid" },
+    {
+      ...ready,
+      id: "minimal-usb",
+      usb_config: {
+        vendor_id: 1204,
+        product_id: 241,
+        bulk_in_endpoint: 129,
+        bulk_out_endpoint: 1,
+      },
+      cim_layers: ["head"],
+      execution_mode: "hybrid",
+    },
   );
   await page.getByRole("button", { name: "更换输入 / 新建测试" }).click();
+  await expect(page.getByLabel("启动", { exact: true })).toHaveValue("20");
   await mode.uncheck();
+  await page.getByLabel("计算", { exact: true }).fill("10");
   await page.evaluate(
     (task) =>
       window.dispatchEvent(
         new CustomEvent("test:snapshot", { detail: { task } }),
       ),
-    { ...ready, cim_layers: ["head"], execution_mode: "hybrid" },
+    {
+      ...ready,
+      id: "minimal-usb",
+      cim_layers: ["head"],
+      execution_mode: "hybrid",
+    },
   );
   await expect(mode).not.toBeChecked();
   await expect(
@@ -277,7 +316,10 @@ test("DVS defaults and reimport draft survive same-task SSE", async ({
   ).toBeVisible();
   await page.getByRole("button", { name: "导入模型与测试集" }).click();
   await expect.poll(() => bodies.length).toBe(2);
-  expect(bodies[1]).toMatchObject({ cim_layers: null });
+  expect(bodies[1]).toMatchObject({
+    cim_layers: null,
+    usb_config: { timing: { work_delay_ms: 10 } },
+  });
 });
 
 test("DVS layer discovery errors stay visible without crashing", async ({
@@ -290,5 +332,64 @@ test("DVS layer discovery errors stay visible without crashing", async ({
   await expect(page.getByRole("alert")).toContainText("候选层读取失败");
   await expect(
     page.getByRole("heading", { name: "DVS 模型编译与执行" }),
+  ).toBeVisible();
+});
+
+test("DVS shows board execution controls for the current USB task", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const streams = new Set<{ onmessage?: (event: MessageEvent) => void }>();
+    window.EventSource = class {
+      onopen?: (event: Event) => void;
+      onmessage?: (event: MessageEvent) => void;
+      constructor(url: string | URL) {
+        if (String(url) === "/api/events") streams.add(this);
+        queueMicrotask(() => this.onopen?.(new Event("open")));
+      }
+      close() {
+        streams.delete(this);
+      }
+    } as unknown as typeof EventSource;
+    window.addEventListener("test:snapshot", (event) => {
+      for (const stream of streams)
+        stream.onmessage?.(
+          new MessageEvent("message", {
+            data: JSON.stringify((event as CustomEvent).detail),
+          }),
+        );
+    });
+  });
+  await page.route("**/api/defaults", (route) =>
+    route.fulfill({ json: { weights: ready.weights, dataset: ready.dataset } }),
+  );
+  await page.goto("/#dvs");
+  await expect(page.getByText("板卡配置", { exact: true })).toBeVisible();
+  await page.evaluate(
+    (task) =>
+      window.dispatchEvent(
+        new CustomEvent("test:snapshot", { detail: { task } }),
+      ),
+    { ...ready, status: "compiling", compiled: false, total: 288 },
+  );
+  await expect(page.getByRole("button", { name: "编译中" })).toBeDisabled();
+  await expect(page.getByText("编译中", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("/ 288 已完成", { exact: true })).toBeVisible();
+  await page.evaluate(
+    (task) =>
+      window.dispatchEvent(
+        new CustomEvent("test:snapshot", { detail: { task } }),
+      ),
+    ready,
+  );
+  await expect(page.getByRole("status")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "运行一个样本", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "开始测试", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    page.getByRole("heading", { name: "CIM 板卡", exact: true }),
   ).toBeVisible();
 });

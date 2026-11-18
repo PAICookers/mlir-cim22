@@ -20,6 +20,8 @@ if os.name == "nt":
 else:
     import fcntl
 
+from .usb import parse_usb_config
+
 # Match the verified DatasetFolder lexicographic class mapping, including '10'.
 CLASSES = sorted(map(str, range(11)))
 INPUT_SHAPE = [32, 1, 2, 128, 128]
@@ -43,19 +45,22 @@ FIELDS = list(Result.__annotations__)
 
 
 @contextmanager
-def _storage_lock(directory: Path) -> Iterator[None]:
-    """Serialize state-file reads and replacements across processes."""
-    lock_path = directory / ".storage.lock"
-    with lock_path.open("a+b") as stream:
+def _storage_lock(path: Path, *, blocking: bool = True) -> Iterator[None]:
+    """Hold a cross-platform exclusive file lock."""
+    if path.is_symlink() or path.is_junction():
+        raise ValueError(f"Lock path is a link: {path}")
+    with path.open("a+b") as stream:
         if os.name == "nt":
             stream.seek(0, 2)
             if stream.tell() == 0:
                 stream.write(b"\0")
                 stream.flush()
             stream.seek(0)
-            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+            mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+            msvcrt.locking(stream.fileno(), mode, 1)
         else:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            mode = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+            fcntl.flock(stream.fileno(), mode)
         try:
             yield
         finally:
@@ -74,7 +79,7 @@ def digest(path: Path) -> str:
 
 def atomic_text(path: Path, content: str) -> None:
     """Publish a durable whole file, never a partially written CSV/JSON."""
-    with _storage_lock(path.parent):
+    with _storage_lock(path.parent / ".storage.lock"):
         temporary = path.with_suffix(path.suffix + ".tmp")
         with temporary.open("w", encoding="utf-8", newline="") as stream:
             stream.write(content)
@@ -95,13 +100,13 @@ def save_json(path: Path, value: object) -> None:
 
 
 def read_json(path: Path) -> Document:
-    with _storage_lock(path.parent):
+    with _storage_lock(path.parent / ".storage.lock"):
         return json.loads(path.read_text(encoding="utf-8"))
 
 
 def read_bytes(path: Path) -> bytes:
     """Read one published result while excluding a concurrent replacement."""
-    with _storage_lock(path.parent):
+    with _storage_lock(path.parent / ".storage.lock"):
         return path.read_bytes()
 
 
@@ -115,7 +120,7 @@ def save_rows(directory: Path, rows: list[Result]) -> None:
 
 def read_rows(directory: Path) -> list[Result]:
     path = directory / "results.csv"
-    with _storage_lock(directory):
+    with _storage_lock(directory / ".storage.lock"):
         if not path.exists():
             return []
         with path.open(encoding="utf-8", newline="") as stream:
@@ -174,8 +179,11 @@ def make_config(
     weights: Path,
     dataset: Path,
     cim_layers: list[str] | None = None,
+    *,
+    usb_config: Document,
 ) -> Document:
     """Index cached frames using the fixed training label order."""
+    parse_usb_config(usb_config)
     source = model_dir / "model_mobilenet_snn_deploy.py"
     for path in (source, weights):
         if not path.is_file():
@@ -205,20 +213,22 @@ def make_config(
         "samples": entries,
         "classes": CLASSES,
         "input_shape": INPUT_SHAPE,
-        "runtime": "simulator",
+        "runtime": "usb",
+        "usb_config": usb_config,
         "cim_layers": list(cim_layers) if cim_layers is not None else None,
     }
 
 
 def validate_config(config: Document) -> None:
     """Refuse to mix changed inputs with previous sample results."""
+    if config.get("runtime") != "usb":
+        raise ValueError("DVS 任务配置无效：runtime 必须为 usb")
     current = make_config(
         Path(config["model_dir"]),
         Path(config["weights"]),
         Path(config["dataset"]),
         config.get("cim_layers"),
+        usb_config=config.get("usb_config"),
     )
-    expected = dict(config)
-    expected.setdefault("cim_layers", None)
-    if current != expected:
+    if current != config:
         raise ValueError("模型、权重或测试集已变化，请重新导入为新任务")

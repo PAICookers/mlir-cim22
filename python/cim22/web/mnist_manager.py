@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from ..mnist_training import MnistConfig, train_mnist
+from ..apps.mnist_training import MnistConfig, train_mnist
 from .storage import Document, read_json, save_json
 
 MnistModel = Literal["small", "standard"]
@@ -146,9 +146,14 @@ class MnistManager:
             if self.current is None:
                 return {"task": None}
             state = read_json(self.current / "state.json")
+            files = self._files(state)
             state.update(
                 log_text=self._read_log(self.current / "train.log"),
-                files=self._files(state),
+                download_url=(
+                    f"/api/mnist/archive?task_id={state['id']}"
+                    if files
+                    else None
+                ),
             )
             return {"task": state}
 

@@ -1,11 +1,13 @@
 """Loopback HTTP API and SSE snapshots; computation never runs in requests."""
 
 import asyncio
+import io
 import json
+import zipfile
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
@@ -20,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .example_manager import ExampleManager
+from .example_manager import ExampleManager, Runtime
 from .manager import USE_DEFAULT_CIM_LAYERS, TaskManager
 from .mnist_manager import MnistManager
 from .storage import Document, read_bytes
@@ -32,6 +34,7 @@ class ImportRequest(BaseModel):
     weights: str
     dataset: str
     cim_layers: list[str] | None = None
+    usb_config: dict[str, Any]
 
 
 class ActionRequest(BaseModel):
@@ -72,14 +75,19 @@ def create_app(
         selected_examples = (
             examples_dir or Path(__file__).resolve().parents[2] / "examples"
         )
+
+        def before_example_start(runtime: Runtime) -> None:
+            app.state.mnist.ensure_idle()
+            if runtime == "usb":
+                app.state.manager.release_board()
+            else:
+                app.state.manager.ensure_dvs_idle()
+
         app.state.examples = ExampleManager(
             root,
             selected_examples,
             app.state.manager.lock,
-            lambda: (
-                app.state.manager.ensure_dvs_idle(),
-                app.state.mnist.ensure_idle(),
-            ),
+            before_example_start,
         )
         app.state.mnist = MnistManager(
             root,
@@ -100,7 +108,7 @@ def create_app(
             app.state.examples.close()
             app.state.manager.close()
 
-    app = FastAPI(title="CIM22 · 编译验证工作台", lifespan=lifespan)
+    app = FastAPI(title="CIM22 · 本地编译验证工作台", lifespan=lifespan)
     app.add_middleware(
         TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]"]
     )
@@ -167,7 +175,10 @@ def create_app(
                 else USE_DEFAULT_CIM_LAYERS
             )
             return app.state.manager.import_model(
-                Path(body.weights), Path(body.dataset), selected_layers
+                Path(body.weights),
+                Path(body.dataset),
+                selected_layers,
+                usb_config=body.usb_config,
             )
         except OSError as error:
             raise HTTPException(400, str(error)) from error
@@ -227,6 +238,38 @@ def create_app(
         if base not in path.parents or not path.is_file():
             raise HTTPException(404, "训练产物不存在")
         return FileResponse(path)
+
+    @app.get("/api/mnist/archive")
+    def mnist_archive(task_id: str) -> Response:
+        """Download all fixed MNIST training outputs as one archive."""
+        base = (app.state.mnist.root / task_id).resolve()
+        root = app.state.mnist.root.resolve()
+        if root not in base.parents:
+            raise HTTPException(404, "训练任务不存在")
+        names = (
+            "model.pt",
+            "config.json",
+            "metrics.jsonl",
+            "summary.json",
+            "train.log",
+        )
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
+            found = False
+            for name in names:
+                path = base / name
+                if path.is_file():
+                    output.write(path, name)
+                    found = True
+        if not found:
+            raise HTTPException(404, "训练产物不存在")
+        return Response(
+            archive.getvalue(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="mnist-{task_id}.zip"'
+            },
+        )
 
     @app.get("/api/examples/file")
     def example_file(task_id: str, name: str) -> Response:
