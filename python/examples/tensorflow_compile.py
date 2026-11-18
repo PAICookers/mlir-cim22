@@ -2,13 +2,17 @@
 
 import argparse
 import json
+import logging
 import os
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def _usb_config(path: Path | None) -> object | None:
@@ -18,11 +22,11 @@ def _usb_config(path: Path | None) -> object | None:
 
     fields = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(fields, dict):
-        raise ValueError("USB 配置必须是 JSON 对象")
+        raise ValueError("USB configuration must be a JSON object")
     if "timing" in fields:
         timing = fields["timing"]
         if not isinstance(timing, dict):
-            raise ValueError("timing 必须是 JSON 对象")
+            raise ValueError("timing must be a JSON object")
         fields["timing"] = CIMTimingConfig(**timing)
     return UsbConfig(**fields)
 
@@ -37,6 +41,11 @@ def run(
     """Run the fixed INT8 TensorFlow example and persist a JSON result."""
     if runtime not in {"simulator", "usb"}:
         raise ValueError("runtime must be simulator or usb")
+    logger.info("Starting TensorFlow example (runtime=%s)", runtime)
+    logger.info(
+        "Model: INT8 BatchMatMul -> clipped ReLU -> BatchMatMul; "
+        "inputs: 1 random case (seed=42)"
+    )
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
     import tensorflow as tf
 
@@ -50,9 +59,7 @@ def run(
 
     @tf.function(input_signature=[tf.TensorSpec([1, 4, 16], tf.int8)])
     def model(x: tf.Tensor) -> tf.Tensor:
-        hidden = tf.raw_ops.BatchMatMulV3(
-            x=x, y=tf.constant(w1), Tout=tf.int32
-        )
+        hidden = tf.raw_ops.BatchMatMulV3(x=x, y=tf.constant(w1), Tout=tf.int32)
         hidden = tf.cast(tf.clip_by_value(hidden, 0, 127), tf.int8)
         return tf.raw_ops.BatchMatMulV3(
             x=hidden, y=tf.constant(w2), Tout=tf.int32
@@ -68,14 +75,21 @@ def run(
     }
     if usb_config is not None:
         options["usb_config"] = usb_config
+    logger.info("Compiling and running inference")
     started = time.perf_counter()
     with compile(model, options=options) as compiled:
         actual = compiled(inputs).numpy()
         dispatch_count = compiled.session.dispatch_count
     compile_seconds = time.perf_counter() - started
     if runtime == "usb" and dispatch_count <= 0:
-        raise RuntimeError("USB 验证未产生 CIM dispatch")
+        raise RuntimeError("USB inference produced no CIM dispatch")
     error = int(np.max(np.abs(actual.astype(np.int64) - reference)))
+    np.testing.assert_array_equal(actual, reference)
+    logger.info(
+        "Output matches reference: case=int8_linear_clip_linear, "
+        "max_abs_error=%d",
+        error,
+    )
     result: dict[str, Any] = {
         "framework": "tensorflow",
         "runtime": runtime,
@@ -98,12 +112,11 @@ def run(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    print("Compiling: INT8 BatchMatMul(1x4x16,16x32) -> clipped ReLU -> BatchMatMul(32x16); seed=42")
-    print(f"CIM {runtime} calls: {dispatch_count}")
-    print(f"TensorFlow: {reference.tolist()}")
-    print(f"CIM:        {actual.tolist()}")
-    print(f"Max absolute error: {error}")
-    print(f"Model, debug IR and result.json: {output.resolve()}")
+    logger.info("Completed inference (cases=1, outputs match reference)")
+    logger.info("CIM dispatch count: %d", dispatch_count)
+    logger.info("Model directory: %s", output)
+    logger.info("IR directory: %s", output / "ir")
+    logger.info("Results saved to %s", destination)
     return result
 
 
@@ -125,7 +138,9 @@ def main(
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runtime", choices=("simulator", "usb"), default="simulator")
+    parser.add_argument(
+        "--runtime", choices=("simulator", "usb"), default="simulator"
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--usb-config", type=Path)
     parser.add_argument("--result-json", type=Path)
@@ -133,12 +148,21 @@ def _parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
-    args = _parse_args()
-    output = args.output or Path("outputs/tensorflow") / datetime.now().strftime(
-        "%Y%m%d-%H%M%S-%f"
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+        )
     )
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    args = _parse_args()
+    output = args.output or Path(
+        "outputs/tensorflow"
+    ) / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     output.mkdir(parents=True, exist_ok=True)
-    with (output / "compile.log").open("w", encoding="utf-8") as log:
+    with (output / "compile.log").open("a", encoding="utf-8") as log:
         saved_stderr = os.dup(2)
         try:
             os.dup2(log.fileno(), 2)
@@ -148,6 +172,11 @@ if __name__ == "__main__":
                 usb_config=_usb_config(args.usb_config),
                 result_json=args.result_json,
             )
+        except Exception:
+            logger.error(
+                "Example failed; see traceback and %s", output / "compile.log"
+            )
+            raise
         finally:
             os.dup2(saved_stderr, 2)
             os.close(saved_stderr)
