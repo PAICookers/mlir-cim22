@@ -1,18 +1,9 @@
 """Validation rules for DVS leaf-layer selection."""
 
-from types import SimpleNamespace
-
 import pytest
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("spikingjelly")
-
-USB_CONFIG = {
-    "vendor_id": 1204,
-    "product_id": 241,
-    "bulk_in_endpoint": 129,
-    "bulk_out_endpoint": 1,
-}
 
 
 @pytest.fixture(autouse=True)
@@ -63,8 +54,6 @@ def test_engine_preserves_full_model_and_rejects_explicit_empty(
     monkeypatch.setattr(engine, "_new_model", lambda *args: torch.nn.Identity())
     monkeypatch.setattr(torch, "load", lambda *args, **kw: {"state_dict": {}})
     config = {
-        "runtime": "usb",
-        "usb_config": USB_CONFIG,
         "model_dir": str(tmp_path),
         "weights": "fixture",
         "cim_layers": selection,
@@ -74,7 +63,7 @@ def test_engine_preserves_full_model_and_rejects_explicit_empty(
         assert instance.cim_layers == ()
         assert instance.metadata()["execution_mode"] == "full_model"
     else:
-        with pytest.raises(ValueError, match="at least one"):
+        with pytest.raises(ValueError, match="至少需要一个"):
             engine.DvsEngine(config, tmp_path)
 
 
@@ -87,51 +76,54 @@ def test_multistep_leaf_offload_dispatch_and_numeric_agreement(
     tmp_path, native_toolchain, names
 ):
     import copy
+    import ctypes
 
     from spikingjelly.activation_based import functional, layer
 
     from cim22.backend import session_for_artifact
-    from cim22.layers import LayerOffload
     from cim22.runtime import MODEL_SUFFIX
+    from cim22.web.engine import DvsEngine
 
     torch.manual_seed(42)
-    model = torch.nn.Sequential(
+    instance = DvsEngine.__new__(DvsEngine)
+    instance.cim = torch.nn.Sequential(
         layer.Linear(4, 4), layer.Linear(4, 4), layer.Linear(4, 11)
     ).eval()
-    functional.set_step_mode(model, "m")
-    original = copy.deepcopy(model)
+    functional.set_step_mode(instance.cim, "m")
+    instance.original = copy.deepcopy(instance.cim)
+    instance.directory = tmp_path
+    instance.config = {"runtime": "simulator"}
+    instance.cim_layers = names
+    instance.layer_artifacts = {}
+    instance.layer_compile_seconds = {}
+    instance.last_outputs = {}
+    instance._libc = ctypes.CDLL(None)
     sample = torch.ones(32, 1, 4)
-    compiled = LayerOffload(
-        model,
-        names,
-        (sample,),
-        runtime="simulator",
-        artifact_dir=tmp_path / "artifacts",
-        reset=functional.reset_net,
-    )
-    assert set(compiled.layer_artifacts) == set(names)
-    assert compiled.dispatch_count > 0
+    instance.load = lambda _: sample
+    instance.compile(lambda _: None)
+    assert set(instance.layer_artifacts) == set(names)
+    assert instance.dispatch_count > 0
 
-    modules = dict(model.named_modules())
+    modules = dict(instance.cim.named_modules())
     for name in ("0", "1", "2"):
         assert (modules[name]._compiled_call_impl is not None) == (
             name in names
         )
-    artifacts = compiled.artifacts.copy()
-    values = (sample, sample * 0.5, sample)
-    with torch.inference_mode():
-        for value in values:
-            functional.reset_net(original)
-            expected = original(value)
-            functional.reset_net(model)
-            torch.testing.assert_close(
-                compiled(value), expected, rtol=0.05, atol=0.05
-            )
-            for name in names:
-                layer_dir = tmp_path / "artifacts" / name
-                assert len(list(layer_dir.glob("*" + MODEL_SUFFIX))) == 1
-                assert session_for_artifact(layer_dir).dispatch_count > 0
-            assert compiled.artifacts == artifacts
+    artifacts = instance.artifacts.copy()
+    for value in (sample, sample * 0.5, sample):
+        instance.infer("original", value)
+        instance.infer("cim", value)
+        torch.testing.assert_close(
+            instance.last_outputs["cim"],
+            instance.last_outputs["original"],
+            rtol=0.05,
+            atol=0.05,
+        )
+        for name in names:
+            layer_dir = tmp_path / "artifacts" / name
+            assert len(list(layer_dir.glob("*" + MODEL_SUFFIX))) == 1
+            assert session_for_artifact(layer_dir).dispatch_count > 0
+        assert instance._artifact_paths() == artifacts
 
 
 def test_compile_without_selection_uses_original_whole_model_path(
@@ -142,8 +134,7 @@ def test_compile_without_selection_uses_original_whole_model_path(
     instance = engine.DvsEngine.__new__(engine.DvsEngine)
     instance.directory = tmp_path
     instance.cim_layers = ()
-    instance.config = {"runtime": "usb", "usb_config": USB_CONFIG}
-    instance.usb_config = engine.parse_usb_config(USB_CONFIG)
+    instance.config = {"runtime": "simulator"}
     instance.cim = torch.nn.Identity()
     sample = torch.zeros(32, 1, 11)
     instance.load = lambda _: sample
@@ -158,16 +149,9 @@ def test_compile_without_selection_uses_original_whole_model_path(
         path.touch()
         return model
 
-    monkeypatch.setattr(
-        engine,
-        "session_for_artifact",
-        lambda _: SimpleNamespace(dispatch_count=1),
-    )
     monkeypatch.setattr(torch, "compile", compile_model)
     instance.compile(lambda _: None)
     assert captured["backend"] == "cim22"
     assert captured["fullgraph"] is True
-    assert captured["options"]["runtime"] == "usb"
-    assert captured["options"]["usb_config"] is instance.usb_config
     assert instance.compiled is instance.cim
     assert instance.artifacts
