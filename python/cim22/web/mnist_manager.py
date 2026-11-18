@@ -112,17 +112,12 @@ class MnistManager:
             save_json(self.current / "state.json", state)
 
     @staticmethod
-    def _log_tail(path: Path, limit: int = 12_000) -> str:
+    def _read_log(path: Path) -> str:
+        """Return the full saved output, preserving line endings."""
         try:
-            with path.open("rb") as stream:
-                stream.seek(0, 2)
-                size = stream.tell()
-                stream.seek(max(0, size - limit))
-                data = stream.read()
+            return path.read_bytes().decode("utf-8", errors="replace")
         except OSError:
             return ""
-        text = data.decode("utf-8", errors="replace")
-        return ("[日志过长，仅显示最后 12 KB]\n" if size > limit else "") + text
 
     def _files(self, state: Document) -> dict[str, str]:
         task_id = str(state["id"])
@@ -152,7 +147,7 @@ class MnistManager:
                 return {"task": None}
             state = read_json(self.current / "state.json")
             state.update(
-                log_text=self._log_tail(self.current / "train.log"),
+                log_text=self._read_log(self.current / "train.log"),
                 files=self._files(state),
             )
             return {"task": state}

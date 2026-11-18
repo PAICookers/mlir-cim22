@@ -278,14 +278,17 @@ def test_example_usb_config_reuses_runtime_validation() -> None:
         )
 
 
-def test_example_log_tail_is_bounded(tmp_path: Path) -> None:
+@pytest.mark.parametrize("kind", ["example", "mnist"])
+def test_web_log_preserves_full_output(tmp_path: Path, kind: str) -> None:
     from cim22.web.example_manager import ExampleManager
+    from cim22.web.mnist_manager import MnistManager
 
     path = tmp_path / "compile.log"
-    path.write_text("x" * 12_010, encoding="utf-8")
-    log = ExampleManager._log_tail(path)
-    assert log.startswith("[日志过长，仅显示最后 12 KB]\n")
-    assert len(log) > 12_000
+    content = "first output\r\n" + "运行日志\n" * 5000 + "last output\n"
+    path.write_bytes(content.encode("utf-8"))
+    manager = ExampleManager if kind == "example" else MnistManager
+    assert manager._read_log(path) == content
+    assert manager._read_log(tmp_path / "missing.log") == ""
 
 
 def test_failed_atomic_replace_preserves_previous_csv(
