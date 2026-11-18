@@ -36,6 +36,8 @@ class BackendOptions(TypedDict, total=False):
             BF16 kernels.
         usb_config: Bridge, timing and optional PLL settings for the USB
             Session. Required to open the bridge before USB execution.
+        usb_session: Existing configured Session whose board connection is
+            shared by this model. Mutually exclusive with usb_config.
         artifact_dir: Directory in which to keep each native model library.
         debug_dir: Directory in which to keep the IR for each specialization.
     """
@@ -43,6 +45,7 @@ class BackendOptions(TypedDict, total=False):
     runtime: RuntimeBackend | Literal["reference"]
     bf16_compensation: BF16Compensation
     usb_config: UsbConfig
+    usb_session: Session
     artifact_dir: str | Path
     debug_dir: str | Path
 
@@ -77,6 +80,11 @@ def _validate_options(
         raise ValueError(f"CIM22 runtime must be one of {allowed}")
     if options.get("usb_config") is not None and runtime != "usb":
         raise ValueError("CIM22 usb_config requires runtime='usb'")
+    if options.get("usb_session") is not None:
+        if runtime != "usb" or options.get("usb_config") is not None:
+            raise ValueError("usb_session requires USB without usb_config")
+        if not isinstance(options["usb_session"], Session):
+            raise TypeError("usb_session must be a configured Session")
     if runtime != "reference" and options.get(
         "bf16_compensation", "sign-split"
     ) not in ("sign-split", "legacy", "none"):

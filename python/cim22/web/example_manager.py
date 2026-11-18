@@ -4,13 +4,13 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from cim22 import CIMTimingConfig, UsbConfig
-
 from .storage import Document, read_json, save_json
+from .usb import parse_usb_config
 
 Framework = Literal["tensorflow", "pytorch"]
 Runtime = Literal["simulator", "usb"]
@@ -26,13 +26,13 @@ class ExampleManager:
         root: Path,
         examples_dir: Path,
         lock: threading.RLock,
-        ensure_dvs_idle: object,
+        before_start: Callable[[Runtime], None],
     ) -> None:
         self.root = root.resolve() / "examples"
         self.root.mkdir(parents=True, exist_ok=True)
         self.examples_dir = examples_dir.resolve()
         self.lock = lock
-        self._ensure_dvs_idle = ensure_dvs_idle
+        self._before_start = before_start
         self.process: subprocess.Popen[bytes] | None = None
         self.log = None
         self.current: Path | None = None
@@ -78,22 +78,12 @@ class ExampleManager:
         save_json(self.current / "state.json", state)
 
     @staticmethod
-    def _log_tail(path: Path, limit: int = 12_000) -> str:
-        """Return a bounded UTF-8 tail so SSE snapshots stay small."""
+    def _read_log(path: Path) -> str:
+        """Return the full saved output, preserving line endings."""
         try:
-            with path.open("rb") as stream:
-                stream.seek(0, 2)
-                size = stream.tell()
-                stream.seek(max(0, size - limit))
-                data = stream.read()
+            return path.read_bytes().decode("utf-8", errors="replace")
         except OSError:
             return ""
-        text = data.decode("utf-8", errors="replace")
-        return (
-            "[日志过长，仅显示最后 12 KB]\n" + text
-            if size > limit
-            else text
-        )
 
     def snapshot(self) -> Document:
         with self.lock:
@@ -106,7 +96,7 @@ class ExampleManager:
                 debug_url=self._url_for(state, "ir_dir"),
                 log_url=self._url_for(state, "log_path"),
                 result_url=self._url_for(state, "result_json"),
-                log_text=self._log_tail(Path(str(state["log_path"]))),
+                log_text=self._read_log(Path(str(state["log_path"]))),
             )
             return {"task": state}
 
@@ -134,19 +124,9 @@ class ExampleManager:
             if self.process is not None:
                 raise ValueError("已有框架验证任务，请等待完成或取消")
 
-    @staticmethod
-    def _parse_usb_config(fields: object) -> UsbConfig:
-        if not isinstance(fields, dict):
-            raise ValueError("usb_config 必须是 JSON 对象")
-        values = dict(fields)
-        timing = values.get("timing")
-        if timing is not None:
-            if not isinstance(timing, dict):
-                raise ValueError("usb_config.timing 必须是 JSON 对象")
-            values["timing"] = CIMTimingConfig(**timing)
-        return UsbConfig(**values)
-
-    def start(self, framework: Framework, runtime: Runtime, usb_config: object | None) -> Document:
+    def start(
+        self, framework: Framework, runtime: Runtime, usb_config: object | None
+    ) -> Document:
         with self.lock:
             self._reap()
             if framework not in SCRIPTS:
@@ -159,15 +139,15 @@ class ExampleManager:
                 if usb_config is None:
                     raise ValueError("usb 后端必须提供 usb_config")
                 try:
-                    self._parse_usb_config(usb_config)
+                    parse_usb_config(usb_config)
                 except (TypeError, ValueError) as error:
                     raise ValueError(str(error)) from error
             elif usb_config is not None:
                 raise ValueError("simulator 不接受 usb_config")
-            self._ensure_dvs_idle()
             script = self.examples_dir / SCRIPTS[framework]
             if not script.is_file():
                 raise ValueError(f"找不到示例程序：{script}")
+            self._before_start(runtime)
             task_id = uuid4().hex
             directory = self.root / task_id
             directory.mkdir()

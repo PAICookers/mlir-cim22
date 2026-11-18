@@ -224,3 +224,6 @@ cim22/web/static/
 
 # Local build products and externally supplied development wheels.
 *.whl
+
+# Local CIM22 Web UI state, caches, logs and results.
+cim22-web/

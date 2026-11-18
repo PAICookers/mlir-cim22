@@ -37,10 +37,11 @@ _SESSIONS_BY_ARTIFACT: WeakValueDictionary[Path, Session] = (
 
 def session_for_artifact(artifact_dir: Path) -> Session | None:
     """Return the most recently captured native session in an artifact dir."""
+    directory = artifact_dir.resolve()
     matches = [
         session
         for path, session in _SESSIONS_BY_ARTIFACT.items()
-        if path.parent == artifact_dir.resolve()
+        if path.parent == directory
     ]
     return matches[-1] if matches else None
 
@@ -103,6 +104,7 @@ def backend(
     example_inputs: list[torch.Tensor],
     *,
     options: BackendOptions | None = None,
+    _on_session: Callable[[Session], None] | None = None,
 ) -> TensorCallable:
     """Compile a static CPU inference graph for torch.compile.
 
@@ -128,6 +130,7 @@ def backend(
     _check_torch_mlir_compatibility()
     runtime = options.get("runtime", "usb")
     usb_config = options.get("usb_config")
+    usb_session = options.get("usb_session")
     bf16_compensation = options.get("bf16_compensation", "sign-split")
     if torch.is_grad_enabled():
         raise ValueError(
@@ -206,9 +209,15 @@ def backend(
             install_guard(
                 parameter_sources[index].make_guard(GuardBuilder.ID_MATCH)
             )
-        session = _initialize_session(session, usb_config)
+        session = (
+            _initialize_session(session, usb_session=usb_session)
+            if usb_session is not None
+            else _initialize_session(session, usb_config)
+        )
         if artifact_path is not None:
             _SESSIONS_BY_ARTIFACT[artifact_path.resolve()] = session
+        if _on_session is not None:
+            _on_session(session)
 
         def run(*values: torch.Tensor) -> tuple[torch.Tensor, ...]:
             return tuple(

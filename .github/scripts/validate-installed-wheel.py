@@ -12,6 +12,7 @@ PYTEST_FILES = (
     "tests/test_model_format.py",
     "tests/test_artifacts.py",
     "tests/test_usb_runtime.py",
+    "tests/test_layers.py",
     "tests/test_pll.py",
     "tests/test_pll_serial.py",
     "tests/test_compile_tool.py",
@@ -72,15 +73,15 @@ def main() -> None:
     serial_package = Path(serial.__file__).resolve()
     for path in (package, serial_package):
         if not path.is_relative_to(prefix):
-            raise RuntimeError(
-                f"Expected installed dependency, imported {path}"
-            )
+            raise RuntimeError(f"Expected installed dependency, imported {path}")
     library_path = runtime_library().resolve()
     if not library_path.is_relative_to(package.parent):
         raise RuntimeError(f"Expected wheel runtime, loaded {library_path}")
     library = _load_library(library_path)
     if not hasattr(library, "cim22_session_configure_usb_with_clock"):
         raise RuntimeError("Installed runtime lacks the clock callback ABI")
+    if not hasattr(library, "cim22_session_share_usb"):
+        raise RuntimeError("Installed runtime lacks the shared USB session ABI")
     for name in (
         "cim22_session_configure_usb_with_pll",
         "cim22_session_configure_usb_with_hardware",

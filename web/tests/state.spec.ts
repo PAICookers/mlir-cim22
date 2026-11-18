@@ -5,6 +5,13 @@ test.beforeEach(async ({ page }) => {
 });
 
 const ready = {
+  runtime: "usb",
+  usb_config: {
+    vendor_id: 1204,
+    product_id: 241,
+    bulk_in_endpoint: 129,
+    bulk_out_endpoint: 1,
+  },
   id: "fixture",
   status: "ready",
   weights: "/model/weights.pt",
@@ -35,8 +42,8 @@ test("a delayed action response cannot replace a newer SSE state", async ({
     window.EventSource = class {
       onopen?: (event: Event) => void;
       onmessage?: (event: MessageEvent) => void;
-      constructor() {
-        streams.add(this);
+      constructor(url: string | URL) {
+        if (String(url) === "/api/events") streams.add(this);
         queueMicrotask(() => this.onopen?.(new Event("open")));
       }
       close() {
@@ -63,9 +70,11 @@ test("a delayed action response cannot replace a newer SSE state", async ({
   await page.goto("/");
   await expect(page.getByText("本地服务已连接")).toBeVisible();
   await page.evaluate((task) => {
-    window.dispatchEvent(new CustomEvent("test:snapshot", { detail: { task } }));
+    window.dispatchEvent(
+      new CustomEvent("test:snapshot", { detail: { task } }),
+    );
   }, ready);
-  await page.getByRole("button", { name: "开始完整测试" }).click();
+  await page.getByRole("button", { name: "开始测试", exact: true }).click();
   await expect.poll(() => !!action).toBe(true);
   await page.evaluate(
     (task) => {
@@ -95,8 +104,8 @@ test("framework verification starts the fixed example with simulator by default"
     window.EventSource = class {
       onopen?: (event: Event) => void;
       onmessage?: (event: MessageEvent) => void;
-      constructor() {
-        streams.add(this);
+      constructor(url: string | URL) {
+        if (String(url) === "/api/examples/events") streams.add(this);
         queueMicrotask(() => this.onopen?.(new Event("open")));
       }
       close() {
@@ -113,17 +122,43 @@ test("framework verification starts the fixed example with simulator by default"
   let payload: unknown;
   await page.route("**/api/examples/run", async (route) => {
     payload = route.request().postDataJSON();
-    await route.fulfill({ json: { task: { framework: "tensorflow", runtime: "simulator", status: "starting" } } });
+    await route.fulfill({
+      json: {
+        task: {
+          framework: "tensorflow",
+          runtime: "simulator",
+          status: "starting",
+        },
+      },
+    });
   });
   await page.goto("/#tensorflow");
-  await expect(page.getByRole("heading", { name: "TensorFlow 编译验证" })).toBeVisible();
-  await expect(page.getByText("CIM 软件仿真", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "开始编译验证" }).click();
-  await expect.poll(() => payload).toEqual({ framework: "tensorflow", runtime: "simulator" });
-  await page.evaluate((task) => {
-    window.dispatchEvent(new CustomEvent("test:example-snapshot", { detail: { task } }));
-  }, { framework: "tensorflow", runtime: "simulator", status: "interrupted", log_text: "ImportError: tensorflow is not installed" });
-  await expect(page.getByText("ImportError: tensorflow is not installed")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "TensorFlow 编译验证" }),
+  ).toBeVisible();
+  await expect(page.getByText("软件仿真", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "编译验证" }).click();
+  await expect
+    .poll(() => payload)
+    .toEqual({ framework: "tensorflow", runtime: "simulator" });
+  const fullLog =
+    "first output\n" +
+    "logged output\n".repeat(2000) +
+    "ImportError: tensorflow is not installed";
+  await page.evaluate(
+    (task) => {
+      window.dispatchEvent(
+        new CustomEvent("test:example-snapshot", { detail: { task } }),
+      );
+    },
+    {
+      framework: "tensorflow",
+      runtime: "simulator",
+      status: "interrupted",
+      log_text: fullLog,
+    },
+  );
+  await expect(page.locator("pre")).toHaveText(fullLog);
 });
 
 test("framework verification exposes the USB configuration", async ({
@@ -152,9 +187,9 @@ test("framework verification exposes the USB configuration", async ({
     });
   });
   await page.goto("/#tensorflow");
-  await page.getByRole("button", { name: "CIM USB 板卡" }).click();
-  await expect(page.getByText("USB 板卡配置", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "开始编译验证" }).click();
+  await page.getByRole("button", { name: "CIM 板卡" }).click();
+  await expect(page.getByText("板卡配置", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "编译验证" }).click();
   await expect.poll(() => payload?.runtime).toBe("usb");
   expect(payload?.usb_config).toMatchObject({
     vendor_id: 1204,
@@ -164,48 +199,197 @@ test("framework verification exposes the USB configuration", async ({
   });
 });
 
-
-test("DVS defaults and reimport draft survive same-task SSE", async ({ page }) => {
+test("DVS defaults and reimport draft survive same-task SSE", async ({
+  page,
+}) => {
   await page.addInitScript(() => {
     const streams = new Set<{ onmessage?: (event: MessageEvent) => void }>();
     window.EventSource = class {
       onopen?: (event: Event) => void;
       onmessage?: (event: MessageEvent) => void;
-      constructor() { streams.add(this); queueMicrotask(() => this.onopen?.(new Event("open"))); }
-      close() { streams.delete(this); }
+      constructor(url: string | URL) {
+        if (String(url) === "/api/events") streams.add(this);
+        queueMicrotask(() => this.onopen?.(new Event("open")));
+      }
+      close() {
+        streams.delete(this);
+      }
     } as unknown as typeof EventSource;
     window.addEventListener("test:snapshot", (event) => {
-      for (const stream of streams) stream.onmessage?.(new MessageEvent("message", { data: JSON.stringify((event as CustomEvent).detail) }));
+      for (const stream of streams)
+        stream.onmessage?.(
+          new MessageEvent("message", {
+            data: JSON.stringify((event as CustomEvent).detail),
+          }),
+        );
     });
   });
-  await page.route("**/api/defaults", (route) => route.fulfill({ json: { weights: ready.weights, dataset: ready.dataset, cim_layers: ["head"] } }));
-  await page.route("**/api/cim-layers", (route) => route.fulfill({ json: [{ name: "head", type: "Linear", input_shape: [32, 1, 4], output_shape: [32, 1, 11], weight_shape: [11, 4] }] }));
+  await page.route("**/api/defaults", (route) =>
+    route.fulfill({
+      json: {
+        weights: ready.weights,
+        dataset: ready.dataset,
+        cim_layers: ["head"],
+      },
+    }),
+  );
+  await page.route("**/api/cim-layers", (route) =>
+    route.fulfill({
+      json: [
+        {
+          name: "second",
+          type: "Linear",
+          input_shape: [32, 1, 4],
+          output_shape: [32, 1, 11],
+          weight_shape: [11, 4],
+        },
+        {
+          name: "head",
+          type: "Linear",
+          input_shape: [32, 1, 4],
+          output_shape: [32, 1, 11],
+          weight_shape: [11, 4],
+        },
+      ],
+    }),
+  );
   const bodies: unknown[] = [];
   await page.route("**/api/import", async (route) => {
     bodies.push(route.request().postDataJSON());
     await route.fulfill({ json: { task: ready } });
   });
   await page.goto("/#dvs");
-  const mode = page.getByRole("checkbox", { name: "仅将选定叶子层部署到 CIM，其余层在 CPU 执行" });
+  const mode = page.getByRole("checkbox", {
+    name: "仅将选定叶子层部署到 CIM，其余层在 CPU 执行",
+  });
   await expect(mode).toBeChecked();
-  await expect(page.getByRole("checkbox", { name: /head Linear/ })).toBeChecked();
+  await expect(
+    page.getByRole("checkbox", { name: /head Linear/ }),
+  ).toBeChecked();
+  await page.getByRole("checkbox", { name: /second Linear/ }).check();
+  await expect(
+    page.getByRole("checkbox", { name: /head Linear/ }),
+  ).toBeChecked();
   await page.getByRole("button", { name: "导入模型与测试集" }).click();
   await expect.poll(() => bodies.length).toBe(1);
-  expect(bodies[0]).toMatchObject({ cim_layers: ["head"] });
-  await page.evaluate((task) => window.dispatchEvent(new CustomEvent("test:snapshot", { detail: { task } })), { ...ready, cim_layers: ["head"], execution_mode: "hybrid" });
+  expect(bodies[0]).toMatchObject({
+    cim_layers: ["head", "second"],
+    usb_config: { vendor_id: 1204, product_id: 241 },
+  });
+  await page.evaluate(
+    (task) =>
+      window.dispatchEvent(
+        new CustomEvent("test:snapshot", { detail: { task } }),
+      ),
+    {
+      ...ready,
+      id: "minimal-usb",
+      usb_config: {
+        vendor_id: 1204,
+        product_id: 241,
+        bulk_in_endpoint: 129,
+        bulk_out_endpoint: 1,
+      },
+      cim_layers: ["head"],
+      execution_mode: "hybrid",
+    },
+  );
   await page.getByRole("button", { name: "更换输入 / 新建测试" }).click();
+  await expect(page.getByLabel("启动", { exact: true })).toHaveValue("20");
   await mode.uncheck();
-  await page.evaluate((task) => window.dispatchEvent(new CustomEvent("test:snapshot", { detail: { task } })), { ...ready, cim_layers: ["head"], execution_mode: "hybrid" });
+  await page.getByLabel("计算", { exact: true }).fill("10");
+  await page.evaluate(
+    (task) =>
+      window.dispatchEvent(
+        new CustomEvent("test:snapshot", { detail: { task } }),
+      ),
+    {
+      ...ready,
+      id: "minimal-usb",
+      cim_layers: ["head"],
+      execution_mode: "hybrid",
+    },
+  );
   await expect(mode).not.toBeChecked();
-  await expect(page.getByRole("button", { name: "导入模型与测试集" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "导入模型与测试集" }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "导入模型与测试集" }).click();
   await expect.poll(() => bodies.length).toBe(2);
-  expect(bodies[1]).toMatchObject({ cim_layers: null });
+  expect(bodies[1]).toMatchObject({
+    cim_layers: null,
+    usb_config: { timing: { work_delay_ms: 10 } },
+  });
 });
 
-test("DVS layer discovery errors stay visible without crashing", async ({ page }) => {
-  await page.route("**/api/cim-layers", (route) => route.fulfill({ status: 409, json: { detail: "候选层读取失败" } }));
+test("DVS layer discovery errors stay visible without crashing", async ({
+  page,
+}) => {
+  await page.route("**/api/cim-layers", (route) =>
+    route.fulfill({ status: 409, json: { detail: "候选层读取失败" } }),
+  );
   await page.goto("/#dvs");
   await expect(page.getByRole("alert")).toContainText("候选层读取失败");
-  await expect(page.getByRole("heading", { name: "DVS 推理对比" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "DVS 模型编译与执行" }),
+  ).toBeVisible();
+});
+
+test("DVS shows board execution controls for the current USB task", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const streams = new Set<{ onmessage?: (event: MessageEvent) => void }>();
+    window.EventSource = class {
+      onopen?: (event: Event) => void;
+      onmessage?: (event: MessageEvent) => void;
+      constructor(url: string | URL) {
+        if (String(url) === "/api/events") streams.add(this);
+        queueMicrotask(() => this.onopen?.(new Event("open")));
+      }
+      close() {
+        streams.delete(this);
+      }
+    } as unknown as typeof EventSource;
+    window.addEventListener("test:snapshot", (event) => {
+      for (const stream of streams)
+        stream.onmessage?.(
+          new MessageEvent("message", {
+            data: JSON.stringify((event as CustomEvent).detail),
+          }),
+        );
+    });
+  });
+  await page.route("**/api/defaults", (route) =>
+    route.fulfill({ json: { weights: ready.weights, dataset: ready.dataset } }),
+  );
+  await page.goto("/#dvs");
+  await expect(page.getByText("板卡配置", { exact: true })).toBeVisible();
+  await page.evaluate(
+    (task) =>
+      window.dispatchEvent(
+        new CustomEvent("test:snapshot", { detail: { task } }),
+      ),
+    { ...ready, status: "compiling", compiled: false, total: 288 },
+  );
+  await expect(page.getByRole("button", { name: "编译中" })).toBeDisabled();
+  await expect(page.getByText("编译中", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("/ 288 已完成", { exact: true })).toBeVisible();
+  await page.evaluate(
+    (task) =>
+      window.dispatchEvent(
+        new CustomEvent("test:snapshot", { detail: { task } }),
+      ),
+    ready,
+  );
+  await expect(page.getByRole("status")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "运行一个样本", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "开始测试", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    page.getByRole("heading", { name: "CIM 板卡", exact: true }),
+  ).toBeVisible();
 });

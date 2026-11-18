@@ -28,53 +28,222 @@ type Framework = "tensorflow" | "pytorch";
 type Runtime = "simulator" | "usb";
 type View = Framework | "dvs" | "mnist";
 
-type Row = { index: number; sample: string; label: number; original_prediction: number; cim_prediction: number; original_correct: boolean; cim_correct: boolean; original_seconds: number; cim_seconds: number };
+type Row = {
+  index: number;
+  sample: string;
+  label: number;
+  original_prediction: number;
+  cim_prediction: number;
+  original_correct: boolean;
+  cim_correct: boolean;
+  original_seconds: number;
+  cim_seconds: number;
+};
 type Summary = { correct: number; accuracy: number | null; seconds: number };
-type CimLayer = { name: string; type: string; weight_shape: number[]; input_shape: number[]; output_shape: number[] };
-type DvsTask = { id: string; status: string; weights: string; dataset: string; cim_layers: string[] | null; execution_mode: string; layer_artifacts: Record<string, string[]>; layer_compile_seconds: Record<string, number>; dispatch_count: number | null; numeric_max_abs_error: number | null; total: number; completed: number; compiled: boolean; compile_seconds: number | null; error: string | null; eta_seconds: number | null; cancel_requested: boolean; classes: string[]; rows: Row[]; totals: { original: Summary; cim: Summary } };
-type ExampleCase = { name?: string; reference?: unknown; actual?: unknown; cim?: unknown; max_abs_error?: number | null; dispatch_count?: number; error?: string | null };
-type ExampleTask = { id?: string; framework: Framework; runtime: Runtime; status: string; compile_seconds?: number | null; dispatch_count?: number; cases?: ExampleCase[]; artifact?: string | null; artifact_path?: string | null; artifact_url?: string | null; debug_dir?: string | null; debug_url?: string | null; log?: string | null; log_path?: string | null; log_url?: string | null; log_text?: string | null; result_json?: string | null; error?: string | null; cancel_requested?: boolean };
-type UsbConfig = { vendor_id: number; product_id: number; bulk_in_endpoint: number; bulk_out_endpoint: number; bus_number: number; device_address: number; timing: { startup_delay_ms: number; cache_write_delay_ms: number; weight_write_delay_ms: number; work_delay_ms: number; readback_select_delay_ms: number } };
+type CimLayer = {
+  name: string;
+  type: string;
+  weight_shape: number[];
+  input_shape: number[];
+  output_shape: number[];
+};
+type DvsTask = {
+  runtime: "usb";
+  usb_config: UsbConfig;
+  id: string;
+  status: string;
+  weights: string;
+  dataset: string;
+  cim_layers: string[] | null;
+  execution_mode: string;
+  layer_artifacts: Record<string, string[]>;
+  layer_compile_seconds: Record<string, number>;
+  dispatch_count: number | null;
+  numeric_max_abs_error: number | null;
+  total: number;
+  completed: number;
+  compiled: boolean;
+  compile_seconds: number | null;
+  error: string | null;
+  eta_seconds: number | null;
+  cancel_requested: boolean;
+  classes: string[];
+  rows: Row[];
+  totals: { original: Summary; cim: Summary };
+};
+type ExampleCase = {
+  name?: string;
+  reference?: unknown;
+  actual?: unknown;
+  cim?: unknown;
+  max_abs_error?: number | null;
+  dispatch_count?: number;
+  error?: string | null;
+};
+type ExampleTask = {
+  id?: string;
+  framework: Framework;
+  runtime: Runtime;
+  status: string;
+  compile_seconds?: number | null;
+  dispatch_count?: number;
+  cases?: ExampleCase[];
+  artifact?: string | null;
+  artifact_path?: string | null;
+  artifact_url?: string | null;
+  debug_dir?: string | null;
+  debug_url?: string | null;
+  log?: string | null;
+  log_path?: string | null;
+  log_url?: string | null;
+  log_text?: string | null;
+  result_json?: string | null;
+  error?: string | null;
+  cancel_requested?: boolean;
+};
+type UsbConfig = {
+  vendor_id: number;
+  product_id: number;
+  bulk_in_endpoint: number;
+  bulk_out_endpoint: number;
+  bus_number: number;
+  device_address: number;
+  timing: {
+    startup_delay_ms: number;
+    cache_write_delay_ms: number;
+    weight_write_delay_ms: number;
+    work_delay_ms: number;
+    readback_select_delay_ms: number;
+  };
+};
 type DvsSnapshot = { task: DvsTask | null };
-type ExampleSnapshot = { task?: ExampleTask | null; example?: ExampleTask | null };
-type MnistTask = { id: string; status: string; model: "small" | "standard"; epochs: number; batch_size: number; learning_rate: number; data_dir: string; epoch: number; test_accuracy?: number; train_loss?: number; test_loss?: number; total_seconds?: number; error?: string | null; last_message?: string; log_text?: string; cancel_requested?: boolean; files?: Record<string, string> };
+type ExampleSnapshot = {
+  task?: ExampleTask | null;
+  example?: ExampleTask | null;
+};
+type MnistTask = {
+  id: string;
+  status: string;
+  model: "small" | "standard";
+  epochs: number;
+  batch_size: number;
+  learning_rate: number;
+  data_dir: string;
+  epoch: number;
+  test_accuracy?: number;
+  train_loss?: number;
+  test_loss?: number;
+  total_seconds?: number;
+  error?: string | null;
+  last_message?: string;
+  log_text?: string;
+  cancel_requested?: boolean;
+  download_url?: string | null;
+};
 type MnistSnapshot = { task: MnistTask | null };
 
-const names: Record<string, string> = { imported: "待编译", starting: "启动中", validating: "核对输入", loading: "载入模型", downloading: "下载数据", compiling: "编译中", training: "训练中", evaluating: "测试评估", ready: "就绪", running: "验证中", cancelled: "已取消", completed: "已完成", interrupted: "已中断", failed: "失败" };
-const activeStates = new Set(["starting", "validating", "loading", "compiling", "running", "downloading", "training", "evaluating"]);
-const seconds = (value: number | null | undefined) => value == null ? "—" : `${value.toFixed(3)} s`;
-const duration = (value: number | null | undefined) => value == null ? "估算中" : value < 60 ? `${Math.ceil(value)} 秒` : `${Math.floor(value / 60)} 分 ${Math.ceil(value % 60)} 秒`;
+const names: Record<string, string> = {
+  imported: "待编译",
+  starting: "启动中",
+  validating: "核对输入",
+  loading: "载入模型",
+  downloading: "下载数据",
+  compiling: "编译中",
+  training: "训练中",
+  evaluating: "测试评估",
+  ready: "就绪",
+  running: "验证中",
+  cancelled: "已取消",
+  completed: "已完成",
+  interrupted: "已中断",
+  failed: "失败",
+};
+const activeStates = new Set([
+  "starting",
+  "validating",
+  "loading",
+  "compiling",
+  "running",
+  "downloading",
+  "training",
+  "evaluating",
+]);
+const seconds = (value: number | null | undefined) =>
+  value == null ? "—" : `${value.toFixed(3)} s`;
+const duration = (value: number | null | undefined) =>
+  value == null
+    ? "估算中"
+    : value < 60
+      ? `${Math.ceil(value)} 秒`
+      : `${Math.floor(value / 60)} 分 ${Math.ceil(value % 60)} 秒`;
 
 async function request(path: string, body: object = {}): Promise<void> {
-  const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    throw new Error(typeof data.detail === "string" ? data.detail : "操作失败，请检查输入");
+    throw new Error(
+      typeof data.detail === "string" ? data.detail : "操作失败，请检查输入",
+    );
   }
 }
 
-const initialUsb: UsbConfig = { vendor_id: 1204, product_id: 241, bulk_in_endpoint: 129, bulk_out_endpoint: 1, bus_number: 255, device_address: 255, timing: { startup_delay_ms: 20, cache_write_delay_ms: 0, weight_write_delay_ms: 0, work_delay_ms: 0, readback_select_delay_ms: 2 } };
+const initialUsb: UsbConfig = {
+  vendor_id: 1204,
+  product_id: 241,
+  bulk_in_endpoint: 129,
+  bulk_out_endpoint: 1,
+  bus_number: 255,
+  device_address: 255,
+  timing: {
+    startup_delay_ms: 20,
+    cache_write_delay_ms: 0,
+    weight_write_delay_ms: 0,
+    work_delay_ms: 0,
+    readback_select_delay_ms: 2,
+  },
+};
 
-function useEventStream<T>(path: string, onSnapshot: (value: T) => void): boolean {
+function useEventStream<T>(
+  path: string,
+  onSnapshot: (value: T) => void,
+): boolean {
   const [connected, setConnected] = useState(false);
   useEffect(() => {
     let disposed = false;
     const events = new EventSource(path);
     events.onopen = () => setConnected(true);
-    events.onmessage = (event) => { if (!disposed) onSnapshot(JSON.parse(event.data) as T); };
+    events.onmessage = (event) => {
+      if (!disposed) onSnapshot(JSON.parse(event.data) as T);
+    };
     events.onerror = () => setConnected(false);
-    return () => { disposed = true; events.close(); };
+    return () => {
+      disposed = true;
+      events.close();
+    };
   }, [onSnapshot, path]);
   return connected;
 }
 
 export default function App() {
-  const [view, setView] = useState<View>(() => { const value = window.location.hash.slice(1); return value === "tensorflow" || value === "pytorch" || value === "dvs" || value === "mnist" ? value : "dvs"; });
+  const [view, setView] = useState<View>(() => {
+    const value = window.location.hash.slice(1);
+    return value === "tensorflow" ||
+      value === "pytorch" ||
+      value === "dvs" ||
+      value === "mnist"
+      ? value
+      : "dvs";
+  });
   const importedTask = useRef<string | null>(null);
   const defaultsLoaded = useRef(false);
   const [task, setTask] = useState<DvsTask | null>(null);
   const [exampleTask, setExampleTask] = useState<ExampleTask | null>(null);
   const [mnistTask, setMnistTask] = useState<MnistTask | null>(null);
+  const [dvsUsb, setDvsUsb] = useState<UsbConfig>(initialUsb);
   const [weights, setWeights] = useState("");
   const [dataset, setDataset] = useState("");
   const [cimLayers, setCimLayers] = useState<CimLayer[]>([]);
@@ -85,25 +254,229 @@ export default function App() {
   const [filter, setFilter] = useState("all");
   const [page, setPage] = useState(0);
   const [showImport, setShowImport] = useState(true);
-  useEffect(() => { const onHash = () => { const value = window.location.hash.slice(1); if (value === "tensorflow" || value === "pytorch" || value === "dvs" || value === "mnist") setView(value); }; window.addEventListener("hashchange", onHash); return () => window.removeEventListener("hashchange", onHash); }, []);
-  useEffect(() => { if (view !== "dvs") return; let disposed = false; fetch("/api/defaults").then((r) => r.json()).then((defaults) => { if (disposed) return; setWeights((value) => value || defaults.weights); setDataset((value) => value || defaults.dataset); if (!defaultsLoaded.current && !importedTask.current) { setSelectedCimLayers(defaults.cim_layers ?? []); setHybridMode(!!defaults.cim_layers?.length); } defaultsLoaded.current = true; }).catch((e) => { if (!disposed) setError(String(e.message)); }); return () => { disposed = true; }; }, [view]);
-  useEffect(() => { if (view !== "dvs") return; fetch("/api/cim-layers").then(async (r) => { const data = await r.json(); if (!r.ok) throw new Error(data.detail ?? "无法读取候选层"); return data; }).then((layers: CimLayer[]) => setCimLayers(layers)).catch((e) => setError(String(e.message))); }, [view]);
-  const onDvsSnapshot = useMemo(() => (snapshot: DvsSnapshot) => { setTask(snapshot.task); if (snapshot.task && importedTask.current !== snapshot.task.id) { importedTask.current = snapshot.task.id; setWeights(snapshot.task.weights); setDataset(snapshot.task.dataset); setSelectedCimLayers(snapshot.task.cim_layers ?? []); setHybridMode(snapshot.task.execution_mode === "hybrid"); setShowImport(false); } }, []);
-  const onExampleSnapshot = useMemo(() => (snapshot: ExampleSnapshot) => { setExampleTask(snapshot.task ?? snapshot.example ?? null); }, []);
-  const onMnistSnapshot = useMemo(() => (snapshot: MnistSnapshot) => { setMnistTask(snapshot.task); }, []);
+  useEffect(() => {
+    const onHash = () => {
+      const value = window.location.hash.slice(1);
+      if (
+        value === "tensorflow" ||
+        value === "pytorch" ||
+        value === "dvs" ||
+        value === "mnist"
+      )
+        setView(value);
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  useEffect(() => {
+    if (view !== "dvs") return;
+    let disposed = false;
+    fetch("/api/defaults")
+      .then((r) => r.json())
+      .then((defaults) => {
+        if (disposed) return;
+        setWeights((value) => value || defaults.weights);
+        setDataset((value) => value || defaults.dataset);
+        if (!defaultsLoaded.current && !importedTask.current) {
+          setSelectedCimLayers(defaults.cim_layers ?? []);
+          setHybridMode(!!defaults.cim_layers?.length);
+        }
+        defaultsLoaded.current = true;
+      })
+      .catch((e) => {
+        if (!disposed) setError(String(e.message));
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [view]);
+  useEffect(() => {
+    if (view !== "dvs") return;
+    fetch("/api/cim-layers")
+      .then(async (r) => {
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail ?? "无法读取候选层");
+        return data;
+      })
+      .then((layers: CimLayer[]) => setCimLayers(layers))
+      .catch((e) => setError(String(e.message)));
+  }, [view]);
+  const onDvsSnapshot = useMemo(
+    () => (snapshot: DvsSnapshot) => {
+      setTask(snapshot.task);
+      if (snapshot.task && importedTask.current !== snapshot.task.id) {
+        importedTask.current = snapshot.task.id;
+        setWeights(snapshot.task.weights);
+        setDvsUsb({
+          ...initialUsb,
+          ...snapshot.task.usb_config,
+          timing: { ...initialUsb.timing, ...snapshot.task.usb_config.timing },
+        });
+        setDataset(snapshot.task.dataset);
+        setSelectedCimLayers(snapshot.task.cim_layers ?? []);
+        setHybridMode(snapshot.task.execution_mode === "hybrid");
+        setShowImport(false);
+      }
+    },
+    [],
+  );
+  const onExampleSnapshot = useMemo(
+    () => (snapshot: ExampleSnapshot) => {
+      setExampleTask(snapshot.task ?? snapshot.example ?? null);
+    },
+    [],
+  );
+  const onMnistSnapshot = useMemo(
+    () => (snapshot: MnistSnapshot) => {
+      setMnistTask(snapshot.task);
+    },
+    [],
+  );
   const dvsConnected = useEventStream("/api/events", onDvsSnapshot);
-  const exampleConnected = useEventStream("/api/examples/events", onExampleSnapshot);
+  const exampleConnected = useEventStream(
+    "/api/examples/events",
+    onExampleSnapshot,
+  );
   const mnistConnected = useEventStream("/api/mnist/events", onMnistSnapshot);
-  async function operate(path: string, body: object = {}) { setPending(true); setError(""); try { await request(path, body); if (path === "/api/import") { setShowImport(false); setPage(0); setFilter("all"); } } catch (e) { setError(e instanceof Error ? e.message : "请求失败"); } finally { setPending(false); } }
-  function navigate(next: View) { window.location.hash = next; setView(next); setError(""); }
-  const connected = view === "dvs" ? dvsConnected : view === "mnist" ? mnistConnected : exampleConnected;
+  async function operate(path: string, body: object = {}) {
+    setPending(true);
+    setError("");
+    try {
+      await request(path, body);
+      if (path === "/api/import") {
+        setShowImport(false);
+        setPage(0);
+        setFilter("all");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "请求失败");
+    } finally {
+      setPending(false);
+    }
+  }
+  function navigate(next: View) {
+    // eslint-disable-next-line react-hooks/immutability -- Browser navigation is an event-handler side effect.
+    window.location.hash = next;
+    setView(next);
+    setError("");
+  }
+  const connected =
+    view === "dvs"
+      ? dvsConnected
+      : view === "mnist"
+        ? mnistConnected
+        : exampleConnected;
   const frameworkBusy = !!exampleTask && activeStates.has(exampleTask.status);
-  const visibleExampleTask = (view === "tensorflow" || view === "pytorch") && exampleTask?.framework === view ? exampleTask : null;
-  return <div className="min-h-screen"><header className="border-b border-border bg-white"><div className="mx-auto flex max-w-[1400px] flex-wrap items-center justify-between gap-4 px-6 py-5 lg:px-10"><div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-xl bg-primary text-white"><Cpu size={23} /></div><div><span className="text-lg font-bold tracking-tight">CIM22</span><span className="ml-3 text-sm font-medium">编译验证工作台</span></div></div><nav className="order-3 flex w-full gap-1 overflow-x-auto rounded-xl bg-muted p-1 sm:order-none sm:w-auto">{(["tensorflow", "pytorch", "dvs", "mnist"] as const).map((entry) => <button key={entry} type="button" onClick={() => navigate(entry)} className={`whitespace-nowrap rounded-lg px-4 py-2 text-xs font-medium transition ${view === entry ? "bg-white text-primary shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>{entry === "tensorflow" ? "TensorFlow" : entry === "pytorch" ? "PyTorch" : entry === "dvs" ? "DVS 应用" : "MNIST 训练"}</button>)}</nav><span className="flex items-center gap-2 text-xs text-muted-foreground"><span className={`size-2 rounded-full ${connected ? "bg-emerald-500" : "bg-amber-500"}`} />{connected ? "本地服务已连接" : "连接中断 · 自动重连"}</span></div></header>{view === "dvs" ? <DvsPage connected={dvsConnected} error={error} pending={pending} task={task} weights={weights} dataset={dataset} cimLayers={cimLayers} selectedCimLayers={selectedCimLayers} hybridMode={hybridMode} setSelectedCimLayers={setSelectedCimLayers} setHybridMode={setHybridMode} filter={filter} page={page} showImport={showImport} setWeights={setWeights} setDataset={setDataset} setFilter={setFilter} setPage={setPage} setShowImport={setShowImport} operate={operate} /> : view === "mnist" ? <MnistPage connected={mnistConnected} error={error} pending={pending} task={mnistTask} operate={operate} /> : <FrameworkPage framework={view} connected={exampleConnected} error={error} pending={pending} task={visibleExampleTask} busy={frameworkBusy && exampleTask?.framework !== view} operate={operate} />}</div>;
+  const visibleExampleTask =
+    (view === "tensorflow" || view === "pytorch") &&
+    exampleTask?.framework === view
+      ? exampleTask
+      : null;
+  return (
+    <div className="min-h-screen">
+      <header className="border-b border-border bg-white">
+        <div className="mx-auto flex max-w-[1400px] flex-wrap items-center justify-between gap-4 px-6 py-5 lg:px-10">
+          <div className="flex items-center gap-3">
+            <div className="grid size-10 place-items-center rounded-xl bg-primary text-white">
+              <Cpu size={23} />
+            </div>
+            <div>
+              <span className="text-lg font-bold tracking-tight">CIM22</span>
+              <span className="ml-3 text-sm font-medium">
+                本地编译验证工作台
+              </span>
+            </div>
+          </div>
+          <nav className="order-3 flex w-full gap-1 overflow-x-auto rounded-xl bg-muted p-1 sm:order-none sm:w-auto">
+            {(["tensorflow", "pytorch", "dvs", "mnist"] as const).map(
+              (entry) => (
+                <button
+                  key={entry}
+                  type="button"
+                  onClick={() => navigate(entry)}
+                  className={`whitespace-nowrap rounded-lg px-4 py-2 text-xs font-medium transition ${view === entry ? "bg-white text-primary shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                >
+                  {entry === "tensorflow"
+                    ? "TensorFlow"
+                    : entry === "pytorch"
+                      ? "PyTorch"
+                      : entry === "dvs"
+                        ? "DVS 应用"
+                        : "MNIST 训练"}
+                </button>
+              ),
+            )}
+          </nav>
+          <span className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span
+              className={`size-2 rounded-full ${connected ? "bg-emerald-500" : "bg-amber-500"}`}
+            />
+            {connected ? "本地服务已连接" : "连接中断 · 自动重连"}
+          </span>
+        </div>
+      </header>
+      {view === "dvs" ? (
+        <DvsPage
+          usb={dvsUsb}
+          setUsb={setDvsUsb}
+          connected={dvsConnected}
+          error={error}
+          pending={pending}
+          task={task}
+          weights={weights}
+          dataset={dataset}
+          cimLayers={cimLayers}
+          selectedCimLayers={selectedCimLayers}
+          hybridMode={hybridMode}
+          setSelectedCimLayers={setSelectedCimLayers}
+          setHybridMode={setHybridMode}
+          filter={filter}
+          page={page}
+          showImport={showImport}
+          setWeights={setWeights}
+          setDataset={setDataset}
+          setFilter={setFilter}
+          setPage={setPage}
+          setShowImport={setShowImport}
+          operate={operate}
+        />
+      ) : view === "mnist" ? (
+        <MnistPage
+          connected={mnistConnected}
+          error={error}
+          pending={pending}
+          task={mnistTask}
+          operate={operate}
+        />
+      ) : (
+        <FrameworkPage
+          framework={view}
+          connected={exampleConnected}
+          error={error}
+          pending={pending}
+          task={visibleExampleTask}
+          busy={frameworkBusy && exampleTask?.framework !== view}
+          operate={operate}
+        />
+      )}
+    </div>
+  );
 }
 
-type MnistPageProps = { connected: boolean; error: string; pending: boolean; task: MnistTask | null; operate: (path: string, body?: object) => Promise<void> };
-function MnistPage({ connected, error, pending, task, operate }: MnistPageProps) {
+type MnistPageProps = {
+  connected: boolean;
+  error: string;
+  pending: boolean;
+  task: MnistTask | null;
+  operate: (path: string, body?: object) => Promise<void>;
+};
+function MnistPage({
+  connected,
+  error,
+  pending,
+  task,
+  operate,
+}: MnistPageProps) {
   const [model, setModel] = useState<"small" | "standard">("standard");
   const [epochs, setEpochs] = useState(10);
   const [batchSize, setBatchSize] = useState(128);
@@ -111,34 +484,1194 @@ function MnistPage({ connected, error, pending, task, operate }: MnistPageProps)
   const [dataDir, setDataDir] = useState("");
   const active = !!task && activeStates.has(task.status);
   const disabled = active || pending || !connected;
-  const status = task ? (task.status === "loading" ? "加载数据" : names[task.status] ?? task.status) : "等待开始";
+  const status = task
+    ? task.status === "loading"
+      ? "加载数据"
+      : (names[task.status] ?? task.status)
+    : "等待开始";
   async function run() {
-    await operate("/api/mnist/run", { model, epochs, batch_size: batchSize, learning_rate: learningRate, ...(dataDir.trim() ? { data_dir: dataDir.trim() } : {}) });
+    await operate("/api/mnist/run", {
+      model,
+      epochs,
+      batch_size: batchSize,
+      learning_rate: learningRate,
+      ...(dataDir.trim() ? { data_dir: dataDir.trim() } : {}),
+    });
   }
-  return <main className="mx-auto max-w-[1400px] px-6 py-9 lg:px-10"><div className="mb-8"><div className="eyebrow mb-2">MODEL · TRAINING</div><h1 className="text-3xl font-semibold tracking-tight">MNIST 模型配置与训练</h1><p className="mt-3 max-w-3xl text-sm text-muted-foreground">使用 PyTorch 训练固定的两层全连接模型；数据缺失时自动联网下载，训练过程和结果保存在本地。</p></div>{(error || task?.error) && <div role="alert" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">{error || task?.error}</div>}<div className="grid gap-6 lg:grid-cols-[1fr_1fr]"><Card><CardHeader><div className="flex items-center justify-between"><h2 className="text-base font-semibold">模型配置</h2><span className="eyebrow">01 / CONFIG</span></div></CardHeader><CardContent><div className="grid gap-4 sm:grid-cols-2"><label className="text-xs text-muted-foreground">模型预设<select value={model} onChange={(event) => setModel(event.target.value as "small" | "standard")} disabled={disabled} className="mt-1 block w-full rounded-lg border border-input bg-white px-3 py-2 text-sm text-foreground"><option value="small">small · 784 → 64 → 10</option><option value="standard">standard · 784 → 128 → 10</option></select></label><label className="text-xs text-muted-foreground">数据缓存目录（可选）<Input className="mt-1 bg-white" value={dataDir} onChange={(event) => setDataDir(event.target.value)} placeholder="默认使用 Web 数据目录" disabled={disabled} /></label><label className="text-xs text-muted-foreground">训练轮数<Input className="mt-1 bg-white" type="number" min={1} max={100} value={epochs} onChange={(event) => setEpochs(Number(event.target.value))} disabled={disabled} /></label><label className="text-xs text-muted-foreground">Batch size<Input className="mt-1 bg-white" type="number" min={1} max={4096} value={batchSize} onChange={(event) => setBatchSize(Number(event.target.value))} disabled={disabled} /></label><label className="text-xs text-muted-foreground">学习率<Input className="mt-1 bg-white" type="number" min={0.000001} max={1} step={0.000001} value={learningRate} onChange={(event) => setLearningRate(Number(event.target.value))} disabled={disabled} /></label></div><div className="mt-5 rounded-xl bg-muted/60 p-4 text-xs leading-6 text-muted-foreground">固定使用 MNIST 标准归一化、ReLU、CrossEntropyLoss、Adam 和 CPU 训练。首次运行会联网下载数据。</div><div className="mt-5 flex gap-3 border-t border-border pt-4"><Button disabled={disabled} onClick={() => void run()}>{active ? <LoaderCircle className="animate-spin" /> : <Play />}开始训练</Button><Button variant="destructive" disabled={!active || pending || !connected || !!task?.cancel_requested} onClick={() => void operate("/api/mnist/cancel")}><Square />取消</Button></div></CardContent></Card><Card><CardHeader><div className="flex items-center justify-between"><h2 className="text-base font-semibold">训练状态</h2><span className="eyebrow">02 / RESULT</span></div></CardHeader><CardContent><div className="flex items-center justify-between"><span className="inline-flex items-center gap-2 rounded-md bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-primary">{active ? <LoaderCircle size={13} className="animate-spin" /> : <span className="size-1.5 rounded-full bg-current" />}{task?.cancel_requested ? "正在停止" : status}</span><span className="text-xs text-muted-foreground">{task ? `${task.epoch ?? 0} / ${task.epochs} 轮` : "尚未开始"}</span></div><div className="mt-6 grid grid-cols-2 gap-4"><Metric label="最新 Loss" value={task?.train_loss == null ? "—" : task.train_loss.toFixed(4)} /><Metric label="测试准确率" value={task?.test_accuracy == null ? "—" : `${(task.test_accuracy * 100).toFixed(2)}%`} /></div>{task && <div className="mt-5 space-y-2 break-all text-xs text-muted-foreground"><p>实际配置：{task.model} · {task.epochs} 轮 · batch {task.batch_size} · lr {task.learning_rate}</p><p>数据目录：{task.data_dir}</p><p>总耗时：{seconds(task.total_seconds)}</p><p>{task.last_message && !task.last_message.startsWith("{") ? task.last_message : "逐轮结果见下方日志"}</p></div>}<div className="mt-6"><p className="mb-2 text-xs font-medium text-foreground">训练日志</p><pre className="max-h-64 overflow-auto rounded-xl bg-slate-950 p-4 text-[11px] leading-5 text-slate-100">{task?.log_text || "等待训练开始"}</pre></div>{task?.files && <div className="mt-5 flex flex-wrap gap-2 border-t border-border pt-4 text-xs">{Object.entries(task.files).map(([name, url]) => <a key={name} href={url} download className="rounded-lg border border-border px-3 py-2 text-primary hover:bg-blue-50">下载 {name}</a>)}</div>}</CardContent></Card></div><Card className="mt-6"><CardHeader><h2 className="text-base font-semibold">验收说明</h2></CardHeader><CardContent><p className="text-sm leading-6 text-muted-foreground">默认 standard 模型训练 10 轮，目标测试集准确率不低于 97%。训练结束后会保存模型权重、配置、逐轮指标、最终摘要和完整日志。</p></CardContent></Card></main>;
+  return (
+    <main className="mx-auto max-w-[1400px] px-6 py-9 lg:px-10">
+      <div className="mb-8">
+        <div className="eyebrow mb-2">模型训练支持</div>
+        <h1 className="text-3xl font-semibold tracking-tight">
+          MNIST 模型配置与训练
+        </h1>
+      </div>
+      {(error || task?.error) && (
+        <div
+          role="alert"
+          className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
+        >
+          {error || task?.error}
+        </div>
+      )}
+      <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
+        <Card className="min-w-0">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold">模型配置</h2>
+              <span className="eyebrow">01 / 配置</span>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="text-xs text-muted-foreground">
+                模型预设
+                <select
+                  value={model}
+                  onChange={(event) =>
+                    setModel(event.target.value as "small" | "standard")
+                  }
+                  disabled={disabled}
+                  className="mt-1 block w-full rounded-lg border border-input bg-white px-3 py-2 text-sm text-foreground"
+                >
+                  <option value="small">small · 784 → 64 → 10</option>
+                  <option value="standard">standard · 784 → 128 → 10</option>
+                </select>
+              </label>
+              <label className="text-xs text-muted-foreground">
+                数据缓存目录（可选）
+                <Input
+                  className="mt-1 bg-white"
+                  value={dataDir}
+                  onChange={(event) => setDataDir(event.target.value)}
+                  placeholder="默认使用 Web 数据目录"
+                  disabled={disabled}
+                />
+              </label>
+              <label className="text-xs text-muted-foreground">
+                训练轮数
+                <Input
+                  className="mt-1 bg-white"
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={epochs}
+                  onChange={(event) => setEpochs(Number(event.target.value))}
+                  disabled={disabled}
+                />
+              </label>
+              <label className="text-xs text-muted-foreground">
+                Batch size
+                <Input
+                  className="mt-1 bg-white"
+                  type="number"
+                  min={1}
+                  max={4096}
+                  value={batchSize}
+                  onChange={(event) => setBatchSize(Number(event.target.value))}
+                  disabled={disabled}
+                />
+              </label>
+              <label className="text-xs text-muted-foreground">
+                学习率
+                <Input
+                  className="mt-1 bg-white"
+                  type="number"
+                  min={0.000001}
+                  max={1}
+                  step={0.000001}
+                  value={learningRate}
+                  onChange={(event) =>
+                    setLearningRate(Number(event.target.value))
+                  }
+                  disabled={disabled}
+                />
+              </label>
+            </div>
+            <div className="mt-5 rounded-xl bg-muted/60 p-4 text-xs leading-6 text-muted-foreground">
+              使用 CPU 训练两层全连接模型；MNIST
+              数据缺失时自动下载，已有缓存可直接使用。
+            </div>
+            <div className="mt-5 flex gap-3 border-t border-border pt-4">
+              <Button disabled={disabled} onClick={() => void run()}>
+                {active ? <LoaderCircle className="animate-spin" /> : <Play />}
+                开始训练
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={
+                  !active || pending || !connected || !!task?.cancel_requested
+                }
+                onClick={() => void operate("/api/mnist/cancel")}
+              >
+                <Square />
+                取消
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="min-w-0">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold">训练状态</h2>
+              <span className="eyebrow">02 / 结果</span>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between">
+              <span className="inline-flex items-center gap-2 rounded-md bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-primary">
+                {active ? (
+                  <LoaderCircle size={13} className="animate-spin" />
+                ) : (
+                  <span className="size-1.5 rounded-full bg-current" />
+                )}
+                {task?.cancel_requested ? "正在停止" : status}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {task ? `${task.epoch ?? 0} / ${task.epochs} 轮` : "尚未开始"}
+              </span>
+            </div>
+            <div className="mt-6 grid grid-cols-2 gap-4">
+              <Metric
+                label="最新 Loss"
+                value={
+                  task?.train_loss == null ? "—" : task.train_loss.toFixed(4)
+                }
+              />
+              <Metric
+                label="测试准确率"
+                value={
+                  task?.test_accuracy == null
+                    ? "—"
+                    : `${(task.test_accuracy * 100).toFixed(2)}%`
+                }
+              />
+            </div>
+            {task && (
+              <div className="mt-5 space-y-2 break-all text-xs text-muted-foreground">
+                <p>
+                  实际配置：{task.model} · {task.epochs} 轮 · batch{" "}
+                  {task.batch_size} · lr {task.learning_rate}
+                </p>
+                <p>数据目录：{task.data_dir}</p>
+                <p>总耗时：{seconds(task.total_seconds)}</p>
+                <p>
+                  {task.last_message && !task.last_message.startsWith("{")
+                    ? task.last_message
+                    : "逐轮结果见下方日志"}
+                </p>
+              </div>
+            )}
+            <div className="mt-6">
+              <p className="mb-2 text-xs font-medium text-foreground">
+                训练日志
+              </p>
+              <pre className="max-h-64 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-950 p-4 text-[13px] leading-5 text-slate-100">
+                {task?.log_text || "等待训练开始"}
+              </pre>
+            </div>
+            {task?.download_url && (
+              <div className="mt-5 flex flex-wrap gap-2 border-t border-border pt-4 text-xs">
+                <a
+                  href={task.download_url}
+                  download
+                  className="rounded-lg border border-border px-3 py-2 text-primary hover:bg-blue-50"
+                >
+                  下载训练结果
+                </a>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+      <Card className="mt-6">
+        <CardHeader>
+          <h2 className="text-base font-semibold">说明</h2>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm leading-6 text-muted-foreground">
+            默认 standard 模型，训练 10 轮，目标测试集准确率不低于
+            97%。训练结束后会保存模型权重、配置、逐轮指标、最终摘要与完整日志。
+          </p>
+        </CardContent>
+      </Card>
+    </main>
+  );
 }
 
-type FrameworkPageProps = { framework: Framework; connected: boolean; error: string; pending: boolean; task: ExampleTask | null; busy: boolean; operate: (path: string, body?: object) => Promise<void> };
-function FrameworkPage({ framework, connected, error, pending, task, busy, operate }: FrameworkPageProps) {
+function UsbFields({
+  usb,
+  setUsb,
+  disabled,
+}: {
+  usb: UsbConfig;
+  setUsb: (update: (current: UsbConfig) => UsbConfig) => void;
+  disabled: boolean;
+}) {
+  const updateUsb = <K extends keyof UsbConfig>(key: K, value: number) =>
+    setUsb((current) => ({ ...current, [key]: value }));
+  const updateTiming = (key: keyof UsbConfig["timing"], value: number) =>
+    setUsb((current) => ({
+      ...current,
+      timing: { ...current.timing, [key]: value },
+    }));
+  return (
+    <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50/60 p-4">
+      <p className="mb-3 text-xs font-semibold text-blue-900">板卡配置</p>
+      <p className="mb-3 text-[13px] leading-5 text-blue-800">
+        Linux 可运行 <code className="rounded bg-white/80 px-1">lsusb</code>{" "}
+        查看 VID/PID、总线号和设备地址，再运行{" "}
+        <code className="rounded bg-white/80 px-1">lsusb -v -d VID:PID</code>{" "}
+        查找标记为 <code className="rounded bg-white/80 px-1">Bulk IN/OUT</code>{" "}
+        的 Endpoint。
+      </p>
+      <div className="grid gap-3 sm:grid-cols-3">
+        {(
+          [
+            ["vendor_id", "VID"],
+            ["product_id", "PID"],
+            ["bulk_in_endpoint", "Bulk IN"],
+            ["bulk_out_endpoint", "Bulk OUT"],
+            ["bus_number", "总线号（255=自动）"],
+            ["device_address", "设备地址（255=自动）"],
+          ] as const
+        ).map(([key, label]) => (
+          <label key={key} className="text-xs text-muted-foreground">
+            {label}
+            <Input
+              className="mt-1 bg-white"
+              type="number"
+              value={usb[key]}
+              onChange={(event) => updateUsb(key, Number(event.target.value))}
+              disabled={disabled}
+            />
+          </label>
+        ))}
+      </div>
+      <p className="mt-3 text-[13px] leading-5 text-blue-800">
+        请预先配置板卡时钟，并按已验证的板卡配置设置以下等待时间。
+      </p>
+      <p className="mb-2 mt-4 text-xs font-medium text-blue-900">
+        时序（毫秒）
+      </p>
+      <div className="grid gap-3 sm:grid-cols-3">
+        {(
+          [
+            ["startup_delay_ms", "启动"],
+            ["cache_write_delay_ms", "缓存写入"],
+            ["weight_write_delay_ms", "权重写入"],
+            ["work_delay_ms", "计算"],
+            ["readback_select_delay_ms", "读回选择"],
+          ] as const
+        ).map(([key, label]) => (
+          <label key={key} className="text-xs text-muted-foreground">
+            {label}
+            <Input
+              className="mt-1 bg-white"
+              type="number"
+              value={usb.timing[key]}
+              onChange={(event) =>
+                updateTiming(key, Number(event.target.value))
+              }
+              disabled={disabled}
+            />
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+type FrameworkPageProps = {
+  framework: Framework;
+  connected: boolean;
+  error: string;
+  pending: boolean;
+  task: ExampleTask | null;
+  busy: boolean;
+  operate: (path: string, body?: object) => Promise<void>;
+};
+function FrameworkPage({
+  framework,
+  connected,
+  error,
+  pending,
+  task,
+  busy,
+  operate,
+}: FrameworkPageProps) {
   const [runtime, setRuntime] = useState<Runtime>("simulator");
   const [usb, setUsb] = useState<UsbConfig>(initialUsb);
-  const active = !!task && activeStates.has(task.status); const disabled = active || busy || pending || !connected;
+  const active = !!task && activeStates.has(task.status);
+  const disabled = active || busy || pending || !connected;
   const title = framework === "tensorflow" ? "TensorFlow" : "PyTorch";
-  const description = framework === "tensorflow" ? "固定运行 examples/tensorflow_compile.py，验证 TensorFlow tf.function 到 CIM22 的编译与执行。" : "固定运行 examples/torch_compile.py，验证 torch.compile 下 BF16 卷积、激活和全连接的编译与执行。";
-  const structure = framework === "tensorflow" ? "INT8 BatchMatMul(1×4×16,16×32) → 截断 ReLU → BatchMatMul(32×16)" : "BF16 Conv2d(3→4,3×3) → ReLU → Linear(256,8) · 5 个确定性输入 case";
-  const status = task ? (task.status === "loading" ? "加载数据" : names[task.status] ?? task.status) : "等待开始";
-  const updateUsb = <K extends keyof UsbConfig>(key: K, value: number) => setUsb((current) => ({ ...current, [key]: value }));
-  const updateTiming = (key: keyof UsbConfig["timing"], value: number) => setUsb((current) => ({ ...current, timing: { ...current.timing, [key]: value } }));
-  async function run() { await operate("/api/examples/run", { framework, runtime, ...(runtime === "usb" ? { usb_config: usb } : {}) }); }
-  return <main className="mx-auto max-w-[1400px] px-6 py-9 lg:px-10"><div className="mb-8 flex flex-wrap items-end justify-between gap-4"><div><div className="eyebrow mb-2">FRAMEWORK · 编译验证</div><h1 className="text-3xl font-semibold tracking-tight">{title} 编译验证</h1><p className="mt-3 max-w-3xl text-sm text-muted-foreground">{description}</p></div><div className="flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-4 py-2 text-xs font-medium text-primary"><Cpu size={14} />固定示例<span className="mx-1 text-blue-200">|</span>{runtime === "usb" ? "CIM USB 板卡" : "CIM 软件仿真"}</div></div>{(!connected || error || task?.error) && <div role="alert" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">{error || (!connected ? "与框架验证服务的连接已断开，正在重连。" : task?.error)}</div>}<div className="grid gap-6 lg:grid-cols-[1.15fr_1fr]"><Card><CardHeader><div className="flex items-center justify-between"><h2 className="flex items-center gap-2.5 text-base font-semibold"><FileBox size={19} className="text-primary" />示例与后端</h2><span className="eyebrow">01 / 编译</span></div></CardHeader><CardContent><div className="mb-5 flex items-center gap-4 rounded-xl bg-muted/70 p-4"><div className="grid size-12 shrink-0 place-items-center rounded-xl bg-white text-primary"><Layers3 size={25} /></div><div><p className="text-sm font-semibold">{framework === "tensorflow" ? "tensorflow_compile.py" : "torch_compile.py"}</p><p className="mt-1 text-xs text-muted-foreground">{structure}</p></div></div><div className="grid gap-3 sm:grid-cols-2">{(["simulator", "usb"] as const).map((choice) => <button key={choice} type="button" onClick={() => setRuntime(choice)} disabled={disabled} className={`rounded-xl border p-4 text-left transition ${runtime === choice ? "border-primary bg-blue-50 ring-1 ring-primary" : "border-border hover:border-blue-200"}`}><div className="flex items-center justify-between"><span className="text-sm font-semibold">{choice === "simulator" ? "CIM 软件仿真" : "CIM USB 板卡"}</span>{choice === "usb" ? <Usb size={16} /> : <Cpu size={16} />}</div><p className="mt-2 text-xs leading-5 text-muted-foreground">{choice === "simulator" ? "默认后端，不需要连接物理板卡。" : "需要已连接并可访问的 CIM 板卡。"}</p></button>)}</div>{runtime === "usb" && <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50/60 p-4"><p className="mb-3 text-xs font-semibold text-blue-900">USB 板卡配置</p><p className="mb-3 text-[11px] leading-5 text-blue-800">Linux 可运行 <code className="rounded bg-white/80 px-1">lsusb</code> 查看 VID/PID、总线号和设备地址，再运行 <code className="rounded bg-white/80 px-1">lsusb -v -d VID:PID</code> 查找标记为 <code className="rounded bg-white/80 px-1">Bulk IN/OUT</code> 的 Endpoint。</p><div className="grid gap-3 sm:grid-cols-3">{([["vendor_id", "VID"], ["product_id", "PID"], ["bulk_in_endpoint", "Bulk IN"], ["bulk_out_endpoint", "Bulk OUT"], ["bus_number", "总线号（255=自动）"], ["device_address", "设备地址（255=自动）"]] as const).map(([key, label]) => <label key={key} className="text-xs text-muted-foreground">{label}<Input className="mt-1 bg-white" type="number" value={usb[key]} onChange={(event) => updateUsb(key, Number(event.target.value))} disabled={disabled} /></label>)}</div><p className="mb-2 mt-4 text-xs font-medium text-blue-900">时序（毫秒）</p><div className="grid gap-3 sm:grid-cols-3">{([["startup_delay_ms", "启动"], ["cache_write_delay_ms", "缓存写入"], ["weight_write_delay_ms", "权重写入"], ["work_delay_ms", "计算"], ["readback_select_delay_ms", "读回选择"]] as const).map(([key, label]) => <label key={key} className="text-xs text-muted-foreground">{label}<Input className="mt-1 bg-white" type="number" value={usb.timing[key]} onChange={(event) => updateTiming(key, Number(event.target.value))} disabled={disabled} /></label>)}</div></div>}<div className="mt-5 flex items-center justify-between gap-3 border-t border-border pt-4"><Button disabled={disabled} onClick={() => void run()}>{pending || active ? <LoaderCircle className="animate-spin" /> : <Cpu />}开始编译验证</Button><Button variant="destructive" disabled={!active || pending || !connected || !!task?.cancel_requested} onClick={() => void operate("/api/examples/cancel")}><Square />取消</Button></div></CardContent></Card><Card className="flex flex-col"><CardHeader><div className="flex items-center justify-between"><h2 className="flex items-center gap-2.5 text-base font-semibold"><Activity size={19} className="text-primary" />验证状态</h2><span className="eyebrow">02 / 结果</span></div></CardHeader><CardContent className="flex flex-1 flex-col"><span className="inline-flex w-fit items-center gap-2 rounded-md bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-primary">{active ? <LoaderCircle size={13} className="animate-spin" /> : <span className="size-1.5 rounded-full bg-current" />}{task?.cancel_requested ? "正在停止" : status}</span><div className="mt-7 grid grid-cols-2 gap-4"><Metric label="编译耗时" value={seconds(task?.compile_seconds)} /><Metric label="CIM dispatch" value={task?.dispatch_count == null ? "—" : String(task.dispatch_count)} /></div><div className="mt-6 rounded-xl bg-muted/60 p-4 text-xs leading-6 text-muted-foreground"><p className="flex items-center gap-2"><Clock3 size={14} />{active ? "编译或执行正在进行" : task?.status === "completed" ? "结果已保存，可查看下方输出" : "运行示例后显示参考与 CIM 对比"}</p></div></CardContent></Card></div><ExampleResults task={task} /></main>;
+  const description =
+    framework === "tensorflow"
+      ? "验证 TensorFlow 框架支持"
+      : "验证 PyTorch 框架支持";
+  const structure =
+    framework === "tensorflow"
+      ? "INT8 BatchMatMul(1×4×16,16×32) → 截断 ReLU → BatchMatMul(32×16)"
+      : "BF16 Conv2d(3→4,3×3) → ReLU → Linear(256,8) · 5 个确定性输入 case";
+  const status = task
+    ? task.status === "loading"
+      ? "加载数据"
+      : (names[task.status] ?? task.status)
+    : "等待开始";
+  async function run() {
+    await operate("/api/examples/run", {
+      framework,
+      runtime,
+      ...(runtime === "usb" ? { usb_config: usb } : {}),
+    });
+  }
+  return (
+    <main className="mx-auto max-w-[1400px] px-6 py-9 lg:px-10">
+      <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <div className="eyebrow mb-2">框架支持</div>
+          <h1 className="text-3xl font-semibold tracking-tight">
+            {title} 编译验证
+          </h1>
+          <p className="mt-3 max-w-3xl text-sm text-muted-foreground">
+            {description}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-4 py-2 text-xs font-medium text-primary">
+          <Cpu size={14} />
+          固定示例<span className="mx-1 text-blue-200">|</span>
+          {runtime === "usb" ? "CIM 板卡" : "软件仿真"}
+        </div>
+      </div>
+      {(!connected || error || task?.error) && (
+        <div
+          role="alert"
+          className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
+        >
+          {error ||
+            (!connected
+              ? "与框架验证服务的连接已断开，正在重连。"
+              : task?.error)}
+        </div>
+      )}
+      <div className="grid gap-6 lg:grid-cols-[1.15fr_1fr]">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <h2 className="flex items-center gap-2.5 text-base font-semibold">
+                <FileBox size={19} className="text-primary" />
+                示例与后端
+              </h2>
+              <span className="eyebrow">01 / 编译</span>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="mb-5 flex items-center gap-4 rounded-xl bg-muted/70 p-4">
+              <div className="grid size-12 shrink-0 place-items-center rounded-xl bg-white text-primary">
+                <Layers3 size={25} />
+              </div>
+              <div>
+                <p className="text-sm font-semibold">
+                  {framework === "tensorflow"
+                    ? "tensorflow_compile.py"
+                    : "torch_compile.py"}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {structure}
+                </p>
+              </div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {(["simulator", "usb"] as const).map((choice) => (
+                <button
+                  key={choice}
+                  type="button"
+                  onClick={() => setRuntime(choice)}
+                  disabled={disabled}
+                  className={`rounded-xl border p-4 text-left transition ${runtime === choice ? "border-primary bg-blue-50 ring-1 ring-primary" : "border-border hover:border-blue-200"}`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold">
+                      {choice === "simulator" ? "软件仿真" : "CIM 板卡"}
+                    </span>
+                    {choice === "usb" ? <Usb size={16} /> : <Cpu size={16} />}
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                    {choice === "simulator"
+                      ? "无需连接板卡"
+                      : "需连接 CIM 板卡"}
+                  </p>
+                </button>
+              ))}
+            </div>
+            {runtime === "usb" && (
+              <UsbFields usb={usb} setUsb={setUsb} disabled={disabled} />
+            )}
+            <div className="mt-5 flex items-center justify-between gap-3 border-t border-border pt-4">
+              <Button disabled={disabled} onClick={() => void run()}>
+                {pending || active ? (
+                  <LoaderCircle className="animate-spin" />
+                ) : (
+                  <Cpu />
+                )}
+                编译验证
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={
+                  !active || pending || !connected || !!task?.cancel_requested
+                }
+                onClick={() => void operate("/api/examples/cancel")}
+              >
+                <Square />
+                取消
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="flex flex-col">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <h2 className="flex items-center gap-2.5 text-base font-semibold">
+                <Activity size={19} className="text-primary" />
+                验证状态
+              </h2>
+              <span className="eyebrow">02 / 结果</span>
+            </div>
+          </CardHeader>
+          <CardContent className="flex flex-1 flex-col">
+            <span className="inline-flex w-fit items-center gap-2 rounded-md bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-primary">
+              {active ? (
+                <LoaderCircle size={13} className="animate-spin" />
+              ) : (
+                <span className="size-1.5 rounded-full bg-current" />
+              )}
+              {task?.cancel_requested ? "正在停止" : status}
+            </span>
+            <div className="mt-7 grid grid-cols-2 gap-4">
+              <Metric label="编译耗时" value={seconds(task?.compile_seconds)} />
+              <Metric
+                label="CIM 调用次数"
+                value={
+                  task?.dispatch_count == null
+                    ? "—"
+                    : String(task.dispatch_count)
+                }
+              />
+            </div>
+            <div className="mt-6 rounded-xl bg-muted/60 p-4 text-xs leading-6 text-muted-foreground">
+              <p className="flex items-center gap-2">
+                <Clock3 size={14} />
+                {active
+                  ? "编译或执行正在进行"
+                  : task?.status === "completed"
+                    ? "结果已保存，可查看下方输出"
+                    : "运行示例后显示参考与 CIM 对比"}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+      <ExampleResults task={task} />
+    </main>
+  );
 }
-function Metric({ label, value }: { label: string; value: string }) { return <div><p className="text-xs text-muted-foreground">{label}</p><p className="number mt-2 text-2xl font-semibold tracking-tight">{value}</p></div>; }
-function ExampleResults({ task }: { task: ExampleTask | null }) { const cases = task?.cases ?? []; return <section className="mt-9"><div className="mb-5 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">参考结果对比</h2><p className="mt-1 text-xs text-muted-foreground">参考侧为原生 TensorFlow/PyTorch 软件计算，CIM 侧为编译后 Session。</p></div><div className="flex gap-2 text-xs">{[[task?.artifact_url ?? task?.artifact, "模型产物"], [task?.debug_url ?? task?.debug_dir, "调试 IR"], [task?.log_url ?? task?.log_path ?? task?.log, "编译日志"]].map(([path, label]) => path && <a key={label} href={path} target="_blank" rel="noreferrer" className="rounded-md bg-muted px-3 py-2 text-muted-foreground hover:text-primary" title={path}>{label}</a>)}</div></div><Card className="mb-5 overflow-hidden"><CardHeader className="flex-row items-center justify-between"><div><h3 className="text-sm font-semibold">关键编译日志</h3><p className="mt-1 text-xs text-muted-foreground">运行中实时更新，失败时显示最后一段错误输出。</p></div><span className="eyebrow">最近 12 KB</span></CardHeader><pre className="max-h-72 overflow-auto whitespace-pre-wrap border-t border-border bg-slate-950 px-5 py-4 font-mono text-[11px] leading-5 text-slate-100">{task?.log_text || "等待示例启动日志"}</pre></Card><Card className="overflow-hidden"><div className="overflow-x-auto"><table className="w-full text-xs"><thead className="bg-muted/70 text-muted-foreground"><tr><th>Case</th><th>参考输出</th><th>CIM 输出</th><th>最大绝对误差</th><th>Dispatch</th><th>状态</th></tr></thead><tbody>{cases.map((item, index) => <tr key={`${item.name ?? "case"}-${index}`}><td className="font-medium">{item.name ?? `case-${index + 1}`}</td><td><code className="break-all text-[11px]">{formatValue(item.reference)}</code></td><td><code className="break-all text-[11px]">{formatValue(item.actual ?? item.cim)}</code></td><td className="number">{item.max_abs_error == null ? "—" : item.max_abs_error}</td><td className="number">{item.dispatch_count == null ? "—" : item.dispatch_count}</td><td>{item.error ? <span className="text-rose-600">{item.error}</span> : <span className="inline-flex items-center gap-1 text-emerald-700"><Check size={14} />通过</span>}</td></tr>)}</tbody></table></div>{!cases.length && <div className="grid place-items-center px-4 py-14 text-center text-sm text-muted-foreground">等待示例运行结果</div>}</Card></section>; }
-function formatValue(value: unknown): string { if (value == null) return "—"; try { return JSON.stringify(value); } catch { return String(value); } }
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="number mt-2 text-2xl font-semibold tracking-tight">
+        {value}
+      </p>
+    </div>
+  );
+}
+function ExampleResults({ task }: { task: ExampleTask | null }) {
+  const cases = task?.cases ?? [];
+  return (
+    <section className="mt-9">
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold">参考结果对比</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            参考结果由软件直接计算，CIM 结果由编译后的模型执行得到
+          </p>
+        </div>
+        <div className="flex gap-2 text-xs">
+          {[
+            [task?.artifact_url ?? task?.artifact, "模型产物"],
+            [task?.debug_url ?? task?.debug_dir, "调试 IR"],
+            [task?.log_url ?? task?.log_path ?? task?.log, "编译日志"],
+          ].map(
+            ([path, label]) =>
+              path && (
+                <a
+                  key={label}
+                  href={path}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-md bg-muted px-3 py-2 text-muted-foreground hover:text-primary"
+                  title={path}
+                >
+                  {label}
+                </a>
+              ),
+          )}
+        </div>
+      </div>
+      <Card className="mb-5 overflow-hidden">
+        <CardHeader className="flex-row items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold">日志</h3>
+          </div>
+        </CardHeader>
+        <pre className="max-h-72 overflow-auto whitespace-pre-wrap border-t border-border bg-slate-950 px-5 py-4 font-mono text-[13px] leading-5 text-slate-100">
+          {task?.log_text || "等待示例启动日志"}
+        </pre>
+      </Card>
+      <Card className="overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="bg-muted/70 text-muted-foreground">
+              <tr>
+                <th>测试项目</th>
+                <th>参考输出</th>
+                <th>CIM 板卡输出</th>
+                <th>最大绝对误差</th>
+                <th>CIM 调用次数</th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cases.map((item, index) => (
+                <tr key={`${item.name ?? "case"}-${index}`}>
+                  <td className="font-medium">
+                    {item.name ?? `case-${index + 1}`}
+                  </td>
+                  <td>
+                    <code className="break-all text-[13px]">
+                      {formatValue(item.reference)}
+                    </code>
+                  </td>
+                  <td>
+                    <code className="break-all text-[13px]">
+                      {formatValue(item.actual ?? item.cim)}
+                    </code>
+                  </td>
+                  <td className="number">
+                    {item.max_abs_error == null ? "—" : item.max_abs_error}
+                  </td>
+                  <td className="number">
+                    {item.dispatch_count == null ? "—" : item.dispatch_count}
+                  </td>
+                  <td>
+                    {item.error ? (
+                      <span className="text-rose-600">{item.error}</span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-emerald-700">
+                        <Check size={14} />
+                        通过
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {!cases.length && (
+          <div className="grid place-items-center px-4 py-14 text-center text-sm text-muted-foreground">
+            等待示例运行结果
+          </div>
+        )}
+      </Card>
+    </section>
+  );
+}
+function formatValue(value: unknown): string {
+  if (value == null) return "—";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
 
-type DvsPageProps = { connected: boolean; error: string; pending: boolean; task: DvsTask | null; weights: string; dataset: string; cimLayers: CimLayer[]; selectedCimLayers: string[]; hybridMode: boolean; setSelectedCimLayers: (value: string[]) => void; setHybridMode: (value: boolean) => void; filter: string; page: number; showImport: boolean; setWeights: (value: string) => void; setDataset: (value: string) => void; setFilter: (value: string) => void; setPage: (value: number) => void; setShowImport: (value: boolean) => void; operate: (path: string, body?: object) => Promise<void> };
-function DvsPage({ connected, error, pending, task, weights, dataset, cimLayers, selectedCimLayers, hybridMode, setSelectedCimLayers, setHybridMode, filter, page, showImport, setWeights, setDataset, setFilter, setPage, setShowImport, operate }: DvsPageProps) {
-  const active = !!task && activeStates.has(task.status); const disabled = active || pending || !connected; const finished = task?.completed === task?.total; const rows = (task?.rows ?? []).filter((r) => filter === "all" || (filter === "wrong" ? !r.original_correct || !r.cim_correct : r.original_prediction !== r.cim_prediction)); const pages = Math.max(1, Math.ceil(rows.length / 12)); const currentPage = Math.min(page, pages - 1); const progress = task ? (task.completed / task.total) * 100 : 0; const status = task ? names[task.status] ?? task.status : "等待导入"; const className = (index: number) => `类别 ${task?.classes[index] ?? index}`;
-  return <main className="mx-auto max-w-[1400px] px-6 py-9 lg:px-10"><div className="mb-8 flex flex-wrap items-end justify-between gap-4"><div><div className="eyebrow mb-2">DVS 应用 · 软件对比</div><h1 className="text-3xl font-semibold tracking-tight">DVS 推理对比</h1><p className="mt-3 text-sm text-muted-foreground">导入固定 DVS 模型，对比纯软件参考与 CIM 软件运行结果。</p></div><div className="flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-4 py-2 text-xs font-medium text-primary"><Cpu size={14} />纯软件参考 <span className="mx-1 text-blue-200">|</span> CIM 仿真</div></div>{(!connected || error || task?.error) && <div role="alert" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">{error || (!connected ? "与服务的连接已断开，正在重连。" : task?.error)}</div>}<div className="grid gap-6 lg:grid-cols-[1.15fr_1fr]"><Card><CardHeader><div className="flex items-center justify-between"><h2 className="flex items-center gap-2.5 text-base font-semibold"><FileBox size={19} className="text-primary" />模型与编译</h2><span className="eyebrow">01 / 准备</span></div></CardHeader><CardContent><div className="mb-5 flex items-center gap-4 rounded-xl bg-muted/70 p-4"><div className="grid size-12 shrink-0 place-items-center rounded-xl bg-white text-primary"><Layers3 size={25} /></div><div><p className="text-sm font-semibold">DVSGesture · MobileNet SNN</p><p className="mt-1 text-xs text-muted-foreground">C16 · T32 · 11 类 · 固定模型</p></div></div>{showImport ? <form onSubmit={(e) => { e.preventDefault(); void operate("/api/import", { weights, dataset, cim_layers: hybridMode ? selectedCimLayers : null }); }} className="space-y-4"><div><label htmlFor="weights" className="mb-2 block text-xs font-medium">模型权重</label><Input id="weights" value={weights} onChange={(e) => setWeights(e.target.value)} placeholder="/path/to/weights.pt" required disabled={disabled} /></div><div><label htmlFor="dataset" className="mb-2 block text-xs font-medium">测试集目录</label><Input id="dataset" value={dataset} onChange={(e) => setDataset(e.target.value)} placeholder="/path/to/data/test" required disabled={disabled} /><p className="mt-2 text-xs text-muted-foreground">填写 Linux 本地路径，读取类别目录下的 .npz 缓存帧。</p></div><div className="rounded-xl border border-blue-100 bg-blue-50/60 p-4"><label className="flex items-center gap-2 text-xs font-medium text-blue-900"><input type="checkbox" checked={hybridMode} onChange={(e) => setHybridMode(e.target.checked)} disabled={disabled} />仅将选定叶子层部署到 CIM，其余层在 CPU 执行</label>{hybridMode && <div className="mt-3 grid gap-2 sm:grid-cols-2">{cimLayers.map((layer) => <label key={layer.name} className="flex items-center gap-2 rounded-lg bg-white px-3 py-2 text-xs"><input type="checkbox" checked={selectedCimLayers.includes(layer.name)} onChange={(e) => setSelectedCimLayers(e.target.checked ? [...selectedCimLayers, layer.name] : selectedCimLayers.filter((name) => name !== layer.name))} disabled={disabled} /><span className="font-mono">{layer.name}</span><span className="ml-auto text-muted-foreground">{layer.type} {layer.input_shape.join("×")} → {layer.output_shape.join("×")}</span></label>)}</div>}</div><Button type="submit" disabled={disabled || !weights || !dataset || (hybridMode && !selectedCimLayers.length)}>{pending ? <LoaderCircle className="animate-spin" /> : <FolderOpen />}导入模型与测试集</Button></form> : <div className="space-y-3 text-xs"><p className="break-all text-muted-foreground"><span className="mr-2 font-medium text-foreground">权重</span>{task?.weights}</p><p className="break-all text-muted-foreground"><span className="mr-2 font-medium text-foreground">测试集</span>{task?.dataset}</p><p className="text-muted-foreground"><span className="mr-2 font-medium text-foreground">执行模式</span>{task?.execution_mode === "hybrid" ? `混合执行：${task.cim_layers?.join(", ")}` : "整模型 CIM"}</p><Button variant="ghost" size="sm" className="-ml-3" disabled={disabled} onClick={() => setShowImport(true)}><FolderOpen />更换输入 / 新建测试</Button></div>}<div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4 text-xs"><span className="text-muted-foreground">固定输入 <code className="ml-2 rounded bg-muted px-2 py-1 text-foreground">32 × 1 × 2 × 128 × 128</code></span><span className="text-muted-foreground">T · B · C · H · W</span></div><div className="mt-5 flex items-center justify-between gap-3"><Button variant="outline" disabled={disabled || !task || task.compiled} onClick={() => void operate("/api/action", { action: "compile" })}>{active && task?.status !== "running" ? <LoaderCircle className="animate-spin" /> : <Cpu />}{task?.compiled ? "编译已就绪" : "编译模型"}</Button><div className="text-right"><p className="text-xs text-muted-foreground">编译与首次执行</p><p className="number mt-1 text-sm font-medium">{seconds(task?.compile_seconds)}</p></div></div></CardContent></Card><Card className="flex flex-col"><CardHeader><div className="flex items-center justify-between"><h2 className="flex items-center gap-2.5 text-base font-semibold"><Activity size={19} className="text-primary" />运行控制</h2><span className="eyebrow">02 / 运行</span></div></CardHeader><CardContent className="flex flex-1 flex-col"><div className="flex items-center justify-between"><span className="inline-flex items-center gap-2 rounded-md bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-primary">{active ? <LoaderCircle size={13} className="animate-spin" /> : <span className="size-1.5 rounded-full bg-current" />}{task?.cancel_requested ? "正在停止" : status}</span><span className="text-xs text-muted-foreground">{task?.total ?? "—"} 个测试样本</span></div><div className="mb-3 mt-8 flex items-end justify-between"><p className="number"><span className="text-4xl font-semibold tracking-tight">{task?.completed ?? 0}</span><span className="ml-2 text-sm text-muted-foreground">/ {task?.total ?? "—"} 已完成</span></p><span className="number text-sm font-medium text-primary">{progress.toFixed(0)}%</span></div><Progress value={progress} aria-label="测试进度" /><div className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground"><Clock3 size={13} />{task?.status === "running" ? `预计剩余 ${duration(task.eta_seconds)}` : task?.status === "completed" ? "全部样本已保存" : "每完成一个样本，自动保存对比结果"}</div><div className="mt-7 flex flex-wrap gap-2"><Button disabled={disabled || !task || finished || (!task.compiled && !["cancelled", "interrupted", "ready"].includes(task.status))} onClick={() => void operate("/api/action", { action: "full" })}>{task?.completed ? <RotateCcw /> : <Play />}{task?.completed || task?.status === "interrupted" ? "继续剩余测试" : "开始完整测试"}</Button><Button variant="outline" disabled={disabled || !task?.compiled || finished} onClick={() => void operate("/api/action", { action: "single" })}>运行一个样本<ArrowRight /></Button><Button variant="destructive" disabled={!active || pending || !connected || task?.cancel_requested} onClick={() => void operate("/api/cancel")}><Square />取消</Button></div><div className="mt-auto pt-7"><div className="flex items-start gap-2 rounded-lg bg-muted/60 p-3 text-xs leading-6 text-muted-foreground"><CircleHelp size={15} className="mt-1 shrink-0" /><p>刷新页面不会停止计算。取消后可继续；服务重启后，续跑会重新编译。</p></div></div></CardContent></Card></div><div className="mb-5 mt-9 flex items-center justify-between"><h2 className="text-lg font-semibold">结果对比 <span className="ml-3 text-xs font-normal text-muted-foreground">基于 {task?.completed ?? 0} 个已完成样本</span></h2>{!!task?.completed && <Button asChild variant="outline" size="sm"><a href="/api/results.csv" download><ArrowDownToLine />导出 CSV</a></Button>}</div><div className="mb-6 grid gap-5 sm:grid-cols-2">{(["original", "cim"] as const).map((side) => { const summary = task?.totals[side]; return <Card key={side} className={side === "cim" ? "border-blue-200" : ""}><CardContent className="pt-5"><div className="flex items-center justify-between"><h3 className="text-sm font-semibold">{side === "original" ? "纯软件参考" : "CIM 模型"}</h3><span className="rounded-md bg-muted px-2 py-1 text-[11px] text-muted-foreground">{side === "original" ? "PyTorch · CPU" : "CIM 仿真"}</span></div><div className="mt-5 grid grid-cols-2 gap-4"><div><p className="text-xs text-muted-foreground">总准确率</p><p className={`number mt-2 text-3xl font-semibold tracking-tight ${side === "cim" ? "text-primary" : ""}`}>{summary?.accuracy == null ? "—" : `${(summary.accuracy * 100).toFixed(2)}%`}</p><p className="mt-2 text-xs text-muted-foreground">{summary?.correct ?? 0} / {task?.completed ?? 0} 识别正确</p></div><div className="border-l border-border pl-5"><p className="text-xs text-muted-foreground">推理总耗时</p><p className="number mt-2 text-2xl font-semibold tracking-tight">{task?.completed ? seconds(summary?.seconds) : "—"}</p><p className="mt-2 text-xs text-muted-foreground">各样本模型调用耗时之和</p></div></div></CardContent></Card>; })}</div><Card className="overflow-hidden"><CardHeader className="flex-row flex-wrap items-center justify-between gap-3"><div><h3 className="text-sm font-semibold">逐样本结果</h3><p className="mt-1 text-xs text-muted-foreground">真实类别、预测结果及耗时；不包含数据读取和文件保存。</p></div><label className="text-xs text-muted-foreground">显示 <select aria-label="筛选样本" value={filter} onChange={(e) => { setFilter(e.target.value); setPage(0); }} className="ml-2 rounded-lg border border-input bg-white px-3 py-2 text-foreground"><option value="all">全部样本</option><option value="wrong">包含识别错误</option><option value="different">两边预测不同</option></select></label></CardHeader><div className="overflow-x-auto"><table className="w-full text-xs"><thead className="bg-muted/70 text-muted-foreground"><tr><th>样本</th><th>真实类别</th><th>纯软件预测</th><th>耗时</th><th>CIM 预测</th><th>耗时</th></tr></thead><tbody>{rows.slice(currentPage * 12, currentPage * 12 + 12).map((row) => <tr key={row.index}><td><span className="number mr-3 text-muted-foreground">{String(row.index + 1).padStart(3, "0")}</span><span title={row.sample}>{row.sample}</span></td><td className="whitespace-nowrap">{className(row.label)}</td><td><Verdict correct={row.original_correct} label={className(row.original_prediction)} /></td><td className="number whitespace-nowrap">{seconds(row.original_seconds)}</td><td><Verdict correct={row.cim_correct} label={className(row.cim_prediction)} /></td><td className="number whitespace-nowrap">{seconds(row.cim_seconds)}</td></tr>)}</tbody></table></div>{!rows.length && <div className="grid place-items-center px-4 py-14 text-center"><div className="mb-3 grid size-12 place-items-center rounded-full bg-muted text-muted-foreground"><Layers3 size={23} /></div><p className="text-sm font-medium">{task?.completed ? "没有符合筛选条件的样本" : "等待第一个样本结果"}</p><p className="mt-2 text-xs text-muted-foreground">{task?.completed ? "尝试切换为全部样本。" : "完成编译后，运行一个样本即可查看两边的识别结果。"}</p></div>}<div className="flex items-center justify-between border-t border-border px-6 py-3 text-xs text-muted-foreground"><span>共 {rows.length} 条 · 已自动保存至本地</span><div className="flex items-center gap-3"><Button variant="ghost" size="icon" aria-label="上一页" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}><ChevronLeft /></Button><span className="number">{currentPage + 1} / {pages}</span><Button variant="ghost" size="icon" aria-label="下一页" disabled={currentPage + 1 >= pages} onClick={() => setPage(currentPage + 1)}><ChevronRight /></Button></div></div></Card><footer className="mt-6 flex flex-wrap justify-between gap-2 text-[11px] text-muted-foreground"><span>CIM22 · 本地模型工作台</span><span>纯软件参考 · CIM 仿真 · 每次推理前复位神经元</span></footer></main>;
+type DvsPageProps = {
+  usb: UsbConfig;
+  setUsb: (update: (current: UsbConfig) => UsbConfig) => void;
+  connected: boolean;
+  error: string;
+  pending: boolean;
+  task: DvsTask | null;
+  weights: string;
+  dataset: string;
+  cimLayers: CimLayer[];
+  selectedCimLayers: string[];
+  hybridMode: boolean;
+  setSelectedCimLayers: (value: string[]) => void;
+  setHybridMode: (value: boolean) => void;
+  filter: string;
+  page: number;
+  showImport: boolean;
+  setWeights: (value: string) => void;
+  setDataset: (value: string) => void;
+  setFilter: (value: string) => void;
+  setPage: (value: number) => void;
+  setShowImport: (value: boolean) => void;
+  operate: (path: string, body?: object) => Promise<void>;
+};
+function DvsPage({
+  usb,
+  setUsb,
+  connected,
+  error,
+  pending,
+  task,
+  weights,
+  dataset,
+  cimLayers,
+  selectedCimLayers,
+  hybridMode,
+  setSelectedCimLayers,
+  setHybridMode,
+  filter,
+  page,
+  showImport,
+  setWeights,
+  setDataset,
+  setFilter,
+  setPage,
+  setShowImport,
+  operate,
+}: DvsPageProps) {
+  const active = !!task && activeStates.has(task.status);
+  const preparing = active && task?.status !== "running";
+  const disabled = active || pending || !connected;
+  const finished = task?.completed === task?.total;
+  const rows = (task?.rows ?? []).filter(
+    (r) =>
+      filter === "all" ||
+      (filter === "wrong"
+        ? !r.original_correct || !r.cim_correct
+        : r.original_prediction !== r.cim_prediction),
+  );
+  const pages = Math.max(1, Math.ceil(rows.length / 12));
+  const currentPage = Math.min(page, pages - 1);
+  const progress = task ? (task.completed / task.total) * 100 : 0;
+  const status = task ? (names[task.status] ?? task.status) : "等待导入";
+  const className = (index: number) => `类别 ${task?.classes[index] ?? index}`;
+  return (
+    <main className="mx-auto max-w-[1400px] px-6 py-9 lg:px-10">
+      <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <div className="eyebrow mb-2">DVS 应用</div>
+          <h1 className="text-3xl font-semibold tracking-tight">
+            DVS 模型编译与执行
+          </h1>
+          <p className="mt-3 text-sm text-muted-foreground">
+            导入固定 DVS 模型，对比软件参考与 CIM 板卡计算结果
+          </p>
+        </div>
+        <div className="flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-4 py-2 text-xs font-medium text-primary">
+          <Cpu size={14} />
+          软件参考 <span className="mx-1 text-blue-200">|</span> CIM 板卡
+        </div>
+      </div>
+      {(!connected || error || task?.error) && (
+        <div
+          role="alert"
+          className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
+        >
+          {error ||
+            (!connected ? "与服务的连接已断开，正在重连。" : task?.error)}
+        </div>
+      )}
+      <div className="grid gap-6 lg:grid-cols-[1.15fr_1fr]">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <h2 className="flex items-center gap-2.5 text-base font-semibold">
+                <FileBox size={19} className="text-primary" />
+                模型与编译
+              </h2>
+              <span className="eyebrow">01 / 准备</span>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="mb-5 flex items-center gap-4 rounded-xl bg-muted/70 p-4">
+              <div className="grid size-12 shrink-0 place-items-center rounded-xl bg-white text-primary">
+                <Layers3 size={25} />
+              </div>
+              <div>
+                <p className="text-sm font-semibold">MobileNet SNN</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  T=32 · 11 分类 · 固定模型
+                </p>
+              </div>
+            </div>
+            {showImport ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void operate("/api/import", {
+                    weights,
+                    dataset,
+                    usb_config: usb,
+                    cim_layers: hybridMode ? selectedCimLayers : null,
+                  });
+                }}
+                className="space-y-4"
+              >
+                <div>
+                  <label
+                    htmlFor="weights"
+                    className="mb-2 block text-xs font-medium"
+                  >
+                    模型权重
+                  </label>
+                  <Input
+                    id="weights"
+                    value={weights}
+                    onChange={(e) => setWeights(e.target.value)}
+                    placeholder="/path/to/weights.pt"
+                    required
+                    disabled={disabled}
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="dataset"
+                    className="mb-2 block text-xs font-medium"
+                  >
+                    测试集目录
+                  </label>
+                  <Input
+                    id="dataset"
+                    value={dataset}
+                    onChange={(e) => setDataset(e.target.value)}
+                    placeholder="/path/to/data/test"
+                    required
+                    disabled={disabled}
+                  />
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    本地路径，读取类别目录下的 .npz 缓存帧
+                  </p>
+                </div>
+                <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-4">
+                  <label className="flex items-center gap-2 text-xs font-medium text-blue-900">
+                    <input
+                      type="checkbox"
+                      checked={hybridMode}
+                      onChange={(e) => setHybridMode(e.target.checked)}
+                      disabled={disabled}
+                    />
+                    仅将选定叶子层部署到 CIM，其余层在 CPU 执行
+                  </label>
+                  {hybridMode && (
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                      {cimLayers.map((layer) => (
+                        <label
+                          key={layer.name}
+                          className="flex items-center gap-2 rounded-lg bg-white px-3 py-2 text-xs"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedCimLayers.includes(layer.name)}
+                            onChange={(e) =>
+                              setSelectedCimLayers(
+                                e.target.checked
+                                  ? [...selectedCimLayers, layer.name]
+                                  : selectedCimLayers.filter(
+                                      (name) => name !== layer.name,
+                                    ),
+                              )
+                            }
+                            disabled={disabled}
+                          />
+                          <span className="font-mono">{layer.name}</span>
+                          <span className="ml-auto text-muted-foreground">
+                            {layer.type} {layer.input_shape.join("×")} →{" "}
+                            {layer.output_shape.join("×")}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <UsbFields usb={usb} setUsb={setUsb} disabled={disabled} />
+                <Button
+                  type="submit"
+                  disabled={
+                    disabled ||
+                    !weights ||
+                    !dataset ||
+                    (hybridMode && !selectedCimLayers.length)
+                  }
+                >
+                  {pending ? (
+                    <LoaderCircle className="animate-spin" />
+                  ) : (
+                    <FolderOpen />
+                  )}
+                  导入模型与测试集
+                </Button>
+              </form>
+            ) : (
+              <div className="space-y-3 text-xs">
+                <p className="break-all text-muted-foreground">
+                  <span className="mr-2 font-medium text-foreground">权重</span>
+                  {task?.weights}
+                </p>
+                <p className="break-all text-muted-foreground">
+                  <span className="mr-2 font-medium text-foreground">
+                    测试集
+                  </span>
+                  {task?.dataset}
+                </p>
+                <p className="text-muted-foreground">
+                  <span className="mr-2 font-medium text-foreground">
+                    执行模式
+                  </span>
+                  {task?.execution_mode === "hybrid"
+                    ? `混合执行：${task.cim_layers?.join(", ")}`
+                    : "CIM 执行"}
+                </p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="-ml-3"
+                  disabled={disabled}
+                  onClick={() => setShowImport(true)}
+                >
+                  <FolderOpen />
+                  更换输入 / 新建测试
+                </Button>
+              </div>
+            )}
+            <div className="mt-5 border-t border-border pt-4 text-xs">
+              <span className="text-muted-foreground">
+                固定输入{" "}
+                <code className="ml-2 rounded bg-muted px-2 py-1 text-foreground">
+                  32 × 1 × 2 × 128 × 128
+                </code>
+              </span>
+            </div>
+            <div className="mt-5 flex items-center justify-between gap-3">
+              <Button
+                variant="outline"
+                disabled={disabled || !task || task.compiled}
+                onClick={() =>
+                  void operate("/api/action", { action: "compile" })
+                }
+              >
+                {preparing ? (
+                  <LoaderCircle className="animate-spin" />
+                ) : (
+                  <Cpu />
+                )}
+                {preparing
+                  ? task?.cancel_requested
+                    ? "正在停止"
+                    : status
+                  : task?.compiled
+                    ? "编译已就绪"
+                    : "编译模型"}
+              </Button>
+              <div className="text-right">
+                <p className="number mt-1 text-sm font-medium">
+                  {seconds(task?.compile_seconds)}
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="flex flex-col">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <h2 className="flex items-center gap-2.5 text-base font-semibold">
+                <Activity size={19} className="text-primary" />
+                运行控制
+              </h2>
+              <span className="eyebrow">02 / 运行</span>
+            </div>
+          </CardHeader>
+          <CardContent className="flex flex-1 flex-col">
+            <div className="flex min-h-7 items-center justify-between">
+              {!preparing && (
+                <span className="inline-flex items-center gap-2 rounded-md bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-primary">
+                  {active ? (
+                    <LoaderCircle size={13} className="animate-spin" />
+                  ) : (
+                    <span className="size-1.5 rounded-full bg-current" />
+                  )}
+                  {task?.cancel_requested ? "正在停止" : status}
+                </span>
+              )}
+              <span className="ml-auto text-xs text-muted-foreground">
+                {task?.total ?? "—"} 个测试样本
+              </span>
+            </div>
+            <div className="mb-3 mt-8 flex items-end justify-between">
+              <p className="number">
+                <span className="text-4xl font-semibold tracking-tight">
+                  {task?.completed ?? 0}
+                </span>
+                <span className="ml-2 text-lg text-muted-foreground">
+                  / {task?.total ?? "—"} 已完成
+                </span>
+              </p>
+              <span className="number text-sm font-medium text-primary">
+                {progress.toFixed(0)}%
+              </span>
+            </div>
+            <Progress value={progress} aria-label="测试进度" />
+            <div className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Clock3 size={13} />
+              {task?.status === "running"
+                ? `预计剩余 ${duration(task.eta_seconds)}`
+                : task?.status === "completed"
+                  ? "全部样本已保存"
+                  : "每完成一个样本，自动保存对比结果"}
+            </div>
+            <div className="mt-7 flex flex-wrap gap-2">
+              <Button
+                disabled={
+                  disabled ||
+                  !task ||
+                  finished ||
+                  (!task.compiled &&
+                    !["cancelled", "interrupted", "ready"].includes(
+                      task.status,
+                    ))
+                }
+                onClick={() => void operate("/api/action", { action: "full" })}
+              >
+                {task?.completed ? <RotateCcw /> : <Play />}
+                {task?.completed || task?.status === "interrupted"
+                  ? "继续测试"
+                  : "开始测试"}
+              </Button>
+              <Button
+                variant="outline"
+                disabled={disabled || !task?.compiled || finished}
+                onClick={() =>
+                  void operate("/api/action", { action: "single" })
+                }
+              >
+                运行一个样本
+                <ArrowRight />
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={
+                  !active || pending || !connected || task?.cancel_requested
+                }
+                onClick={() => void operate("/api/cancel")}
+              >
+                <Square />
+                取消
+              </Button>
+            </div>
+            <div className="mt-auto pt-7">
+              <div className="flex items-start gap-2 rounded-lg bg-muted/60 p-3 text-xs leading-6 text-muted-foreground">
+                <CircleHelp size={15} className="mt-1 shrink-0" />
+                <p>
+                  刷新页面不会停止计算。取消后可继续；服务重启后，续跑会重新编译。
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+      <div className="mb-5 mt-9 flex items-center justify-between">
+        <h2 className="text-lg font-semibold">
+          结果对比{" "}
+          <span className="ml-3 text-xs font-normal text-muted-foreground">
+            基于 {task?.completed ?? 0} 个已完成样本
+          </span>
+        </h2>
+        {!!task?.completed && (
+          <Button asChild variant="outline" size="sm">
+            <a href="/api/results.csv" download>
+              <ArrowDownToLine />
+              导出 CSV
+            </a>
+          </Button>
+        )}
+      </div>
+      <div className="mb-6 grid gap-5 sm:grid-cols-2">
+        {(["original", "cim"] as const).map((side) => {
+          const summary = task?.totals[side];
+          return (
+            <Card
+              key={side}
+              className={side === "cim" ? "border-blue-200" : ""}
+            >
+              <CardContent className="pt-5">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold">
+                    {side === "original" ? "软件参考" : "CIM 板卡"}
+                  </h3>
+                  <span className="rounded-md bg-muted px-2 py-1 text-[13px] text-muted-foreground">
+                    {side === "original" ? "软件参考" : "CIM 板卡"}
+                  </span>
+                </div>
+                <div className="mt-5 grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-xs text-muted-foreground">总准确率</p>
+                    <p
+                      className={`number mt-2 text-3xl font-semibold tracking-tight ${side === "cim" ? "text-primary" : ""}`}
+                    >
+                      {summary?.accuracy == null
+                        ? "—"
+                        : `${(summary.accuracy * 100).toFixed(2)}%`}
+                    </p>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {summary?.correct ?? 0} / {task?.completed ?? 0} 识别正确
+                    </p>
+                  </div>
+                  <div className="border-l border-border pl-5">
+                    <p className="text-xs text-muted-foreground">推理总耗时</p>
+                    <p className="number mt-2 text-2xl font-semibold tracking-tight">
+                      {task?.completed ? seconds(summary?.seconds) : "—"}
+                    </p>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      各样本模型调用耗时之和
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+      <Card className="overflow-hidden">
+        <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold">逐样本测试结果</h3>
+          </div>
+          <label className="text-xs text-muted-foreground">
+            显示{" "}
+            <select
+              aria-label="筛选样本"
+              value={filter}
+              onChange={(e) => {
+                setFilter(e.target.value);
+                setPage(0);
+              }}
+              className="ml-2 rounded-lg border border-input bg-white px-3 py-2 text-foreground"
+            >
+              <option value="all">全部样本</option>
+              <option value="wrong">包含识别错误</option>
+              <option value="different">预测结果不一致</option>
+            </select>
+          </label>
+        </CardHeader>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="bg-muted/70 text-muted-foreground">
+              <tr>
+                <th>样本</th>
+                <th>真实类别</th>
+                <th>软件预测</th>
+                <th>耗时</th>
+                <th>CIM 板卡预测</th>
+                <th>耗时</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows
+                .slice(currentPage * 12, currentPage * 12 + 12)
+                .map((row) => (
+                  <tr key={row.index}>
+                    <td>
+                      <span className="number mr-3 text-muted-foreground">
+                        {String(row.index + 1).padStart(3, "0")}
+                      </span>
+                      <span title={row.sample}>{row.sample}</span>
+                    </td>
+                    <td className="whitespace-nowrap">
+                      {className(row.label)}
+                    </td>
+                    <td>
+                      <Verdict
+                        correct={row.original_correct}
+                        label={className(row.original_prediction)}
+                      />
+                    </td>
+                    <td className="number whitespace-nowrap">
+                      {seconds(row.original_seconds)}
+                    </td>
+                    <td>
+                      <Verdict
+                        correct={row.cim_correct}
+                        label={className(row.cim_prediction)}
+                      />
+                    </td>
+                    <td className="number whitespace-nowrap">
+                      {seconds(row.cim_seconds)}
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+        {!rows.length && (
+          <div className="grid place-items-center px-4 py-14 text-center">
+            <div className="mb-3 grid size-12 place-items-center rounded-full bg-muted text-muted-foreground">
+              <Layers3 size={23} />
+            </div>
+            <p className="text-sm font-medium">
+              {task?.completed
+                ? "没有符合筛选条件的样本"
+                : "等待第一个样本结果"}
+            </p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {task?.completed
+                ? "尝试切换为全部样本。"
+                : "运行一个样本即可查看识别结果"}
+            </p>
+          </div>
+        )}
+        <div className="flex items-center justify-between border-t border-border px-6 py-3 text-xs text-muted-foreground">
+          <span>共 {rows.length} 条 · 已自动保存至本地</span>
+          <div className="flex items-center gap-3">
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="上一页"
+              disabled={currentPage === 0}
+              onClick={() => setPage(currentPage - 1)}
+            >
+              <ChevronLeft />
+            </Button>
+            <span className="number">
+              {currentPage + 1} / {pages}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="下一页"
+              disabled={currentPage + 1 >= pages}
+              onClick={() => setPage(currentPage + 1)}
+            >
+              <ChevronRight />
+            </Button>
+          </div>
+        </div>
+      </Card>
+    </main>
+  );
 }
-function Verdict({ correct, label }: { correct: boolean; label: string }) { return <span className={`inline-flex items-center gap-2 whitespace-nowrap ${correct ? "text-emerald-700" : "text-rose-600"}`}>{correct ? <Check size={14} /> : <X size={14} />}{label}<span className="text-[10px]">{correct ? "正确" : "错误"}</span></span>; }
+function Verdict({ correct, label }: { correct: boolean; label: string }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-2 whitespace-nowrap ${correct ? "text-emerald-700" : "text-rose-600"}`}
+    >
+      {correct ? <Check size={14} /> : <X size={14} />}
+      {label}
+      <span className="text-[12px]">{correct ? "正确" : "错误"}</span>
+    </span>
+  );
+}

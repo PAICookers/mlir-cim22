@@ -32,22 +32,19 @@
 
 using namespace cim22::runtime;
 
-#ifndef _WIN32
 namespace {
 std::unique_ptr<detail::UsbDriver> injectedPlatformDriver;
 unsigned platformFactoryCalls = 0;
 } // namespace
 
 namespace cim22::runtime::detail {
-// Interpose the Linux shared-library factory to exercise the real public API
-// without opening hardware or adding a production test hook.
+// Inject a driver into the locally compiled production runtime for C ABI tests.
 LLVM_EXTERNAL_VISIBILITY std::unique_ptr<UsbDriver> createPlatformUsbDriver() {
   ++platformFactoryCalls;
   assert(injectedPlatformDriver);
   return std::move(injectedPlatformDriver);
 }
 } // namespace cim22::runtime::detail
-#endif
 
 namespace {
 constexpr std::array<uint64_t, 6> kResponse{
@@ -530,7 +527,6 @@ void testWriteFailureIsSticky() {
   assert(driverView->pendingWriteBytes() == 0);
 }
 
-#ifndef _WIN32
 void testFailedOpenDisablesDispatch() {
   class EarlyFailureDriver final : public FakeUsbDriver {
   public:
@@ -609,8 +605,6 @@ void testNativeClockConfiguration() {
   assert((response.pllVerified == std::array<bool, 3>{true, false, false}));
 }
 
-#endif
-
 void testExplicitReopenAfterFault() {
   auto driver = std::make_unique<FakeUsbDriver>(true);
   FakeUsbDriver *driverView = driver.get();
@@ -643,6 +637,102 @@ void testExplicitReopenAfterFault() {
   assert(std::string(error.data()).find("USB receive/transaction failed") !=
          std::string::npos);
   assert(!session.device && !session.runner);
+}
+
+void testSharedUsbConnection() {
+  bool driverDestroyed = false;
+  class LifetimeDriver final : public FakeUsbDriver {
+  public:
+    explicit LifetimeDriver(bool &destroyed) : destroyed_(destroyed) {}
+    ~LifetimeDriver() override { destroyed_ = true; }
+
+  private:
+    bool &destroyed_;
+  };
+  auto source = std::make_unique<Session>();
+  source->model.backend = RuntimeBackend::USB;
+  auto driver = std::make_unique<LifetimeDriver>(driverDestroyed);
+  auto *view = driver.get();
+  source->device = detail::createUsbCIMDevice(makeConfig(), std::move(driver));
+  expectSuccess(source->device->open());
+  source->hardware = {7, 3, 4, 5, 6};
+  source->runner =
+      std::make_unique<CIMBoardRunner>(*source->device, source->hardware);
+  std::weak_ptr<CIMDevice> connection = source->device;
+
+  auto target = std::make_unique<Session>();
+  target->model.backend = RuntimeBackend::USB;
+  std::array<char, 256> error{};
+  assert(cim22_session_share_usb(target.get(), source.get(), error.data(),
+                                 error.size()) == 0);
+  assert(source->device == target->device && target->runner);
+  assert(view->openCount() == 1);
+  assert(target->hardware.startup_delay_ms == 7);
+  assert(target->hardware.cache_write_delay_ms == 3);
+  assert(target->hardware.weight_write_delay_ms == 4);
+  assert(target->hardware.work_delay_ms == 5);
+  assert(target->hardware.readback_select_delay_ms == 6);
+  assert(cim22_session_share_usb(source.get(), target.get(), error.data(),
+                                 error.size()) != 0);
+  assert(std::string(error.data()).find("already configured") !=
+         std::string::npos);
+
+  CIM22UsbConfig replacement{};
+  assert(cim22_session_configure_usb(source.get(), &replacement, error.data(),
+                                     error.size()) != 0);
+  assert(std::string(error.data()).find("connection is shared") !=
+         std::string::npos);
+  assert(source->runner && target->runner && view->openCount() == 1);
+
+  // Both callers use one receive loop; whole programs serialize on the device.
+  auto invoke = [](Session &session) {
+    CIMDeviceResponse response;
+    expectSuccess(session.device->execute(makeProgram(), response));
+    assert(response.readbacks.size() == 1);
+  };
+  std::thread first([&] { invoke(*source); });
+  std::thread second([&] { invoke(*target); });
+  first.join();
+  second.join();
+  source.reset();
+  assert(!connection.expired() && !driverDestroyed);
+  invoke(*target);
+
+  Session peer;
+  peer.model.backend = RuntimeBackend::USB;
+  assert(cim22_session_share_usb(&peer, target.get(), error.data(),
+                                 error.size()) == 0);
+  view->setCorruptHeader(true);
+  CIMDeviceResponse response;
+  assert(takeError(target->device->execute(makeProgram(), response))
+             .find("reserved header bits") != std::string::npos);
+  assert(takeError(peer.device->execute(makeProgram(), response))
+             .find("session is faulted") != std::string::npos);
+  peer.runner.reset();
+  peer.device.reset();
+  Session refused;
+  refused.model.backend = RuntimeBackend::USB;
+  assert(cim22_session_share_usb(&refused, target.get(), error.data(),
+                                 error.size()) != 0);
+  assert(std::string(error.data()).find("faulted") != std::string::npos);
+  assert(!refused.device && !refused.runner);
+  target.reset();
+  assert(connection.expired() && driverDestroyed);
+
+  assert(cim22_session_share_usb(&refused, &refused, error.data(),
+                                 error.size()) != 0);
+  assert(cim22_session_share_usb(nullptr, &refused, error.data(),
+                                 error.size()) != 0);
+  Session simulator;
+  assert(cim22_session_share_usb(&simulator, &refused, error.data(),
+                                 error.size()) != 0);
+  assert(std::string(error.data()).find("USB model artifacts") !=
+         std::string::npos);
+  Session unconfigured;
+  unconfigured.model.backend = RuntimeBackend::USB;
+  assert(cim22_session_share_usb(&unconfigured, &refused, error.data(),
+                                 error.size()) != 0);
+  assert(std::string(error.data()).find("unconfigured") != std::string::npos);
 }
 
 void testRejectsUnsolicitedAndOverflowResponses() {
@@ -929,7 +1019,6 @@ void testWeightResidencyRejectsPartialWrite() {
   device->close();
 }
 
-#ifndef _WIN32
 void testBoardWeightResidency(cim22::execution::CIMDataType dataType) {
   using namespace cim22::execution;
   const bool bf16 = dataType == CIMDataType::BF16;
@@ -950,9 +1039,10 @@ void testBoardWeightResidency(cim22::execution::CIMDataType dataType) {
   const CIMTransaction first = makeTransaction(0);
   const CIMTransaction changed = makeTransaction(1);
   CIMWeightCatalog catalog;
+  CIMWeightCatalog secondCatalog;
   const std::array firstIdentity{catalog.intern(first.getStaticWeights()[0])};
   const std::array changedIdentity{
-      catalog.intern(changed.getStaticWeights()[0])};
+      secondCatalog.intern(changed.getStaticWeights()[0])};
   std::array<int8_t, 64> int8Input{};
   std::array<uint16_t, 64> bf16Input{};
   std::array<int32_t, 16> int8Output{};
@@ -968,17 +1058,30 @@ void testBoardWeightResidency(cim22::execution::CIMDataType dataType) {
     phases.push_back(phase);
     return phase == CIMDevicePhase::Configuration;
   };
-  auto device = detail::createUsbCIMDevice(config, std::move(driver));
-  CIMBoardRunner runner(*device, {0, 0, 0, 0, 0});
+  std::shared_ptr<CIMDevice> device =
+      detail::createUsbCIMDevice(config, std::move(driver));
+  Session firstModel;
+  firstModel.model.backend = RuntimeBackend::USB;
+  firstModel.device = device;
+  firstModel.hardware = {0, 0, 0, 0, 0};
+  firstModel.runner =
+      std::make_unique<CIMBoardRunner>(*device, firstModel.hardware);
+  Session secondModel;
+  secondModel.model.backend = RuntimeBackend::USB;
   expectSuccess(device->open());
+  std::array<char, 256> shareError{};
+  assert(cim22_session_share_usb(&secondModel, &firstModel, shareError.data(),
+                                 shareError.size()) == 0);
+  CIMBoardRunner &runner = *firstModel.runner;
 
   auto run = [&](const CIMTransaction &transaction,
                  llvm::ArrayRef<CIMWeightIdentity> identities,
                  BF16Compensation mode = BF16Compensation::None) {
     const size_t phaseBegin = phases.size();
     const size_t begin = view->writes().size();
-    expectSuccess(
-        runner.run(transaction, {inputs}, outputs, mode, nullptr, identities));
+    auto &modelRunner = &transaction == &changed ? *secondModel.runner : runner;
+    expectSuccess(modelRunner.run(transaction, {inputs}, outputs, mode, nullptr,
+                                  identities));
     assert(phases.size() == phaseBegin + 3);
     assert(phases[phaseBegin] == CIMDevicePhase::Configuration);
     assert(phases[phaseBegin + 1] == CIMDevicePhase::Work);
@@ -1055,8 +1158,6 @@ void testBoardWeightResidency(cim22::execution::CIMDataType dataType) {
   assert(std::count_if(afterFault.begin(), afterFault.end(), weightHead) == 1);
   device->close();
 }
-
-#endif
 
 void testClockCallbacks(int failingPhase) {
   auto config = makeConfig();
@@ -1290,10 +1391,9 @@ int main() {
   testTimeoutAndCancellation();
   testWriteFailureIsSticky();
   testExplicitReopenAfterFault();
-#ifndef _WIN32
+  testSharedUsbConnection();
   testFailedOpenDisablesDispatch();
   testNativeClockConfiguration();
-#endif
   testRejectsUnsolicitedAndOverflowResponses();
   testRejectsInvalidTransferConfig();
   testIgnoresInactivePlatformTimeouts();
@@ -1304,10 +1404,8 @@ int main() {
   testDrainsBeforeClose();
   testSupplierWeightPacketChunks();
   testWeightResidencyRejectsPartialWrite();
-#ifndef _WIN32
   testBoardWeightResidency(cim22::execution::CIMDataType::Int8);
   testBoardWeightResidency(cim22::execution::CIMDataType::BF16);
-#endif
   testNativeClockValidation();
   for (int phase : {-1, 0, 1, 2})
     testClockCallbacks(phase);

@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from spikingjelly.activation_based import functional, neuron, surrogate
 
+from cim22.backend import session_for_artifact
 from cim22.layers import (
     CimLayerInfo,
     LayerOffload,
@@ -23,6 +24,7 @@ from cim22.layers import (
 from cim22.runtime import MODEL_SUFFIX, compile_tool, runtime_library
 
 from .storage import Document, digest, read_json, save_json
+from .usb import parse_usb_config
 
 
 def _load_model_module(model_dir: Path) -> object:
@@ -78,13 +80,17 @@ class DvsEngine:
     """Own eager and hybrid compiled models for reset-per-sample inference."""
 
     def __init__(self, config: Document, directory: Path) -> None:
+        if config.get("runtime") != "usb":
+            raise ValueError("DVS 任务配置无效：runtime 必须为 usb")
+        self.usb_config = parse_usb_config(config.get("usb_config"))
         torch.set_num_threads(1)
         torch.set_num_interop_threads(1)
         torch.manual_seed(42)
         self.config = config
         self.directory = directory
-        self.cim_layers = tuple(config.get("cim_layers") or ())
+        self.cim_layers = tuple(config["cim_layers"] or ())
         identity = {
+            "usb_config": config["usb_config"],
             "torch": torch.__version__,
             "torch_mlir": version("torch-mlir"),
             "spikingjelly": version("spikingjelly"),
@@ -144,7 +150,7 @@ class DvsEngine:
         self.layer_compile_seconds: dict[str, float] = {}
         self.dispatch_count: int | None = None
         self.last_outputs: dict[str, torch.Tensor] = {}
-        self._libc = ctypes.CDLL(None)
+        self._libc = ctypes.CDLL(None) if sys.platform == "linux" else None
         validate_cim_layers(self.cim, config.get("cim_layers"))
 
     def load(self, index: int) -> torch.Tensor:
@@ -168,7 +174,8 @@ class DvsEngine:
             self.cim_layers,
             (sample,),
             artifact_dir=self.directory / "artifacts",
-            runtime=self.config.get("runtime", "simulator"),
+            runtime="usb",
+            usb_config=self.usb_config,
             reset=functional.reset_net,
         )
         self.layer_artifacts = offload.layer_artifacts
@@ -195,12 +202,14 @@ class DvsEngine:
                     fullgraph=True,
                     dynamic=False,
                     options={
-                        "runtime": self.config.get("runtime", "simulator"),
+                        "runtime": "usb",
+                        "usb_config": self.usb_config,
                         "artifact_dir": artifact_dir,
                     },
                 )
                 output = self.compiled(sample)
                 self.prediction(output)
+            self._check_dispatch()
             elapsed = time.perf_counter() - started
             functional.reset_net(self.cim)
         self.trim()
@@ -208,6 +217,16 @@ class DvsEngine:
         if not self.artifacts:
             raise RuntimeError(f"编译未生成模型 {MODEL_SUFFIX}")
         return elapsed
+
+    def _check_dispatch(self) -> None:
+        # A valid Host-only artifact does not establish CIM board execution.
+        if self.cim_layers:
+            self.dispatch_count = self.compiled.dispatch_count
+        else:
+            session = session_for_artifact(self.directory / "artifacts")
+            self.dispatch_count = session.dispatch_count if session else 0
+        if not self.dispatch_count:
+            raise RuntimeError("模型未执行 CIM 板卡计算，请检查编译产物")
 
     @staticmethod
     def prediction(output: torch.Tensor) -> int:
@@ -234,8 +253,7 @@ class DvsEngine:
                     raise RuntimeError(
                         "样本触发额外编译，未计入结果；请重新导入"
                     )
-                if getattr(self, "cim_layers", ()):
-                    self.dispatch_count = self.compiled.dispatch_count
+                self._check_dispatch()
             prediction = self.prediction(output)
         self.trim()
         return prediction, elapsed
