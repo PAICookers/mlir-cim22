@@ -1,5 +1,6 @@
 """Native model publication, typed boundaries and software execution."""
 
+import ctypes
 import os
 import re
 import subprocess
@@ -13,7 +14,7 @@ import pytest
 import torch
 
 from cim22.compiler import _compile_linalg, _emit_object
-from cim22.runtime import MODEL_SUFFIX, Session, runtime_library
+from cim22.runtime import MODEL_SUFFIX, Session, _load_library, runtime_library
 
 from ._generated import cim22_model_pb2 as proto
 
@@ -24,6 +25,23 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.usefixtures("native_runtime"),
 ]
+
+
+def test_runtime_library_load_is_process_local(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Runtime loading must not publish native symbols process-wide."""
+    path = tmp_path / "libcim22_runtime.so"
+    calls: list[tuple[str, int]] = []
+    marker = object()
+
+    def load(value: str, *, mode: int) -> object:
+        calls.append((value, mode))
+        return marker
+
+    monkeypatch.setattr(ctypes, "CDLL", load)
+    assert _load_library(path) is marker
+    assert calls == [(str(path), getattr(ctypes, "RTLD_LOCAL", 0))]
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="ELF export policy")

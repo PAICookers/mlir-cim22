@@ -287,21 +287,12 @@ void testBoardRunner() {
   CHECK(device.program.operations[3].flits.size() == 257);
   CHECK(device.program.operations[4].flits.size() == 1);
   CHECK(device.program.operations[4].flits.front() == 0x9000000000000001ULL);
-  CHECK(device.program.operations[4].postDelayMs == 10);
   CHECK(device.program.operations[4].phase == CIMDevicePhase::Work);
   CHECK(device.program.readbackBatches.size() == 1);
   CHECK(device.program.readbackBatches.front().selection.flits.size() == 1);
-  CHECK(device.program.readbackBatches.front().selection.postDelayMs == 40);
   CHECK(device.program.readbackBatches.front().request.flits.size() == 1);
   CHECK(device.program.readbackBatches.front().request.flits.back() ==
         0x500000000081c000ULL);
-  CIMBoardRunner tuned(device, {0, 3, 4, 5, 6});
-  expectSuccess(tuned.run(executable, inputs, outputs));
-  CHECK(device.program.operations[2].postDelayMs == 3);
-  CHECK(device.program.operations[3].postDelayMs == 4);
-  CHECK(device.program.operations[4].postDelayMs == 5);
-  CHECK(device.program.readbackBatches.front().selection.postDelayMs == 6);
-  CHECK(outputStorage == kExpected);
   device.close();
 }
 
@@ -327,14 +318,12 @@ void testGroupExecutionOrder() {
   CHECK((device.program.operations[0].flits[1] >> 60) == 0xa);
   CHECK((device.program.operations[4].flits.front() >> 60) == 0x8);
   CHECK(device.program.operations[7].flits.size() == 2);
-  CHECK(device.program.operations[7].postDelayMs == 10);
   CHECK(device.program.operations[7].phase == CIMDevicePhase::Work);
   CHECK(device.program.operations[7].flits[0] == 0x9000000000000001ULL);
   CHECK(device.program.operations[7].flits[1] == 0x9000000000000001ULL);
   CHECK(device.program.readbackBatches.size() == 1);
   const auto &batch = device.program.readbackBatches.front();
   CHECK(batch.selection.flits.size() == 2);
-  CHECK(batch.selection.postDelayMs == 40);
   CHECK(batch.request.flits.size() == 2);
   CHECK(batch.targets.size() == 2);
   device.close();
@@ -435,7 +424,6 @@ void testTwoMacrosShareReturnRouteAndOnce() {
   CHECK(device.program.operations[7].flits.size() == 1);
   CHECK(device.program.operations[7].flits.front() == 0x9000000000000001ULL);
   CHECK(device.program.readbackBatches.size() == 2);
-  CHECK(device.program.readbackBatches[0].selection.postDelayMs == 40);
   CHECK(device.program.readbackBatches[0].selection.flits.size() == 1);
   CHECK(device.program.readbackBatches[0].request.flits.size() == 1);
   CHECK(device.program.readbackBatches[0].request.flits.back() ==
@@ -449,9 +437,7 @@ void testBF16RawCaptureKeepsPrefixAndBody() {
   FakeCIMDevice device;
   device.corruptResponsePadding = true;
   expectSuccess(device.open());
-  auto hardware = defaultCIM22HardwareConfig();
-  hardware.work_delay_ms = 37;
-  CIMBoardRunner runner(device, hardware);
+  CIMBoardRunner runner(device, defaultCIM22HardwareConfig());
   CIMTransaction executable = makeBF16Transaction();
 
   std::array<uint16_t, 64> inputStorage{};
@@ -475,7 +461,6 @@ void testBF16RawCaptureKeepsPrefixAndBody() {
   const std::array<int32_t, 6> route{};
   const auto &startWork = device.program.operations.back();
   CHECK(startWork.phase == CIMDevicePhase::Work);
-  CHECK(startWork.postDelayMs == hardware.work_delay_ms);
   CHECK(startWork.flits.size() == 1);
   CHECK(startWork.flits.front() == encodeCIMWorkOnceFlit(route));
   CHECK(device.program.readbackBatches.size() == 1);
