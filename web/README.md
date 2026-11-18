@@ -1,9 +1,9 @@
-# CIM22 编译验证工作台
+# CIM22 本地编译验证工作台
 
 这是一个面向 Linux x86-64 和 Windows x64 的本地 Web 界面，提供四个独立入口：
 
-- **TensorFlow**：验证本软件对 TensorFlow 的功能支持。
-- **PyTorch**：验证本软件对 PyTorch 的功能支持。
+- **TensorFlow**：验证 TensorFlow 框架支持。
+- **PyTorch**：验证 PyTorch 框架支持。
 - **DVS 应用**：“DVS 模型编译与执行”页面提供模型导入、编译、执行和结果对比。
 - **MNIST 训练**：配置并训练两层全连接模型，查看训练日志与结果。
 
@@ -14,52 +14,44 @@
 TensorFlow 和 PyTorch 页面在开始编译前选择 `软件仿真` 或 `CIM 板卡`，
 默认是软件仿真。USB 模式复用 Python API 的 `UsbConfig` 参数，页面会
 校验 VID、PID、端点、设备选择和时序；它需要已连接且有访问权限的 CIM 板卡。
-仿真结果不能作为物理板卡执行证据。
 
 ## 启动
 
-请先按 [Python 安装说明](../python/README.md#用户快速开始) 使用 uv 创建
-Python 3.12 环境，并安装项目 wheel 的 `[web,tensorflow]` extra：
+先完成 [Python 快速开始](../python/README.md#快速开始)，在自己的
+应用目录中创建虚拟环境并安装两个 wheel。Web 需要额外的 CPU torchvision、服务端与
+TensorFlow 依赖；在同一目录执行，将占位文件名替换为实际下载文件名：
 
 ```sh
-uv venv --python 3.12 .venv
-uv pip install --python .venv --index-url https://download.pytorch.org/whl/cpu \
-  "torch>=2.14,<3"
-uv pip install --python .venv /path/to/torch_mlir-20261101-<platform>.whl
-uv pip install --python .venv \
-  "/path/to/mlir_cim22-<version>-<platform>.whl[web,tensorflow]"
+uv pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.14,<3" "torchvision>=0.29,<0.30"
+uv pip install "wheels/<cim22-wheel>.whl[web,tensorflow]" ml_dtypes
+uv pip check
 ```
 
 `--model-dir` 指向只读的 DVS 模型包，目录至少包含以下路径：
 
 ```text
 model-package/
+├── model_mobilenet_snn_deploy.py
 ├── weights/dvsgesture_mobilenet_snn_qat_int8.pt
 └── data/test/
 ```
 
-启动服务：
+启动服务，使用实际模型包和仓库路径：
 
 ```sh
-cim22-web --model-dir /path/to/model-package
+uv run cim22-web --model-dir /path/to/model-package --examples-dir /path/to/mlir-cim22/python/examples
 ```
 
-服务默认从源码树中的 `python/examples/` 查找框架示例。使用安装 wheel 或
-其他目录时，可以显式指定：
+wheel 不包含框架示例脚本；`--examples-dir` 应指向仓库的 `python/examples/`。
 
-```sh
-cim22-web --model-dir /path/to/model-package \
-  --examples-dir /path/to/mlir-pku-cim22/python/examples
-```
-
-Windows 使用 `.venv\\Scripts\\cim22-web.exe`。打开
-<http://127.0.0.1:8000>，先在页面中确认 `/api/state` 返回成功，再选择
+打开
+[http://127.0.0.1:8000](http://127.0.0.1:8000)，先在页面中确认 `/api/state` 返回成功，再选择
 PyTorch、TensorFlow、DVS 或 MNIST 操作。结果、日志和调试产物写入 `--data-dir`，默认
-为启动时工作目录下的 `./cim22-web-data`。同一个结果目录只能由一个服务使用。
+为启动时工作目录下的 `./cim22-web`。同一个结果目录只能由一个服务使用。
 
 TensorFlow 和 PyTorch 页面默认使用 `simulator`。选择 USB 前，先确认板卡、
 驱动和 `UsbConfig` 字段已经按 [Python 配置说明](../python/README.md#usb-与-pll-配置)
-准备好。软件仿真结果不能替代物理板卡证据。
+准备好。
 
 快速检查服务和静态页面：
 
@@ -96,31 +88,75 @@ Tailwind CSS 4 的 `@theme`。运行 `pnpm lint:fix` 自动修复可修复的问
 列出固定模型可选的 `Conv2d`、`Linear` 叶子层及实际多步输入/输出尺寸：
 
 ```sh
-cim22-web --model-dir /path/to/model-package --list-cim-layers
-cim22-web --model-dir /path/to/model-package --cim-layers classifier.head.5
+uv run cim22-web --model-dir /path/to/model-package --list-cim-layers
+uv run cim22-web --model-dir /path/to/model-package --cim-layers classifier.head.5
 ```
 
 `--cim-layers` 接受一个或多个不同的完整模块名，作为新任务的默认选择。
 DVS 导入表单可以修改选择，或关闭指定层模式以使用原整模型路径。
-选定层经 CIM 后端执行，其余层由 PyTorch CPU 执行；当前 DVS 页面继续使用
-`simulator`，框架示例页面的 USB 配置语义不变。
+选定层在 CIM 板卡上执行，其余层由 PyTorch CPU 执行。DVS 新任务固定使用
+`usb`，整模型与指定层模式均使用导入表单中的板卡配置；板卡连接或计算失败
+会报错，不会回退到软件仿真。编译时的预热也会访问板卡。
+
+导入前确认板卡已连接、驱动及访问权限就绪，并核对 VID/PID、端点和等待参数。
+页面使用预先配置的板卡时钟，不会自动设置 PLL；等待时间应与实际时钟及已验证
+的板卡配置匹配。多个选定层共享同一板卡连接、物理权重状态及 PLL 控制器，
+适用于 Linux 和 Windows。API 也可通过 `usb_config.pll_port` 和 `clock_frequency_mhz`
+使用现有串口时钟控制接口，详见 [USB 与 PLL 配置](../python/README.md#usb-与-pll-配置)。
 
 `POST /api/import` 的 `cim_layers` 字段省略时使用服务默认值，`null` 表示整模型，
 非空字符串列表表示指定层。空列表、重复、未知、非叶子、不支持的模块类型及
-模块别名均会被拒绝。`GET /api/cim-layers` 返回候选层及尺寸。
+模块别名均会被拒绝。`usb_config` 为必填的 USB 参数对象，与框架页面使用同一
+字段和校验规则。`GET /api/cim-layers` 返回候选层及尺寸。
 
 任务目录的 `config.json` 和 `state.json` 保存实际层名、运行模式和后端。
-每层产物及 IR 位于 `artifacts/<完整层名中的点替换为双下划线>/`；
+每层产物及 IR 位于 `artifacts/<完整层名>/`（特殊路径字符使用 URL 编码）；
 状态记录每层编译及预热耗时、最新执行的 CIM 调用总数和最新样本输出最大绝对误差。
 编译与预热不计入正式样本推理耗时。选中任一层没有编译产物或 CIM 调用
-会报错，正式样本触发新编译也会报错。软件结果不能作为实板执行证据。
+会报错，正式样本触发新编译也会报错。整模型路径同样要求实际 CIM 调用。
+DVS 页面固定使用真实 CIM 板卡执行编译后的模型，任务的 `runtime` 必须为 `usb`，且
+`usb_config` 必须符合板卡配置要求。页面中的“软件参考”是原始 PyTorch 模型的
+完整 CPU eager 计算，不是 CIM 软件仿真；“CIM 结果”来自编译后模型的实际板卡执行。
+点击运行后，浏览器请求由 Python 服务接收，服务启动 DVS worker；worker 对每个样本
+先执行完整 PyTorch CPU 模型，再执行编译后的板卡模型并保存两侧结果。
+无效配置在启动时直接报错。硬件错误发生时不保存未完成的样本对；
+排除故障后可续跑，改变输入或配置则需要新建任务。
+启动框架页面的板卡任务时，服务会释放闲置的 DVS 板卡连接并保留已保存的样本结果。
+切回 DVS 后，继续测试会重新编译和预热。
+
+### DVS 命令行执行
+
+`cim22-dvs` 在 Linux 和 Windows 上运行与页面相同的固定 DVS 模型、预热和
+逐样本 PyTorch CPU 参考/板卡结果对比，默认执行一个样本。它不是用户模型的通用命令行导入器；
+用户模型使用 [SDK 分层接口](../python/README.md#按模块名选择-cim-执行)。
+
+先通过 `--list-cim-layers` 查看实际层名，再传入一个或多个不同的层：
+
+```sh
+uv run cim22-dvs --model-dir ./model-package --list-cim-layers
+uv run cim22-dvs --model-dir ./model-package --usb-config ./usb.json --cim-layers classifier.head.2 classifier.head.5 --action single --output ./dvs-board-results
+```
+
+`usb.json` 是 [UsbConfig 字段](../python/README.md#usb-与-pll-配置) 对应的 JSON
+对象。`timing` 使用毫秒整数；串口时钟可使用 `pll_port`（Linux 设备路径或
+Windows COM 名称）和 `clock_frequency_mhz`。不指定串口则预先手动配置时钟。
+`--weights` 和 `--dataset` 可覆盖模型包中的默认权重和 `data/test` 目录。
+省略 `--cim-layers` 使用整模型模式。`--action compile` 仅编译与预热，
+`single` 运行一个样本，`full` 运行测试集。编译预热同样会访问板卡。
+
+输出目录可以是已有目录。重新运行会替换上次 CLI 生成的配置、状态、结果和
+`artifacts/` 产物子目录，其他文件会保留。逐样本结果写入 `results.csv`，汇总写入
+`summary.json`。
+错误以非零退出码结束，状态记为 `interrupted`，未完成的软件/板卡结果对不写入
+CSV。CLI 每次新建运行；需要取消后续跑时使用 Web UI。
+两平台均可使用 `uv run python -m cim22.apps.dvs` 代替 `uv run cim22-dvs`。
 
 ### 分层执行的软件回归
 
 依赖和原生工具链就绪后，在 `python/` 执行：
 
 ```sh
-python -m pytest -q tests/test_dvs_layers.py
+uv run --no-sync python -m pytest -q tests/test_layers.py
 ```
 
 测试覆盖单层、连续两个 Linear 和中间保留 CPU Linear 的不连续选择，
