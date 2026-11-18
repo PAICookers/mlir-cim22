@@ -2,12 +2,16 @@
 
 import argparse
 import json
+import logging
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
 import torch
 from torch import nn
+
+logger = logging.getLogger(__name__)
 
 
 class SimpleModel(nn.Module):
@@ -33,11 +37,11 @@ def _usb_config(path: Path | None) -> object | None:
 
     fields = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(fields, dict):
-        raise ValueError("USB 配置必须是 JSON 对象")
+        raise ValueError("USB configuration must be a JSON object")
     if "timing" in fields:
         timing = fields["timing"]
         if not isinstance(timing, dict):
-            raise ValueError("timing 必须是 JSON 对象")
+            raise ValueError("timing must be a JSON object")
         fields["timing"] = CIMTimingConfig(**timing)
     return UsbConfig(**fields)
 
@@ -72,6 +76,8 @@ def run(
     """Run deterministic BF16 internal cases through PyTorch and CIM."""
     if runtime not in {"simulator", "usb"}:
         raise ValueError("runtime must be simulator or usb")
+    logger.info("Starting PyTorch example (runtime=%s)", runtime)
+    logger.info("Model: BF16 Conv2d -> ReLU -> Linear; inputs: 5 fixed cases")
     output.mkdir(parents=True, exist_ok=True)
     model = SimpleModel().cpu().eval()
     with torch.no_grad():
@@ -86,6 +92,7 @@ def run(
     }
     if usb_config is not None:
         options["usb_config"] = usb_config
+    logger.info("Compiling and running inference")
     started = time.perf_counter()
     compiled = torch.compile(
         model,
@@ -115,6 +122,11 @@ def run(
                     "max_abs_error": float(difference),
                 }
             )
+            logger.info(
+                "Output matches reference: case=%s, max_abs_error=%g",
+                case_name,
+                difference,
+            )
     compile_seconds = time.perf_counter() - started
     # shortcut: torch.compile hides dispatch_count; expose it when the backend
     # gains a stable public session hook.
@@ -137,9 +149,13 @@ def run(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    print(f"CIM22 torch.compile {runtime} BF16 Conv2d/ReLU/Linear checks passed.")
-    print(f"Cases: {len(rows)}; dispatches: {dispatch_count}")
-    print(f"Model, debug IR and result.json: {output.resolve()}")
+    logger.info(
+        "Completed inference (cases=%d, outputs match reference)", len(rows)
+    )
+    logger.info("CIM dispatch count: unavailable")
+    logger.info("Model directory: %s", output)
+    logger.info("IR directory: %s", output / "ir")
+    logger.info("Results saved to %s", destination)
     return result
 
 
@@ -161,7 +177,9 @@ def main(
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runtime", choices=("simulator", "usb"), default="simulator")
+    parser.add_argument(
+        "--runtime", choices=("simulator", "usb"), default="simulator"
+    )
     parser.add_argument("--output", type=Path, default=Path("outputs/torch"))
     parser.add_argument("--usb-config", type=Path)
     parser.add_argument("--result-json", type=Path)
@@ -169,9 +187,18 @@ def _parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+        )
+    )
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
     args = _parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    with (args.output / "compile.log").open("w", encoding="utf-8") as log:
+    with (args.output / "compile.log").open("a", encoding="utf-8") as log:
         import os
 
         saved_stderr = os.dup(2)
@@ -183,6 +210,12 @@ if __name__ == "__main__":
                 usb_config=_usb_config(args.usb_config),
                 result_json=args.result_json,
             )
+        except Exception:
+            logger.error(
+                "Example failed; see traceback and %s",
+                args.output / "compile.log",
+            )
+            raise
         finally:
             os.dup2(saved_stderr, 2)
             os.close(saved_stderr)

@@ -1,15 +1,18 @@
 # CIM22 编译验证工作台
 
-这是一个面向 Linux x86-64 和 Windows x64 的本地 Web 界面，提供三个独立入口：
+这是一个面向 Linux x86-64 和 Windows x64 的本地 Web 界面，提供四个独立入口：
 
-- **TensorFlow**：固定运行 `python/examples/tensorflow_compile.py`，验证
-  `tf.function` 编译和执行，使用多维 INT8 BatchMatMul 用例。
-- **PyTorch**：固定运行 `python/examples/torch_compile.py`，验证
-  `torch.compile` 编译和执行 BF16 Conv2d、ReLU、Linear 用例。
-- **DVS 应用**：导入固定 DVS 模型和测试集，对比纯软件参考与 CIM 软件结果。
+- **TensorFlow**：验证本软件对 TensorFlow 的功能支持。
+- **PyTorch**：验证本软件对 PyTorch 的功能支持。
+- **DVS 应用**：“DVS 模型编译与执行”页面提供模型导入、编译、执行和结果对比。
+- **MNIST 训练**：配置并训练两层全连接模型，查看训练日志与结果。
 
-TensorFlow 和 PyTorch 页面在开始编译前选择 `CIM 软件仿真` 或 `CIM USB
-板卡`，默认是软件仿真。USB 模式复用 Python API 的 `UsbConfig` 参数，页面会
+框架页面的参考结果由软件直接计算，CIM 结果由编译后的模型执行得到。
+“CIM 调用次数”表示实际调用次数；接口未提供该信息时显示“—”。
+框架运行日志和 MNIST 训练日志均显示完整已保存输出，可滚动查看和下载。
+
+TensorFlow 和 PyTorch 页面在开始编译前选择 `软件仿真` 或 `CIM 板卡`，
+默认是软件仿真。USB 模式复用 Python API 的 `UsbConfig` 参数，页面会
 校验 VID、PID、端点、设备选择和时序；它需要已连接且有访问权限的 CIM 板卡。
 仿真结果不能作为物理板卡执行证据。
 
@@ -51,8 +54,8 @@ cim22-web --model-dir /path/to/model-package \
 
 Windows 使用 `.venv\\Scripts\\cim22-web.exe`。打开
 <http://127.0.0.1:8000>，先在页面中确认 `/api/state` 返回成功，再选择
-PyTorch、TensorFlow 或 DVS 操作。结果、日志和调试产物写入 `--data-dir`，默认
-为 `~/.local/share/cim22-web`。同一个结果目录只能由一个服务使用。
+PyTorch、TensorFlow、DVS 或 MNIST 操作。结果、日志和调试产物写入 `--data-dir`，默认
+为启动时工作目录下的 `./cim22-web-data`。同一个结果目录只能由一个服务使用。
 
 TensorFlow 和 PyTorch 页面默认使用 `simulator`。选择 USB 前，先确认板卡、
 驱动和 `UsbConfig` 字段已经按 [Python 配置说明](../python/README.md#usb-与-pll-配置)
@@ -67,14 +70,25 @@ curl -fsS http://127.0.0.1:8000/ | head
 
 ## 开发
 
-维护者按 [源码构建说明](../docs/BUILDING.md) 准备依赖后，在 `web/` 执行：
+前端开发工具需要 Node.js `^22.22.2 || ^24.15.0 || >=26`（CI 使用 Node.js 24），
+并使用 `package.json` 声明的 pnpm 版本。维护者按
+[源码构建说明](../docs/BUILDING.md) 准备依赖后，在 `web/` 执行：
 
 ```sh
 pnpm install --frozen-lockfile
+pnpm format:check
+pnpm lint
 pnpm build
 pnpm test
 ```
 
+使用 `pnpm format` 统一源码、测试和配置文件的排版；`pnpm format:check` 只检查。
+Prettier 使用两空格缩进、双引号、分号和 LF 换行，按 80 列自动折行。
+ESLint 检查 TypeScript、React Hooks 和配置文件，Stylelint 检查 CSS，并允许
+Tailwind CSS 4 的 `@theme`。运行 `pnpm lint:fix` 自动修复可修复的问题，再执行
+`pnpm format`。生成目录与锁文件不参与格式化。
+
+前端依赖以 `pnpm-lock.yaml` 为准，安装与更新统一使用 pnpm。
 构建结果写入 `python/cim22/web/static/`，Python 服务不需要常驻 Node.js。
 
 ## DVS 指定层执行
@@ -97,8 +111,8 @@ DVS 导入表单可以修改选择，或关闭指定层模式以使用原整模�
 
 任务目录的 `config.json` 和 `state.json` 保存实际层名、运行模式和后端。
 每层产物及 IR 位于 `artifacts/<完整层名中的点替换为双下划线>/`；
-状态记录每层编译及预热耗时、最新调用的 dispatch 总数和最新样本输出最大绝对误差。
-编译与预热不计入正式样本推理耗时。选中任一层没有 artifact 或 CIM dispatch
+状态记录每层编译及预热耗时、最新执行的 CIM 调用总数和最新样本输出最大绝对误差。
+编译与预热不计入正式样本推理耗时。选中任一层没有编译产物或 CIM 调用
 会报错，正式样本触发新编译也会报错。软件结果不能作为实板执行证据。
 
 ### 分层执行的软件回归
@@ -111,7 +125,6 @@ python -m pytest -q tests/test_dvs_layers.py
 
 测试覆盖单层、连续两个 Linear 和中间保留 CPU Linear 的不连续选择，
 逐层检查真实 simulator dispatch、独立产物、重复执行及 CPU 数值对比。
-
 
 ## MNIST 模型训练
 
