@@ -5,8 +5,9 @@
   color: #182334;
   background: #f5f6f8;
   font-synthesis: none;
-  text-rendering: optimizeLegibility;
+  text-rendering: optimizelegibility;
   -webkit-font-smoothing: antialiased;
+
   --background: #fff;
   --foreground: #182334;
   --card: #fff;
@@ -20,6 +21,7 @@
   --ring: #94adfa;
   --destructive: #c94049;
 }
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -34,44 +36,54 @@
   --color-ring: var(--ring);
   --color-destructive: var(--destructive);
 }
+
 * {
   box-sizing: border-box;
 }
+
 body {
   margin: 0;
   min-width: 360px;
 }
+
 button,
 a,
 input,
 select {
   -webkit-tap-highlight-color: transparent;
 }
+
 button:not(:disabled),
 select {
   cursor: pointer;
 }
+
 .eyebrow {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.14em;
   color: #8490a3;
 }
+
 .number {
   font-variant-numeric: tabular-nums;
 }
+
 th {
   text-align: left;
   font-weight: 500;
   white-space: nowrap;
 }
+
 th,
 td {
   padding: 14px 18px;
 }
+
 tbody tr {
   border-top: 1px solid #eef0f5;
 }
+
 tbody tr:hover {
   background: #f9faff;
 }
