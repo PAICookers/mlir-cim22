@@ -107,7 +107,7 @@ uv pip install --python .venv "$CIM22_WHEEL[web,tensorflow]"
 
 Windows 使用 `./.venv/Scripts/cim22-web.exe`。浏览器打开
 <http://127.0.0.1:8000>。结果和调试文件默认写入
-`~/.local/share/cim22-web`，可用 `--data-dir` 指定其他目录。Web 页面中的
+启动时工作目录下的 `./cim22-web-data`，可用 `--data-dir` 指定其他目录。Web 页面中的
 PyTorch 和 TensorFlow 示例默认使用软件仿真，USB 模式需要已连接并有访问权限的板卡。
 
 示例显式选择软件运行时；默认运行时是 USB。浮点模型使用 FP32，显式 INT8 乘法配合 INT32 累加可走整数路径。
