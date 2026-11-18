@@ -117,13 +117,14 @@ test("framework verification starts the fixed example with simulator by default"
   });
   await page.goto("/#tensorflow");
   await expect(page.getByRole("heading", { name: "TensorFlow 编译验证" })).toBeVisible();
-  await expect(page.getByText("CIM 软件仿真", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "开始编译验证" }).click();
+  await expect(page.getByText("软件仿真", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "编译验证" }).click();
   await expect.poll(() => payload).toEqual({ framework: "tensorflow", runtime: "simulator" });
+  const fullLog = "first output\n" + "logged output\n".repeat(2000) + "ImportError: tensorflow is not installed";
   await page.evaluate((task) => {
     window.dispatchEvent(new CustomEvent("test:example-snapshot", { detail: { task } }));
-  }, { framework: "tensorflow", runtime: "simulator", status: "interrupted", log_text: "ImportError: tensorflow is not installed" });
-  await expect(page.getByText("ImportError: tensorflow is not installed")).toBeVisible();
+  }, { framework: "tensorflow", runtime: "simulator", status: "interrupted", log_text: fullLog });
+  await expect(page.locator("pre")).toHaveText(fullLog);
 });
 
 test("framework verification exposes the USB configuration", async ({
@@ -152,9 +153,9 @@ test("framework verification exposes the USB configuration", async ({
     });
   });
   await page.goto("/#tensorflow");
-  await page.getByRole("button", { name: "CIM USB 板卡" }).click();
-  await expect(page.getByText("USB 板卡配置", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "开始编译验证" }).click();
+  await page.getByRole("button", { name: "CIM 板卡" }).click();
+  await expect(page.getByText("板卡配置", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "编译验证" }).click();
   await expect.poll(() => payload?.runtime).toBe("usb");
   expect(payload?.usb_config).toMatchObject({
     vendor_id: 1204,
@@ -207,5 +208,5 @@ test("DVS layer discovery errors stay visible without crashing", async ({ page }
   await page.route("**/api/cim-layers", (route) => route.fulfill({ status: 409, json: { detail: "候选层读取失败" } }));
   await page.goto("/#dvs");
   await expect(page.getByRole("alert")).toContainText("候选层读取失败");
-  await expect(page.getByRole("heading", { name: "DVS 推理对比" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "DVS 模型编译与执行" })).toBeVisible();
 });
