@@ -42,11 +42,24 @@ def _load_library(path: Path) -> ctypes.CDLL:
 
 
 def _release_session(
-    library: ctypes.CDLL, handle: int, resources: ExitStack
+    library: ctypes.CDLL,
+    handle: int,
+    resources: ExitStack,
+    clock_lease: list[ClockResources] | None = None,
 ) -> None:
     # Windows cannot remove a model DLL until its native Session unloads it.
-    library.cim22_session_destroy(handle)
-    resources.close()
+    with clock_lease[0].lock if clock_lease else nullcontext():
+        library.cim22_session_destroy(handle)
+        resources.close()
+
+
+def _release_clock_lease(lease: list[ClockResources]) -> None:
+    # The mutable holder lets attach transfer ownership without capturing Session.
+    clock = lease[0]
+    with clock.lock:
+        clock.owners -= 1
+        if clock.owners == 0:
+            clock.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,6 +391,7 @@ class Session:
         self._library = _load_library(library)
         self._lock = threading.RLock()
         self._handle: int | None = None
+        self._invocation_count = 0
         lib = self._library
         signatures = {
             "destroy": ([ctypes.c_void_p], None),
@@ -424,9 +438,15 @@ class Session:
             raise RuntimeError(error.value.decode(errors="replace"))
         self._resources = ExitStack()
         self._clock_resources = ClockResources()
-        self._resources.callback(self._clock_resources.close)
+        self._clock_lease = [self._clock_resources]
+        self._resources.callback(_release_clock_lease, self._clock_lease)
         self._finalizer = weakref.finalize(
-            self, _release_session, lib, self._handle, self._resources
+            self,
+            _release_session,
+            lib,
+            self._handle,
+            self._resources,
+            self._clock_lease,
         )
         num_inputs = lib.cim22_session_num_inputs(self._handle)
         num_outputs = lib.cim22_session_num_outputs(self._handle)
@@ -458,8 +478,12 @@ class Session:
             RuntimeError: The Session is closed, the runtime rejects USB
                 configuration, or bridge setup fails.
         """
-        with self._lock:
+        with self._lock, self._clock_resources.lock:
             self._require_open()
+            if self._clock_resources.owners > 1:
+                raise RuntimeError(
+                    "Cannot reconfigure a shared USB connection; close attached Sessions first"
+                )
             native_config = _UsbConfig.from_config(config)
             pll = config.pll
             if config.clock_setting is not None and config.pll_port is not None:
@@ -531,6 +555,53 @@ class Session:
                     self._clock_resources.fail(failure)
                     raise
 
+    def share_usb(self, source: "Session") -> None:
+        """Attach an unconfigured USB model to another Session's connection.
+
+        Both models share transport, physical weight residency, fault and PLL
+        state. Closing either model leaves the other usable; the last model
+        releases the connection. Reconfiguration requires a single owner.
+        """
+        if not isinstance(source, Session):
+            raise TypeError("source must be a configured Session")
+        if source is self:
+            raise ValueError(
+                "Cannot share a USB connection with the same Session"
+            )
+        first, second = sorted((self, source), key=id)
+        with first._lock, second._lock, source._clock_resources.lock:
+            self._require_open()
+            source._require_open()
+            source._clock_resources.require_ready()
+            if self._library._handle != source._library._handle:
+                raise ValueError(
+                    "USB Sessions must use the same native runtime"
+                )
+            if self._clock_resources.configured:
+                raise RuntimeError("Target Session is already configured")
+            if not source._clock_resources.configured:
+                raise RuntimeError("Source USB Session is not configured")
+            try:
+                native = self._library.cim22_session_share_usb
+            except AttributeError as error:
+                raise RuntimeError(
+                    "runtime lacks shared USB support; reinstall mlir-cim22"
+                ) from error
+            native.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_char_p,
+                ctypes.c_size_t,
+            ]
+            native.restype = ctypes.c_int
+            error = ctypes.create_string_buffer(16384)
+            if native(self._handle, source._handle, error, len(error)):
+                raise RuntimeError(error.value.decode(errors="replace"))
+            _release_clock_lease(self._clock_lease)
+            self._clock_resources = source._clock_resources
+            self._clock_lease[0] = self._clock_resources
+            self._clock_resources.owners += 1
+
     def capture_usb(
         self, transaction: int, inputs: NDArray[np.uint16]
     ) -> NDArray[np.uint64]:
@@ -552,7 +623,7 @@ class Session:
             ValueError: The index is out of range or input layout is invalid.
             RuntimeError: The Session is closed or the native capture fails.
         """
-        with self._lock:
+        with self._lock, self._clock_resources.lock:
             self._require_open()
             self._clock_resources.require_ready()
             if type(transaction) is not int:
@@ -606,7 +677,7 @@ class Session:
     @property
     def dispatch_count(self) -> int:
         """Number of native runner dispatches in the latest invocation."""
-        with self._lock:
+        with self._lock, self._clock_resources.lock:
             self._require_open()
             return self._library.cim22_session_dispatch_count(self._handle)
 
@@ -629,7 +700,7 @@ class Session:
             ValueError: The input count, shape, alignment or layout is invalid.
             RuntimeError: The Session is closed or native execution fails.
         """
-        with self._lock:
+        with self._lock, self._clock_resources.lock:
             self._require_open()
             self._clock_resources.require_ready()
             if len(inputs) != len(self.input_shapes):
@@ -668,11 +739,12 @@ class Session:
                 if self._clock_resources.configured:
                     self._clock_resources.fail(failure)
                 raise failure
+            self._invocation_count += 1
             return outputs
 
     def close(self) -> None:
         """Release native code/resources; existing output buffers remain valid."""
-        with self._lock:
+        with self._lock, self._clock_resources.lock:
             if self._handle is not None:
                 # Cleanup can raise after native destruction; never reuse it.
                 self._handle = None
@@ -695,12 +767,16 @@ def _initialize_session(
     session: Session,
     usb_config: UsbConfig | None = None,
     resources: ExitStack | None = None,
+    *,
+    usb_session: Session | None = None,
 ) -> Session:
     """Adopt owned resources and configure a loaded Session; close on failure."""
     try:
         if resources is not None:
             session._resources.callback(resources.close)
-        if usb_config is not None:
+        if usb_session is not None:
+            session.share_usb(usb_session)
+        elif usb_config is not None:
             session.configure_usb(usb_config)
     except BaseException:
         session.close()

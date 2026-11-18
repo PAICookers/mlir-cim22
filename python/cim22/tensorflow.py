@@ -203,6 +203,8 @@ def compile(
         onnx.save_model(model, source)
         command = [
             sys.executable,
+            # Keep the working directory from shadowing the installed package.
+            "-P",
             "-m",
             "cim22._tensorflow_compile",
             str(source),
@@ -221,5 +223,6 @@ def compile(
             Session(shared),
             usb_config,
             cleanup.pop_all() if artifact_dir is None else None,
+            usb_session=options.get("usb_session"),
         )
         return CompiledModel(session, output_specs)

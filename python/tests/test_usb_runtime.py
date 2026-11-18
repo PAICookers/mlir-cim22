@@ -769,3 +769,196 @@ def test_reconfiguration_cleanup_error_requires_explicit_recovery(
         assert "close failed" in caught.value.__notes__[0]
     else:
         assert session._clock_resources.controller._closed
+
+
+def _mock_shared_sessions() -> tuple[
+    Session, Session, SimpleNamespace, list[str]
+]:
+    import weakref
+
+    from cim22.runtime import _release_clock_lease
+
+    events = []
+    library = SimpleNamespace(
+        _handle=789,
+        cim22_session_configure_usb_with_clock=Mock(return_value=0),
+        cim22_session_share_usb=Mock(return_value=0),
+        cim22_session_destroy=Mock(
+            side_effect=lambda handle: events.append(f"destroy:{handle}")
+        ),
+        cim22_session_invoke=Mock(return_value=0),
+        cim22_session_error=Mock(return_value=b"board failed"),
+    )
+    sessions = []
+    for handle in (123, 456):
+        session = Session.__new__(Session)
+        session._handle = handle
+        session._invocation_count = 0
+        session._library = library
+        session._lock = threading.RLock()
+        session._clock_resources = ClockResources()
+        session._clock_lease = [session._clock_resources]
+        session._resources = ExitStack()
+        session._resources.callback(_release_clock_lease, session._clock_lease)
+        session._finalizer = weakref.finalize(
+            session,
+            _release_session,
+            library,
+            handle,
+            session._resources,
+            session._clock_lease,
+        )
+        session.input_shapes = session.output_shapes = ()
+        session.input_dtypes = session.output_dtypes = ()
+        sessions.append(session)
+    return *sessions, library, events
+
+
+@pytest.mark.parametrize("release_source", ["close", "gc"])
+def test_shared_usb_keeps_clock_until_last_model_closes(
+    usb_config, pll_config, release_source
+):
+    import gc
+
+    source, target, library, events = _mock_shared_sessions()
+    source.configure_usb(replace(usb_config, pll=pll_config))
+    controller = source._clock_resources.controller
+    try:
+        target.share_usb(source)
+        assert target._clock_resources is source._clock_resources
+        assert target._clock_resources.owners == 2
+        library.cim22_session_configure_usb_with_clock.assert_called_once()
+        library.cim22_session_share_usb.assert_called_once()
+        with pytest.raises(RuntimeError, match="shared USB"):
+            source.configure_usb(usb_config)
+        assert not controller._closed
+        assert not source._clock_resources.failed
+        assert source() == target() == ()
+        if release_source == "close":
+            source.close()
+        else:
+            del source
+            gc.collect()
+        assert events == ["destroy:123"]
+        assert not controller._closed
+        assert target() == ()
+        target.close()
+        assert controller._closed
+        assert events == ["destroy:123", "destroy:456"]
+    finally:
+        if release_source == "close":
+            source.close()
+        target.close()
+
+
+def test_shared_usb_failure_faults_peers_and_attach_failure_is_atomic(
+    usb_config,
+):
+    source, target, library, _ = _mock_shared_sessions()
+    try:
+        source.configure_usb(usb_config)
+        library.cim22_session_share_usb.return_value = 1
+        with pytest.raises(RuntimeError):
+            target.share_usb(source)
+        assert source._clock_resources.owners == 1
+        assert target._clock_resources is not source._clock_resources
+        assert source() == ()
+        library.cim22_session_share_usb.return_value = 0
+        target.share_usb(source)
+        library.cim22_session_invoke.return_value = 1
+        with pytest.raises(RuntimeError, match="board failed"):
+            target()
+        with pytest.raises(RuntimeError, match="faulted"):
+            source()
+        source.close()
+        target.configure_usb(usb_config)
+        assert not target._clock_resources.failed
+    finally:
+        source.close()
+        target.close()
+
+
+def test_shared_usb_rejects_incompatible_or_unconfigured_source(usb_config):
+    source, target, library, _ = _mock_shared_sessions()
+    try:
+        with pytest.raises(ValueError, match="same Session"):
+            source.share_usb(source)
+        with pytest.raises(RuntimeError, match="not configured"):
+            target.share_usb(source)
+        source.configure_usb(usb_config)
+        target._library = SimpleNamespace(_handle=999)
+        with pytest.raises(ValueError, match="same native runtime"):
+            target.share_usb(source)
+        target._library = library
+        target.share_usb(source)
+        with pytest.raises(RuntimeError, match="already configured"):
+            target.share_usb(source)
+    finally:
+        source.close()
+        target.close()
+
+
+@pytest.mark.parametrize(
+    "runtime,config", [("simulator", None), ("usb", "config")]
+)
+def test_shared_session_options_reject_conflicts(usb_config, runtime, config):
+    from cim22.compiler import _validate_options
+
+    source, target, _, _ = _mock_shared_sessions()
+    try:
+        with pytest.raises(ValueError, match="usb_session"):
+            _validate_options(
+                {
+                    "runtime": runtime,
+                    "usb_session": source,
+                    **({"usb_config": usb_config} if config else {}),
+                }
+            )
+        with pytest.raises(TypeError, match="Session"):
+            _validate_options({"runtime": "usb", "usb_session": object()})
+        _validate_options({"runtime": "usb", "usb_session": source})
+    finally:
+        source.close()
+        target.close()
+
+
+def test_shared_usb_close_waits_for_other_models_inference(usb_config):
+    source, target, library, events = _mock_shared_sessions()
+    entered = threading.Event()
+    finish = threading.Event()
+    closing = threading.Event()
+    try:
+        source.configure_usb(usb_config)
+        target.share_usb(source)
+
+        def invoke(*args):
+            entered.set()
+            assert finish.wait(5)
+            return 0
+
+        def close_source():
+            closing.set()
+            source.close()
+
+        library.cim22_session_invoke.side_effect = invoke
+        inference = threading.Thread(target=target)
+        inference.start()
+        assert entered.wait(5)
+        close = threading.Thread(target=close_source)
+        close.start()
+        assert closing.wait(5)
+        # Shared lock is held through invoke, so source's finalizer cannot run.
+        close.join(timeout=0.05)
+        assert close.is_alive()
+        assert not events
+        finish.set()
+        inference.join(timeout=5)
+        close.join(timeout=5)
+        assert not inference.is_alive() and not close.is_alive()
+        assert events == ["destroy:123"]
+        library.cim22_session_invoke.side_effect = None
+        assert target() == ()
+    finally:
+        finish.set()
+        source.close()
+        target.close()
