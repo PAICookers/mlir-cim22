@@ -37,7 +37,9 @@ struct Session {
   ::cim22::execution::CIMWeightResidency softwareWeights;
   bool enableWeightResidency = true;
   void (*invoke)(void **) = nullptr;
-  std::unique_ptr<::cim22::runtime::CIMDevice> device;
+  // Explicitly shared models use one receive loop and physical weight state.
+  std::shared_ptr<::cim22::runtime::CIMDevice> device;
+  CIM22HardwareConfig hardware = defaultCIM22HardwareConfig();
   // The board runner borrows the device; destroy it first.
   std::unique_ptr<::cim22::runtime::CIMBoardRunner> runner;
   std::string error;

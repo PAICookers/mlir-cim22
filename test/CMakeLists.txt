@@ -106,22 +106,24 @@ target_link_libraries(mlir-cim22-cim-device-runtime-test PRIVATE
   cim22_runtime MLIRCIM22Target)
 target_compile_options(mlir-cim22-cim-device-runtime-test PRIVATE -fno-rtti)
 if(CIM22_ENABLE_USB)
+  # Keep production C ABI logic, fake USB calls and LLVM Error identity in one
+  # image; runtime C++ internals are not a portable shared-library test ABI.
   add_executable(mlir-cim22-usb-runtime-test EXCLUDE_FROM_ALL
-    Unit/Execution/UsbCIMDeviceTest.cpp)
+    Unit/Execution/UsbCIMDeviceTest.cpp
+    "${PROJECT_SOURCE_DIR}/runtime/Runtime.cpp"
+    "${PROJECT_SOURCE_DIR}/runtime/UsbCIMDevice.cpp"
+    "${PROJECT_SOURCE_DIR}/runtime/CIMBoardRunner.cpp"
+    "${PROJECT_SOURCE_DIR}/runtime/UsbRecordCodec.cpp"
+    $<TARGET_OBJECTS:obj.MLIRCIM22Support>
+    $<TARGET_OBJECTS:obj.MLIRCIM22Execution>)
   llvm_update_compile_flags(mlir-cim22-usb-runtime-test)
   target_include_directories(mlir-cim22-usb-runtime-test PRIVATE
     "${PROJECT_SOURCE_DIR}/runtime/include")
+  target_compile_definitions(mlir-cim22-usb-runtime-test PRIVATE
+    CIM22_RUNTIME_BUILD=1 CIM22_HAS_USB=1 NOMINMAX)
   target_link_libraries(mlir-cim22-usb-runtime-test PRIVATE
-    cim22_runtime LLVMSupport)
-  if(WIN32)
-    # The fake driver exchanges llvm::Error with USB internals. Static LLVM
-    # type IDs are distinct across Windows DLLs, so keep this C++ test seam
-    # in one binary; calls to the runtime's C ABI still use the real DLL.
-    target_sources(mlir-cim22-usb-runtime-test PRIVATE
-      "${PROJECT_SOURCE_DIR}/runtime/UsbCIMDevice.cpp"
-      "${PROJECT_SOURCE_DIR}/runtime/UsbRecordCodec.cpp"
-      "${PROJECT_SOURCE_DIR}/lib/Support/CIMPacketCodec.cpp")
-  endif()
+    MLIRCIM22RuntimeModel LLVMSupport Threads::Threads)
+  add_dependencies(mlir-cim22-usb-runtime-test cim22_runtime)
   if(MSVC)
     target_compile_options(mlir-cim22-usb-runtime-test PRIVATE /GR-)
   else()
@@ -141,6 +143,12 @@ if(CIM22_ENABLE_USB)
     CIM22_CLOCK_FIXTURE)
   target_link_libraries(mlir-cim22-clock-callback-fixture PRIVATE
     cim22_runtime LLVMSupport)
+  if(WIN32)
+    target_sources(mlir-cim22-clock-callback-fixture PRIVATE
+      "${PROJECT_SOURCE_DIR}/runtime/CIMBoardRunner.cpp"
+      "${PROJECT_SOURCE_DIR}/lib/Support/BF16Support.cpp"
+      "${PROJECT_SOURCE_DIR}/lib/Execution/BF16Compensation.cpp")
+  endif()
   if(MSVC)
     target_compile_options(mlir-cim22-clock-callback-fixture PRIVATE /GR-)
   else()
