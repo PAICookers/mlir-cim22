@@ -17,7 +17,7 @@ Linux USB 后端通过 `libcyusb` 使用系统 libusb。设置 `-DCIM22_ENABLE_U
 
 运行源码构建出的程序时，动态加载器还必须能找到 `libcyusb.so`；如果 SDK 不在系统库目录中，请设置 `LD_LIBRARY_PATH`，或使用发行版/部署系统提供的等效库路径。wheel 会将仓库或指定 SDK 的 `libcyusb.so` 安装到 `cim22/lib`，并保留第三方许可证。
 
-[板卡测试、USB 与 PLL 操作指南](../.agents/skills/5-cim22-board-testing/SKILL.md)
+[板卡测试、USB 与 PLL 操作指南](../.agents/skills/cim22-board-testing/SKILL.md)
 
 例如 Ubuntu 24.04：
 

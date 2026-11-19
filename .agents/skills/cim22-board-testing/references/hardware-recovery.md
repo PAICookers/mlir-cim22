@@ -5,6 +5,8 @@
 - [USB 收尾与重开](#usb-收尾与重开)
 - [FPGA 与 FX3 回环](#fpga-与-fx3-回环)
 
+Windows 的枚举、CyAPI 收发与回环诊断见 [Windows 实板与 USB](windows-board.md)。会话重开和 libusb 状态判读见 [USB FAQ](usb-faq.md)。
+
 ## 平台发现
 
 | 检查 | Windows | Linux |

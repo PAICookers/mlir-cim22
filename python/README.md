@@ -336,7 +336,7 @@ USB 时延参数按平台分别配置：Linux 使用 `linux_async_in_timeout_ms`
 
 ### 调整板卡时序
 
-[板卡时钟与等待调整指南](../.agents/skills/5-cim22-board-testing/references/timing-tuning.md#配置默认值与覆盖方式)
+[板卡时钟与等待调整指南](../.agents/skills/cim22-board-testing/references/timing-tuning.md#配置默认值与覆盖方式)
 
 ## 安装
 
@@ -430,4 +430,4 @@ uv run --no-sync pytest tests/test_backend.py tests/test_tensorflow.py
 
 Web 工作台开发见 [web/README.md](../web/README.md)。
 
-通用实板回归与时序复测见 [CIM22 实板测试说明](../.agents/skills/5-cim22-board-testing/references/workflow.md#运行通用-pytest)。
+通用实板回归与时序复测见 [CIM22 实板测试说明](../.agents/skills/cim22-board-testing/references/workflow.md#运行通用-pytest)。
