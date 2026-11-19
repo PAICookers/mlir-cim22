@@ -1,0 +1,4 @@
+interface:
+  display_name: "CIM22 用户指南"
+  short_description: "安装 CIM22 预编译 wheel，接入推理模型并使用本地 Web 工作台"
+  default_prompt: "用 $cim22-user-guide 帮我安装预编译 wheel，并在没有板卡的机器上运行第一个 PyTorch 模型。"

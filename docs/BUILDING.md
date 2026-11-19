@@ -7,7 +7,7 @@
 | 编译器本体       | CMake/Ninja            | 原生优化器、compile tool、runtime 库，可选 ONNX 工具  |
 | PyTorch 编译后端 | uv + scikit-build-core | 包含上述原生组件的 Python wheel 或 editable 安装 |
 
-仅使用预编译包时，直接阅读 [Python 用户快速开始](../python/README.md#用户快速开始)。以下命令除另有说明外，均在**仓库根目录**执行。
+仅使用预编译包时，直接阅读 [Python 用户快速开始](../.agents/skills/cim22-user-guide/references/install.md)。以下命令除另有说明外，均在**仓库根目录**执行。
 
 ## 环境与依赖
 
@@ -162,7 +162,7 @@ cim22/
   web/static/assets/
 ```
 
-按 [Python 安装指南](../python/README.md#安装)安装该 wheel，再运行自检脚本。
+按 [Python 安装指南](../.agents/skills/cim22-user-guide/references/install.md#创建环境并安装)安装该 wheel，再运行指南中的最小模型。
 
 ## GitHub Actions 预编译 wheel
 
@@ -330,7 +330,7 @@ uv build --python 3.12 python --wheel --out-dir python/dist `
   -C "cmake.define.CYAPI_ROOT=$PWD/third_party/cyapi"
 ```
 
-Windows wheel 包含 `mlir-cim22-opt.exe`、`mlir-cim22-compile.exe`、`cim22_runtime.dll` 和模型链接所需的 `cim22_runtime.lib`。Python 后端使用 MSVC 将 COFF `.obj` 链接为模型 `.dll`，通过与 Linux 相同的模型 ABI 加载。安装及 DLL 重新加载见 [Python 安装](../python/README.md#安装)和 [Session 与产物](../python/README.md#session-与产物)。
+Windows wheel 包含 `mlir-cim22-opt.exe`、`mlir-cim22-compile.exe`、`cim22_runtime.dll` 和模型链接所需的 `cim22_runtime.lib`。Python 后端使用 MSVC 将 COFF `.obj` 链接为模型 `.dll`，通过与 Linux 相同的模型 ABI 加载。安装及 DLL 重新加载见 [Python 安装](../.agents/skills/cim22-user-guide/references/install.md#创建环境并安装)和 [Session 与产物](../.agents/skills/cim22-user-guide/references/python-api.md#session-与产物)。
 
 开发环境的 `pyproject.toml` / `uv.lock` 按平台选择 [torch-mlir `v20261101` release wheel](https://github.com/llvm/torch-mlir/releases/tag/v20261101)：Linux 使用 `torch_mlir-20261101-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl`，Windows 使用 `torch_mlir-20261101-cp312-abi3-win_amd64.whl`。不引入 torch-mlir 源码。在配置好 MSVC x64、`MLIR_DIR` 和 SDK 后，可执行：
 

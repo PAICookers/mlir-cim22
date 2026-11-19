@@ -20,6 +20,17 @@ keep file ownership disjoint.
   retain stale conclusions.
 - Do not declare a phase complete until code, tests, and records agree.
 
+### CIM22 Skills
+
+- For wheel installation, model inference, or the Web workbench, use the
+  [CIM22 user guide](.agents/skills/cim22-user-guide/SKILL.md).
+- For physical board regression, USB/PLL timing, or Vivado ILA capture, use
+  [CIM22 board testing](.agents/skills/cim22-board-testing/SKILL.md).
+- When available locally, use `1-cim22-docs` to locate project references,
+  `2-cim22-hardware-facts` to verify hardware claims, `3-cim22-schema` for
+  model format changes, and `4-cim22-onnx-compile-testing` for ONNX fixtures
+  and compiler validation.
+
 ### Python
 
 - Follow the [shared Python rules](.codex/project-rules.md#python) for
