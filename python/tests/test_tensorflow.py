@@ -603,9 +603,9 @@ def test_example_keeps_artifacts(
     rng = np.random.default_rng(42)
     w1 = rng.integers(-3, 4, (16, 32), dtype=np.int8)
     w2 = rng.integers(-3, 4, (32, 16), dtype=np.int8)
-    value = rng.integers(-4, 5, (1, 4, 16), dtype=np.int8)
+    value = rng.integers(-4, 5, (4, 16), dtype=np.int8)
     hidden = np.clip(value.astype(np.int32) @ w1.astype(np.int32), 0, 127)
     expected = hidden @ w2.astype(np.int32)
     with Session(artifact) as loaded:
         np.testing.assert_array_equal(loaded(value)[0], expected)
-        assert loaded.dispatch_count == 0
+        assert loaded.dispatch_count > 0
