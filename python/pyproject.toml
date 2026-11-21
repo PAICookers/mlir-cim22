@@ -13,6 +13,7 @@ web = ["fastapi>=0.115,<1", "spikingjelly>=0.0.0.0.12,<1", "torchvision>=0.29,<0
 tensorflow = ["tensorflow==2.20.0", "tf2onnx==1.17.0", "onnx>=1.21.0,<2"]
 
 [project.scripts]
+cim22 = "cim22.__main__:main"
 cim22-web = "cim22.web.__main__:main"
 cim22-dvs = "cim22.apps.dvs:main"
 

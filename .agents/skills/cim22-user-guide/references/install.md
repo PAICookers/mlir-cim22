@@ -52,6 +52,22 @@ uv pip check
 本项目 wheel CI 使用 `torch==2.14.1+cpu`；Linux 最小模型编译也已实测
 `torch==2.15.0+cpu`。其他模型和版本组合以实际编译结果为准。
 
+## 检查 SDK 安装与用法
+
+使用包含 `cim22` 命令的 wheel 时，在应用目录中运行以下命令。
+
+```sh
+uv run cim22 --info
+uv run cim22 --help
+```
+
+`--info` 显示 wheel 版本、当前 Python 解释器、虚拟环境和导入模块的路径。
+使用本节创建的环境时，虚拟环境应指向应用目录中的 `.venv`，模块路径应位于其中的
+`site-packages`。可用 `uv run cim22 --version` 单独查询版本，
+也可通过 `uv run python -m cim22` 使用相同选项。
+`--help` 给出应用调用示例及 `runtime`、`artifact_dir`、`debug_dir` 的用途。
+完整模型示例见下一节，全部选项见 [Python 接口](python-api.md#编译选项)。
+
 ## 编译模型
 
 将下面的完整程序保存为 `compile_model.py`：

@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+from importlib.metadata import version
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -30,16 +31,29 @@ def _run(*arguments: str) -> None:
     )
 
 
-def _check_web_ui() -> None:
-    cli = (
+def _installed_cli(name: str) -> Path:
+    return (
         Path(sys.prefix)
         / ("Scripts" if os.name == "nt" else "bin")
-        / ("cim22-web.exe" if os.name == "nt" else "cim22-web")
+        / (f"{name}.exe" if os.name == "nt" else name)
     )
-    if not cli.is_file():
-        raise RuntimeError("The installed wheel did not provide cim22-web")
+
+
+def _check_sdk_cli() -> None:
+    result = subprocess.run(
+        [str(_installed_cli("cim22")), "--version"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if result.stdout.strip() != f"mlir-cim22 {version('mlir-cim22')}":
+        raise RuntimeError(f"Unexpected CIM22 SDK version: {result.stdout!r}")
+    _run("-I", "-m", "cim22", "--info")
+
+
+def _check_web_ui() -> None:
     subprocess.run(
-        [str(cli), "--help"],
+        [str(_installed_cli("cim22-web")), "--help"],
         check=True,
         env=os.environ | {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
     )
@@ -90,6 +104,7 @@ def main() -> None:
             raise RuntimeError(f"Installed runtime exports retired ABI: {name}")
     print(f"Installed package: {package}; pyserial: {serial_package}")
 
+    _check_sdk_cli()
     _run("examples/torch_compile.py")
     _run("examples/tensorflow_compile.py")
     _run("-m", "pytest", "--import-mode=importlib", "-q", *PYTEST_FILES)
