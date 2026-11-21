@@ -951,7 +951,7 @@ function FrameworkPage({
             <div className="mt-7 grid grid-cols-2 gap-4">
               <Metric label="编译耗时" value={seconds(task?.compile_seconds)} />
               <Metric
-                label="CIM 调用次数"
+                label="CIM 板卡调用次数"
                 value={
                   task?.dispatch_count == null
                     ? "—"
@@ -1038,7 +1038,7 @@ function ExampleResults({ task }: { task: ExampleTask | null }) {
                 <th>参考输出</th>
                 <th>CIM 板卡输出</th>
                 <th>最大绝对误差</th>
-                <th>CIM 调用次数</th>
+                <th>CIM 板卡调用次数</th>
                 <th>状态</th>
               </tr>
             </thead>
@@ -1375,7 +1375,7 @@ function DvsPage({
                     ? "正在停止"
                     : status
                   : task?.compiled
-                    ? "编译已就绪"
+                    ? "编译完成"
                     : "编译模型"}
               </Button>
               <div className="text-right">
