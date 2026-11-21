@@ -1,4 +1,4 @@
-"""Compile a deterministic BF16 Conv2d/ReLU/Linear model."""
+"""Lower a fixed PyTorch Conv2d/ReLU/Linear model to BF16 CIM kernels."""
 
 import argparse
 import json
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class SimpleModel(nn.Module):
-    """Run BF16 convolution and linear layers with an FP32 public boundary."""
+    """Initialize fixed weights in BF16 and capture the model in FP32."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -26,10 +26,8 @@ class SimpleModel(nn.Module):
         self.linear = nn.Linear(4 * 8 * 8, 8).bfloat16()
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        """Return the final linear activation as FP32 for Session ABI support."""
-        hidden = inputs.to(torch.bfloat16)
-        hidden = self.relu(self.conv(hidden))
-        return self.linear(hidden.flatten(1)).float()
+        """Return the final linear activation."""
+        return self.linear(self.relu(self.conv(inputs)).flatten(1))
 
 
 def _usb_config(path: Path | None) -> object | None:
@@ -49,13 +47,13 @@ def _usb_config(path: Path | None) -> object | None:
 
 
 def _cases() -> tuple[tuple[str, torch.Tensor], ...]:
-    ramp = torch.linspace(-0.5, 0.5, 3 * 8 * 8).reshape(1, 3, 8, 8)
+    ramp = ((torch.arange(3 * 8 * 8) % 9 - 4).float() / 8).reshape(1, 3, 8, 8)
     checker = torch.tensor([[-0.25, 0.5] * 4] * 8).repeat(1, 3, 1, 1)
     channel_bias = torch.cat(
         (
-            torch.full((1, 1, 8, 8), 0.1),
-            torch.full((1, 1, 8, 8), 0.2),
-            torch.full((1, 1, 8, 8), 0.3),
+            torch.full((1, 1, 8, 8), 0.125),
+            torch.full((1, 1, 8, 8), 0.25),
+            torch.full((1, 1, 8, 8), 0.375),
         ),
         dim=1,
     )
@@ -79,14 +77,23 @@ def run(
     if runtime not in {"simulator", "usb"}:
         raise ValueError("runtime must be simulator or usb")
     logger.info("Starting PyTorch example (runtime=%s)", runtime)
-    logger.info("Model: BF16 Conv2d -> ReLU -> Linear; inputs: 5 fixed cases")
+    logger.info(
+        "Model: Conv2d -> ReLU -> Linear, FP32 capture for BF16 CIM; 5 fixed cases"
+    )
     output.mkdir(parents=True, exist_ok=True)
     model = SimpleModel().cpu().eval()
     with torch.no_grad():
         model.conv.weight.fill_(0.125)
-        model.conv.bias.fill_(0.05)
-        model.linear.weight.fill_(0.0625)
-        model.linear.bias.fill_(0.1)
+        model.conv.bias.fill_(0.0625)
+        # Short sums of dyadic values keep the fixed BF16 checks exact.
+        model.linear.weight.zero_()
+        for channel in range(model.linear.out_features):
+            start = 4 * channel
+            model.linear.weight[channel, start : start + 4] = 0.0625
+        model.linear.bias.fill_(0.125)
+    # Widen before capture so torch-mlir sees static FP32 weights and the
+    # CIM pipeline can recognize and lower the FP32 contractions to BF16.
+    model.float()
     options: dict[str, object] = {
         "runtime": runtime,
         "artifact_dir": output,
@@ -111,8 +118,8 @@ def run(
             actual = compiled(inputs)
             session = session_for_artifact(output)
             dispatch_count = session.dispatch_count if session else 0
-            if runtime == "usb" and not dispatch_count:
-                raise RuntimeError(f"{case_name}: no CIM board computation")
+            if not dispatch_count:
+                raise RuntimeError(f"{case_name}: no CIM computation")
             torch.testing.assert_close(
                 actual,
                 reference,
@@ -127,6 +134,7 @@ def run(
                     "reference": reference.tolist(),
                     "actual": actual.tolist(),
                     "max_abs_error": float(difference),
+                    "dispatch_count": dispatch_count,
                 }
             )
             logger.info(
@@ -138,7 +146,7 @@ def run(
     result: dict[str, Any] = {
         "framework": "pytorch",
         "runtime": runtime,
-        "model": "BF16 Conv2d(3,4,3x3) -> ReLU -> Linear(256,8)",
+        "model": "Conv2d(3,4,3x3) -> ReLU -> Linear(256,8)",
         "compute_dtype": "bfloat16",
         "output_kind": "final_linear_activation",
         "compile_seconds": compile_seconds,
