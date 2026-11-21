@@ -168,6 +168,12 @@ cim22/
 
 [wheel 工作流](../.github/workflows/wheels.yml) 在 `main` 的 wheel 输入发生变化或推送 `v*` 标签时自动构建，也支持从 Actions 页面手动运行；没有每日定时任务。Linux 使用 manylinux_2_28 x86-64，Windows 使用 Windows Server 2022 / MSVC x64；两者均为 Release、USB 开启、测试和 ONNX 导入器关闭。两平台的 validate job 都下载独立 wheel 和 checksum，在干净 Python 3.12 环境中运行相同的框架示例、focused pytest 和 Web UI smoke check。
 
+每次运行只构建一次 Web 静态资源，Linux 和 Windows wheel 共用该产物。原生缓存按平台、
+固定的 LLVM 提交、CMake 和原生源码、平台 USB 依赖及打包配置计算键。精确命中时，
+使用当前提交的 Python 元数据、源码及 Web 静态资源重新封包，复用缓存中的原生工具、
+运行库和第三方许可。两条路径都生成新的 wheel 和校验和，并运行安装验证。未命中时按原流程
+构建 wheel，并保存其中的原生文件供后续运行复用。
+
 源码 `python/pyproject.toml` 的版本是当前开发目标，例如 `1.0.0`：
 
 - 分支构建在目标版本后加 `.dev` 和提交的 UTC 日期，例如 `1.0.0.dev20261028`。手动运行选择分支时遵循同一规则；提交日期相同的多次构建使用相同版本号。
@@ -189,7 +195,7 @@ LLVM-22.1.8-Linux-X64.tar.zst
 LLVM-22.1.8-x86_64-pc-windows-msvc.zip
 ```
 
-Actions artifact 直接使用上述文件名，不再额外套一层 ZIP。每个文件配套上传
+需要走原生构建路径时，Actions 会上传 SDK 归档。SDK 与 wheel artifact 直接使用上述文件名，不再额外套一层 ZIP。每个文件配套上传
 `<文件名>.sha256`；下游下载后先校验，再解压 SDK 或安装 wheel。Linux SDK 的
 tar 包保留可执行权限，Windows SDK 使用支持 ZIP64 的系统 tar 打包。
 
