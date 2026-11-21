@@ -3,6 +3,10 @@
 /*
 !/CMakeLists.txt
 !/README.md
+!/.github/
+/.github/*
+!/.github/scripts/
+!/.github/scripts/**
 !/docs/
 /docs/*
 !/docs/BUILDING.md
@@ -13,9 +17,13 @@
 !/include/**
 !/lib/
 !/lib/**
+!/runtime/
+!/runtime/**
 !/tools/
 /tools/*
 !/tools/CMakeLists.txt
+!/tools/mlir-cim22-compile/
+!/tools/mlir-cim22-compile/**
 !/tools/mlir-cim22-opt/
 !/tools/mlir-cim22-opt/**
 !/tools/mlir-cim22-onnx-import/
@@ -30,4 +38,4 @@
 !/web/**
 
 # Generated bindings are checked against schema/cim22_model.proto by CMake.
-/python/cim22/_generated/
+/python/tests/_generated/
