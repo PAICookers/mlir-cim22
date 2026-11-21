@@ -125,7 +125,7 @@ def _emit_object(
 
 def _run(command: list[str], stage: str) -> None:
     result = subprocess.run(
-        command, capture_output=True, text=True, errors="replace", check=False
+        command, capture_output=True, text=True, errors="replace"
     )
     if result.returncode:
         raise RuntimeError(

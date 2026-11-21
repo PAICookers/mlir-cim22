@@ -51,16 +51,12 @@ class PLLSerial:
             raise RuntimeError("PLL controller is closed; reconfigure USB")
         if self._serial is None:
             port = serial.Serial(
-                port=None,
                 baudrate=9600,
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
                 timeout=0.2,
                 write_timeout=0.2,
-                xonxoff=False,
-                rtscts=False,
-                dsrdtr=False,
             )
             # Set control lines before opening to avoid intentional RTS/DTR pulses.
             port.rts = port.dtr = False

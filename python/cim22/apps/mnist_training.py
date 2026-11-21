@@ -102,7 +102,7 @@ def _load_data(
         [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
     )
     train_set = datasets.MNIST(
-        str(config.data_dir), train=True, download=True, transform=transform
+        str(config.data_dir), download=True, transform=transform
     )
     progress({"stage": "loading", "message": "正在加载 MNIST 测试集"})
     test_set = datasets.MNIST(
@@ -115,12 +115,9 @@ def _load_data(
             train_set,
             batch_size=config.batch_size,
             shuffle=True,
-            num_workers=0,
             generator=generator,
         ),
-        DataLoader(
-            test_set, batch_size=config.batch_size, shuffle=False, num_workers=0
-        ),
+        DataLoader(test_set, batch_size=config.batch_size),
     )
 
 
@@ -185,7 +182,7 @@ def train_mnist(
             for inputs, labels in train_loader:
                 if cancelled():
                     raise InterruptedError
-                optimizer.zero_grad(set_to_none=True)
+                optimizer.zero_grad()
                 loss = criterion(model(inputs), labels)
                 loss.backward()
                 optimizer.step()

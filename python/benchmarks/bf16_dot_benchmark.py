@@ -331,7 +331,7 @@ def main() -> None:
     args = parser.parse_args()
     if args.samples < 1:
         parser.error("--samples must be positive")
-    args.output_dir.mkdir(parents=True, exist_ok=False)
+    args.output_dir.mkdir(parents=True)
     runtime = runtime_library()
     rows = []
     for name in dict.fromkeys(args.case or _CASES):

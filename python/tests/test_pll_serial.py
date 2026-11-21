@@ -18,8 +18,7 @@ COMMANDS = tuple(bytes.fromhex(word) for word in ("2828A4", "2C28A4", "3028A4"))
 class FakeSerial:
     """Stateful port double: only the first command produces a fragmented echo."""
 
-    def __init__(self, **settings: object) -> None:
-        self.settings = settings
+    def __init__(self) -> None:
         self.is_open = False
         self.rts = self.dtr = True
         self.out_waiting = 0
@@ -97,23 +96,26 @@ def test_identical_phase_words_send_once(port: FakeSerial) -> None:
 
 
 def test_serial_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    factory = Mock(side_effect=FakeSerial)
-    monkeypatch.setattr("cim22._pll_serial.serial.Serial", factory)
+    open_port = Mock()
+    monkeypatch.setattr(serial.Serial, "open", open_port)
+    monkeypatch.setattr(serial.Serial, "reset_input_buffer", Mock())
     controller = PLLSerial("COM10", COMMANDS)
-    assert call(controller, 0)[0] == 0
-    settings = factory.call_args.kwargs
-    assert settings == dict(
-        port=None,
-        baudrate=9600,
-        bytesize=8,
-        parity="N",
-        stopbits=1,
-        timeout=0.2,
-        write_timeout=0.2,
-        xonxoff=False,
-        rtscts=False,
-        dsrdtr=False,
-    )
+    port = controller._open()
+    open_port.assert_called_once()
+    assert port.port == "COM10"
+    assert not port.rts and not port.dtr
+    assert port.get_settings() == {
+        "baudrate": 9600,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 0.2,
+        "write_timeout": 0.2,
+        "inter_byte_timeout": None,
+        "xonxoff": False,
+        "rtscts": False,
+        "dsrdtr": False,
+    }
     controller.close()
 
 
