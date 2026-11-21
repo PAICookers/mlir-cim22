@@ -14,6 +14,7 @@ on:
       - '.github/scripts/build-manylinux.sh'
       - '.github/scripts/build-windows-wheel.ps1'
       - '.github/scripts/prepare-wheel.py'
+      - '.github/scripts/repack-native-wheel.py'
       - 'CMakeLists.txt'
       - 'LICENSE'
       - 'cmake/**'
@@ -49,6 +50,34 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  web:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+
+      - name: Build frontend
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-web-static
+          path: python/cim22/web/static/
+          if-no-files-found: error
+          retention-days: 7
+
   sdk:
     strategy:
       fail-fast: false
@@ -69,8 +98,49 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Restore native wheel payload
+        id: native-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: native-wheel-payload
+          key: >-
+            cim22-native-v1-${{ matrix.runner }}-${{ env.LLVM_COMMIT }}-${{
+            hashFiles('CMakeLists.txt', 'cmake/**', 'include/**', 'lib/**',
+                      'runtime/**', 'schema/**', 'tools/**', 'python/pyproject.toml',
+                      '.github/workflows/wheels.yml', '.github/scripts/repack-native-wheel.py') }}-${{
+            matrix.platform == 'linux'
+            && hashFiles('.github/manylinux/**', '.github/scripts/build-llvm-sdk.sh',
+                         '.github/scripts/build-manylinux.sh', 'third_party/cyusb-linux/**')
+            || hashFiles('.github/scripts/build-llvm-sdk.ps1',
+                         '.github/scripts/build-windows-wheel.ps1', 'third_party/cyapi/**') }}
+
+      - name: Record native cache selection
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.native-cache.outputs.cache-hit }}
+          CACHE_KEY: ${{ steps.native-cache.outputs.cache-primary-key }}
+        run: |
+          set -euo pipefail
+          printf 'hit=%s\nkey=%s\n' "$CACHE_HIT" "$CACHE_KEY" > native-plan.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-plan-${{ matrix.platform }}
+          path: native-plan.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v7
+        if: steps.native-cache.outputs.cache-hit == 'true'
+        with:
+          name: native-wheel-${{ matrix.platform }}
+          path: native-wheel-payload/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Cache Linux SDK
-        if: matrix.platform == 'linux'
+        if: steps.native-cache.outputs.cache-hit != 'true' && matrix.platform == 'linux'
         id: sdk-cache-linux
         uses: actions/cache@v6
         with:
@@ -78,7 +148,7 @@ jobs:
           key: llvm-sdk-x86_64-${{ env.LLVM_COMMIT }}-${{ hashFiles('.github/manylinux/Containerfile', '.github/scripts/build-llvm-sdk.sh') }}
 
       - name: Cache Windows SDK
-        if: matrix.platform == 'windows'
+        if: steps.native-cache.outputs.cache-hit != 'true' && matrix.platform == 'windows'
         id: sdk-cache-windows
         uses: actions/cache@v6
         with:
@@ -86,7 +156,7 @@ jobs:
           key: llvm-sdk-windows-2022-x64-${{ env.LLVM_COMMIT }}-${{ hashFiles('.github/scripts/build-llvm-sdk.ps1') }}
 
       - name: Checkout pinned LLVM source for Linux
-        if: matrix.platform == 'linux' && steps.sdk-cache-linux.outputs.cache-hit != 'true'
+        if: steps.native-cache.outputs.cache-hit != 'true' && matrix.platform == 'linux' && steps.sdk-cache-linux.outputs.cache-hit != 'true'
         uses: actions/checkout@v7
         with:
           repository: llvm/llvm-project
@@ -95,7 +165,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout pinned LLVM source for Windows
-        if: matrix.platform == 'windows' && steps.sdk-cache-windows.outputs.cache-hit != 'true'
+        if: steps.native-cache.outputs.cache-hit != 'true' && matrix.platform == 'windows' && steps.sdk-cache-windows.outputs.cache-hit != 'true'
         uses: actions/checkout@v7
         with:
           repository: llvm/llvm-project
@@ -104,7 +174,7 @@ jobs:
           persist-credentials: false
 
       - name: Restore Linux ccache
-        if: matrix.platform == 'linux' && steps.sdk-cache-linux.outputs.cache-hit != 'true'
+        if: steps.native-cache.outputs.cache-hit != 'true' && matrix.platform == 'linux' && steps.sdk-cache-linux.outputs.cache-hit != 'true'
         id: ccache
         uses: actions/cache/restore@v6
         with:
@@ -115,13 +185,13 @@ jobs:
             llvm-ccache-x86_64-${{ hashFiles('.github/manylinux/Containerfile', '.github/scripts/build-llvm-sdk.sh') }}-
 
       - name: Prepare Windows build environment
-        if: matrix.platform == 'windows'
+        if: steps.native-cache.outputs.cache-hit != 'true' && matrix.platform == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
       - name: Build static Linux LLVM/MLIR SDK in manylinux
-        if: matrix.platform == 'linux' && steps.sdk-cache-linux.outputs.cache-hit != 'true'
+        if: steps.native-cache.outputs.cache-hit != 'true' && matrix.platform == 'linux' && steps.sdk-cache-linux.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -141,25 +211,25 @@ jobs:
           df -h .
 
       - name: Build static Windows LLVM/MLIR SDK
-        if: matrix.platform == 'windows' && steps.sdk-cache-windows.outputs.cache-hit != 'true'
+        if: steps.native-cache.outputs.cache-hit != 'true' && matrix.platform == 'windows' && steps.sdk-cache-windows.outputs.cache-hit != 'true'
         shell: pwsh
         run: .github/scripts/build-llvm-sdk.ps1 -SourceDir .cache/windows/llvm-source -SdkDir .cache/windows/llvm-sdk
 
       - name: Save Linux ccache
-        if: ${{ always() && matrix.platform == 'linux' && steps.sdk-cache-linux.outputs.cache-hit != 'true' && steps.ccache.outcome == 'success' }}
+        if: ${{ always() && steps.native-cache.outputs.cache-hit != 'true' && matrix.platform == 'linux' && steps.sdk-cache-linux.outputs.cache-hit != 'true' && steps.ccache.outcome == 'success' }}
         uses: actions/cache/save@v6
         with:
           path: .cache/manylinux/ccache
           key: ${{ steps.ccache.outputs.cache-primary-key }}
 
       - name: Verify Linux SDK archive
-        if: matrix.platform == 'linux'
+        if: steps.native-cache.outputs.cache-hit != 'true' && matrix.platform == 'linux'
         shell: bash
         working-directory: .cache/manylinux/sdk-package
         run: sha256sum --check LLVM-*.sha256
 
       - name: Verify Windows SDK
-        if: matrix.platform == 'windows'
+        if: steps.native-cache.outputs.cache-hit != 'true' && matrix.platform == 'windows'
         shell: pwsh
         run: |
           if (!(Test-Path .cache/windows/llvm-sdk/SDK-INFO.txt)) {
@@ -174,7 +244,7 @@ jobs:
           }
 
       - name: Package Windows SDK
-        if: matrix.platform == 'windows'
+        if: steps.native-cache.outputs.cache-hit != 'true' && matrix.platform == 'windows'
         shell: pwsh
         run: |
           $packageDir = New-Item -ItemType Directory -Force .cache/windows/sdk-package
@@ -185,6 +255,7 @@ jobs:
           "$hash  $archive" | Set-Content -Encoding ascii "$packageDir/$archive.sha256"
 
       - uses: actions/upload-artifact@v7
+        if: steps.native-cache.outputs.cache-hit != 'true'
         with:
           path: ${{ matrix.sdk-package }}/LLVM-${{ env.LLVM_VERSION }}-${{ matrix.sdk-suffix }}
           archive: false
@@ -192,6 +263,7 @@ jobs:
           retention-days: 7
 
       - uses: actions/upload-artifact@v7
+        if: steps.native-cache.outputs.cache-hit != 'true'
         with:
           path: ${{ matrix.sdk-package }}/LLVM-${{ env.LLVM_VERSION }}-${{ matrix.sdk-suffix }}.sha256
           archive: false
@@ -199,7 +271,7 @@ jobs:
           retention-days: 7
 
   build-wheel:
-    needs: sdk
+    needs: [sdk, web]
     strategy:
       fail-fast: false
       matrix:
@@ -219,12 +291,35 @@ jobs:
     env:
       CMAKE_GENERATOR: Ninja
       CMAKE_BUILD_PARALLEL_LEVEL: '2'
+      SCCACHE_DIR: ${{ github.workspace }}/.cache/project-compiler
+      SCCACHE_CACHE_SIZE: '1G'
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - uses: actions/download-artifact@v8
+        with:
+          name: wheel-web-static
+          path: python/cim22/web/static
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-plan-${{ matrix.platform }}
+
+      - name: Read native cache selection
+        id: native-plan
+        shell: bash
+        run: cat native-plan.txt >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v8
+        if: steps.native-plan.outputs.hit == 'true'
+        with:
+          name: native-wheel-${{ matrix.platform }}
+          path: native-wheel-payload
+
+      - uses: actions/download-artifact@v8
+        if: steps.native-plan.outputs.hit != 'true'
         with:
           pattern: LLVM-${{ env.LLVM_VERSION }}-${{ matrix.sdk-suffix }}*
           path: ${{ matrix.sdk-package }}
@@ -236,36 +331,45 @@ jobs:
           python-version: '3.12'
 
       - name: Prepare Windows build environment
-        if: matrix.platform == 'windows'
+        if: matrix.platform == 'windows' && steps.native-plan.outputs.hit != 'true'
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Install Windows build tools
-        if: matrix.platform == 'windows'
-        run: python -m pip install uv==0.13.1 ninja==1.13.2 wheel
+      - name: Install wheel packaging tools
+        run: python -m pip install wheel
 
-      - uses: actions/setup-node@v7
+      - name: Install uv for wheel assembly
+        if: matrix.platform == 'windows' || steps.native-plan.outputs.hit == 'true'
+        run: python -m pip install uv==0.13.1
+
+      - name: Install Windows native build tools
+        if: matrix.platform == 'windows' && steps.native-plan.outputs.hit != 'true'
+        run: python -m pip install ninja==1.13.2
+
+      - name: Cache CIM22 native compiler objects
+        if: steps.native-plan.outputs.hit != 'true'
+        uses: actions/cache@v6
         with:
-          node-version: '24'
+          path: .cache/project-compiler
+          key: cim22-objects-v1-${{ steps.native-plan.outputs.key }}
+          restore-keys: |
+            cim22-objects-v1-cim22-native-v1-${{ matrix.runner }}-${{ env.LLVM_COMMIT }}-
 
-      - uses: pnpm/action-setup@v6
+      - name: Install Windows compiler cache
+        if: matrix.platform == 'windows' && steps.native-plan.outputs.hit != 'true'
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
         with:
-          package_json_file: web/package.json
+          version: v0.16.0
 
-      - name: Build frontend
-        working-directory: web
+      - name: Check packaging helpers and set wheel version
         run: |
-          pnpm install --frozen-lockfile
-          pnpm build
-
-      - name: Set release or development wheel version
-        run: |
+          python .github/scripts/test_repack_native_wheel.py
           python .github/scripts/test_prepare_wheel.py
           python .github/scripts/prepare-wheel.py
 
       - name: Extract shared Linux SDK
-        if: matrix.platform == 'linux'
+        if: matrix.platform == 'linux' && steps.native-plan.outputs.hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -278,7 +382,7 @@ jobs:
           rm -- "$archive"
 
       - name: Extract shared Windows SDK
-        if: matrix.platform == 'windows'
+        if: matrix.platform == 'windows' && steps.native-plan.outputs.hit != 'true'
         shell: pwsh
         working-directory: .cache/windows/sdk-package
         run: |
@@ -293,25 +397,26 @@ jobs:
           Remove-Item $archive
 
       - name: Verify Linux CyUSB bundle
-        if: matrix.platform == 'linux'
+        if: matrix.platform == 'linux' && steps.native-plan.outputs.hit != 'true'
         shell: bash
         working-directory: third_party/cyusb-linux
         run: sha256sum --check SHA256SUMS
 
       - name: Build Linux wheel in manylinux
-        if: matrix.platform == 'linux'
+        if: matrix.platform == 'linux' && steps.native-plan.outputs.hit != 'true'
         shell: bash
         env:
           PROJECT_COMMIT: ${{ github.sha }}
           BUILD_RUNNER: ubuntu-24.04
         run: |
           set -euo pipefail
-          mkdir -p .cache/manylinux/work python/dist/manylinux
+          mkdir -p .cache/manylinux/work .cache/project-compiler python/dist/manylinux
           docker build -f .github/manylinux/Containerfile -t cim22-manylinux .github/manylinux
           docker run --rm --user "$(id -u):$(id -g)" \
             -v "$PWD:/io" \
             -v "$PWD/.cache/manylinux/llvm-sdk:/opt/llvm:ro" \
             -v "$PWD/.cache/manylinux/work:/work" \
+            -v "$PWD/.cache/project-compiler:/work/ccache" \
             -v "$PWD/python/dist/manylinux:/out" \
             -e HOME=/work/home -e PROJECT_COMMIT -e BUILD_RUNNER \
             -e LLVM_VERSION -e LLVM_COMMIT -e LLVM_SDK_SHA256 \
@@ -319,9 +424,17 @@ jobs:
             cim22-manylinux bash /io/.github/scripts/build-manylinux.sh
 
       - name: Build Windows wheel with USB support
-        if: matrix.platform == 'windows'
+        if: matrix.platform == 'windows' && steps.native-plan.outputs.hit != 'true'
         shell: pwsh
+        env:
+          CMAKE_C_COMPILER_LAUNCHER: sccache
+          CMAKE_CXX_COMPILER_LAUNCHER: sccache
+          SCCACHE_IGNORE_SERVER_IO_ERROR: '1'
         run: .github/scripts/build-windows-wheel.ps1 -SdkDir .cache/windows/llvm-sdk -CyapiRoot third_party/cyapi -DistDir python/dist/windows
+
+      - name: Assemble wheel from cached native payload
+        if: steps.native-plan.outputs.hit == 'true'
+        run: python .github/scripts/repack-native-wheel.py build native-wheel-payload python/dist/${{ matrix.dist-dir }}
 
       - name: Check Linux wheel contents
         if: matrix.platform == 'linux'
@@ -332,6 +445,22 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         run: python .github/scripts/check-wheel-contents.py (Get-ChildItem python/dist/windows/*.whl).FullName
+
+      - name: Extract native payload for reuse
+        if: steps.native-plan.outputs.hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheels=(python/dist/${{ matrix.dist-dir }}/*.whl)
+          test "${#wheels[@]}" -eq 1
+          python .github/scripts/repack-native-wheel.py save "${wheels[0]}" native-wheel-payload
+
+      - name: Save native wheel payload
+        if: steps.native-plan.outputs.hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: native-wheel-payload
+          key: ${{ steps.native-plan.outputs.key }}
 
       - uses: actions/upload-artifact@v7
         with:
