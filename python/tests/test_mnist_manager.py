@@ -13,8 +13,8 @@ from cim22.web.storage import read_json, save_json
 def blocked_download(directory: Path) -> None:
     state = read_json(directory / "state.json")
     state["status"] = "downloading"
-    save_json(directory / "state.json", state)
     (directory / "train.log").write_text("download started\n")
+    save_json(directory / "state.json", state)
     time.sleep(60)
 
 
@@ -41,9 +41,15 @@ def test_cancel_stops_blocked_download_and_persists(tmp_path, monkeypatch):
     finally:
         manager.close()
     restored = module.MnistManager(tmp_path, threading.RLock(), lambda: None)
-    assert restored.snapshot()["task"]["status"] == "cancelled"
-    assert "train.log" in restored.snapshot()["task"]["files"]
-    restored.close()
+    try:
+        task = restored.snapshot()["task"]
+        assert task["status"] == "cancelled"
+        assert task["log_text"].splitlines() == ["download started"]
+        assert (
+            task["download_url"] == f"/api/mnist/archive?task_id={task['id']}"
+        )
+    finally:
+        restored.close()
 
 
 def test_worker_uses_saved_config_and_reports_failure(tmp_path, monkeypatch):
