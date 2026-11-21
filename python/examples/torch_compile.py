@@ -17,13 +17,15 @@ logger = logging.getLogger(__name__)
 
 
 class SimpleModel(nn.Module):
-    """Initialize fixed weights in BF16 and capture the model in FP32."""
+    """Run the FP32 graph lowered to BF16 CIM kernels."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.conv = nn.Conv2d(3, 4, kernel_size=3, padding=1).bfloat16()
+        self.conv = nn.Conv2d(
+            3, 4, kernel_size=3, padding=1, dtype=torch.float32
+        )
         self.relu = nn.ReLU()
-        self.linear = nn.Linear(4 * 8 * 8, 8).bfloat16()
+        self.linear = nn.Linear(4 * 8 * 8, 8, dtype=torch.float32)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """Return the final linear activation."""
@@ -91,9 +93,6 @@ def run(
             start = 4 * channel
             model.linear.weight[channel, start : start + 4] = 0.0625
         model.linear.bias.fill_(0.125)
-    # Widen before capture so torch-mlir sees static FP32 weights and the
-    # CIM pipeline can recognize and lower the FP32 contractions to BF16.
-    model.float()
     options: dict[str, object] = {
         "runtime": runtime,
         "artifact_dir": output,

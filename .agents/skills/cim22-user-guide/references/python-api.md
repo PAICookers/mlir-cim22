@@ -141,7 +141,7 @@ with compile_tf(infer, options={"runtime": "simulator"}) as compiled:
 - `MLIRCIM22_ENABLE_ONNX` 控制原生 ONNX 诊断工具的构建。TF 编译入口使用上面的 worker 路径。
 - 当前接口面向 eager 推理。在另一个 `tf.function` 中嵌入调用及训练不在此接口范围内。Linux 已加载 TensorFlow 时，CIM22 会拒绝首次在同一进程加载 PyTorch 路径的 torch-mlir FX 绑定。
 
-仓库示例 `python/examples/tensorflow_compile.py` 使用两次二维 INT8 矩阵乘和截断 ReLU。`python/examples/torch_compile.py` 使用 Conv2d、ReLU 和 Linear，权重先按 BF16 初始化，再以 FP32 捕获模型，由编译器将符合条件的算子降为 BF16 CIM 运算。每次运行将 `compile.log`、`graph-<id>.so/.dll` 和 `ir/graph-<id>/` 调试文件保存在当前工作目录的示例输出目录，并打印 CIM 调用次数和输出误差。
+仓库示例 `python/examples/tensorflow_compile.py` 使用两次二维 INT8 矩阵乘和截断 ReLU。`python/examples/torch_compile.py` 使用 Conv2d、ReLU 和 Linear，以 FP32 初始化权重并捕获模型，由编译器将符合条件的算子降为 BF16 CIM 运算。每次运行将 `compile.log`、`graph-<id>.so/.dll` 和 `ir/graph-<id>/` 调试文件保存在当前工作目录的示例输出目录，并打印 CIM 调用次数和输出误差。
 
 ## Session 与产物
 

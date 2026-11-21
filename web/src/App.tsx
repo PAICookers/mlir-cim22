@@ -812,7 +812,7 @@ function FrameworkPage({
   const structure =
     framework === "tensorflow"
       ? "二维 INT8 矩阵乘(4×16, 16×32) → 截断 ReLU → 矩阵乘(4×32, 32×16)"
-      : "Conv2d(3→4, 3×3) → ReLU → Linear(256, 8) · BF16 权重与 CIM 运算 · 5 组输入";
+      : "Conv2d(3→4, 3×3) → ReLU → Linear(256, 8) · FP32 权重 · BF16 CIM 运算 · 5 组输入";
   const status = task
     ? task.status === "loading"
       ? "加载数据"
