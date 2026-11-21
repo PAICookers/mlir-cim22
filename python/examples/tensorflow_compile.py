@@ -1,4 +1,4 @@
-"""Compile a deterministic multi-dimensional INT8 TensorFlow model."""
+"""Compile a deterministic two-layer INT8 TensorFlow model."""
 
 import argparse
 import json
@@ -43,7 +43,7 @@ def run(
         raise ValueError("runtime must be simulator or usb")
     logger.info("Starting TensorFlow example (runtime=%s)", runtime)
     logger.info(
-        "Model: INT8 BatchMatMul -> clipped ReLU -> BatchMatMul; "
+        "Model: rank-2 INT8 MatMul -> clipped ReLU -> MatMul; "
         "inputs: 1 random case (seed=42)"
     )
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
@@ -57,7 +57,7 @@ def run(
     w1 = rng.integers(-3, 4, (16, 32), dtype=np.int8)
     w2 = rng.integers(-3, 4, (32, 16), dtype=np.int8)
 
-    @tf.function(input_signature=[tf.TensorSpec([1, 4, 16], tf.int8)])
+    @tf.function(input_signature=[tf.TensorSpec([4, 16], tf.int8)])
     def model(x: tf.Tensor) -> tf.Tensor:
         hidden = tf.raw_ops.BatchMatMulV3(x=x, y=tf.constant(w1), Tout=tf.int32)
         hidden = tf.cast(tf.clip_by_value(hidden, 0, 127), tf.int8)
@@ -65,7 +65,7 @@ def run(
             x=hidden, y=tf.constant(w2), Tout=tf.int32
         )
 
-    value = rng.integers(-4, 5, (1, 4, 16), dtype=np.int8)
+    value = rng.integers(-4, 5, (4, 16), dtype=np.int8)
     inputs = tf.constant(value)
     reference = model(inputs).numpy()
     options: dict[str, object] = {
@@ -81,10 +81,10 @@ def run(
         actual = compiled(inputs).numpy()
         dispatch_count = compiled.session.dispatch_count
     compile_seconds = time.perf_counter() - started
-    if runtime == "usb" and dispatch_count <= 0:
-        raise RuntimeError("USB inference produced no CIM dispatch")
     error = int(np.max(np.abs(actual.astype(np.int64) - reference)))
     np.testing.assert_array_equal(actual, reference)
+    if dispatch_count <= 0:
+        raise RuntimeError("TensorFlow inference produced no CIM dispatch")
     logger.info(
         "Output matches reference: case=int8_linear_clip_linear, "
         "max_abs_error=%d",
@@ -101,6 +101,7 @@ def run(
                 "reference": reference.tolist(),
                 "actual": actual.tolist(),
                 "max_abs_error": error,
+                "dispatch_count": dispatch_count,
             }
         ],
         "artifact_dir": str(output.resolve()),

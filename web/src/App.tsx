@@ -811,8 +811,8 @@ function FrameworkPage({
       : "验证 PyTorch 框架支持";
   const structure =
     framework === "tensorflow"
-      ? "INT8 BatchMatMul(1×4×16,16×32) → 截断 ReLU → BatchMatMul(32×16)"
-      : "BF16 Conv2d(3→4,3×3) → ReLU → Linear(256,8) · 5 个确定性输入 case";
+      ? "二维 INT8 矩阵乘(4×16, 16×32) → 截断 ReLU → 矩阵乘(4×32, 32×16)"
+      : "Conv2d(3→4, 3×3) → ReLU → Linear(256, 8) · FP32 权重 · BF16 CIM 运算 · 5 组输入";
   const status = task
     ? task.status === "loading"
       ? "加载数据"
@@ -951,7 +951,7 @@ function FrameworkPage({
             <div className="mt-7 grid grid-cols-2 gap-4">
               <Metric label="编译耗时" value={seconds(task?.compile_seconds)} />
               <Metric
-                label="CIM 板卡调用次数"
+                label="CIM 调用次数"
                 value={
                   task?.dispatch_count == null
                     ? "—"
@@ -988,6 +988,7 @@ function Metric({ label, value }: { label: string; value: string }) {
 }
 function ExampleResults({ task }: { task: ExampleTask | null }) {
   const cases = task?.cases ?? [];
+  const board = task?.runtime === "usb";
   return (
     <section className="mt-9">
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
@@ -1036,9 +1037,9 @@ function ExampleResults({ task }: { task: ExampleTask | null }) {
               <tr>
                 <th>测试项目</th>
                 <th>参考输出</th>
-                <th>CIM 板卡输出</th>
+                <th>{board ? "CIM 板卡输出" : "CIM 仿真输出"}</th>
                 <th>最大绝对误差</th>
-                <th>CIM 板卡调用次数</th>
+                <th>CIM 调用次数</th>
                 <th>状态</th>
               </tr>
             </thead>
