@@ -3,6 +3,7 @@
 set -euo pipefail
 trap 'echo "Failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 export PATH="/opt/python/cp312-cp312/bin:$PATH"
+export CCACHE_DIR=/work/ccache CCACHE_MAXSIZE=1G CCACHE_COMPILERCHECK=content
 mkdir -p /work/tmp "$HOME" /out
 
 # This job consumes the SDK artifact; only the upstream SDK job builds LLVM.
@@ -18,13 +19,17 @@ fi
 # and the reviewed CyUSB bundle as separate inputs.
 stage_dir=$(mktemp -d /work/release.XXXXXX)
 trap 'rm -rf -- "$stage_dir"' EXIT
+ccache --zero-stats
 uv build --python /opt/python/cp312-cp312/bin/python /io/python \
   --wheel --out-dir "$stage_dir/wheel" \
   -Ccmake.build-type=Release \
+  -Ccmake.define.CMAKE_C_COMPILER_LAUNCHER=ccache \
+  -Ccmake.define.CMAKE_CXX_COMPILER_LAUNCHER=ccache \
   -Ccmake.define.CIM22_ENABLE_USB=ON \
   -Ccmake.define.CYUSB_ROOT=/io/third_party/cyusb-linux \
   -Ccmake.define.CMAKE_JOB_POOLS=link=1 \
   -Ccmake.define.CMAKE_JOB_POOL_LINK=link
+ccache --show-stats
 
 # Keep required notices with the wheel rather than in separate artifacts.
 licenses_dir="$stage_dir/licenses"
