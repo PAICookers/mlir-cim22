@@ -267,7 +267,9 @@ def create_app(
             archive.getvalue(),
             media_type="application/zip",
             headers={
-                "Content-Disposition": f'attachment; filename="mnist-{task_id}.zip"'
+                "Content-Disposition": (
+                    f'attachment; filename="training-results-{task_id}.zip"'
+                )
             },
         )
 

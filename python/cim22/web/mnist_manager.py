@@ -161,7 +161,7 @@ class MnistManager:
         with self.lock:
             self._reap()
             if self.process is not None:
-                raise ValueError("已有 MNIST 训练任务，请等待完成或取消")
+                raise ValueError("已有训练任务，请等待完成或取消")
 
     def start(
         self,
@@ -239,10 +239,10 @@ class MnistManager:
         with self.lock:
             self._reap()
             if self.process is None:
-                raise ValueError("没有正在运行的 MNIST 训练")
+                raise ValueError("没有正在运行的训练")
             state = read_json(self.current / "state.json")
             if state.get("status") not in ACTIVE:
-                raise ValueError("没有正在运行的 MNIST 训练")
+                raise ValueError("没有正在运行的训练")
             # Stop downloads too, then become the sole state writer.
             self._stop()
             state = read_json(self.current / "state.json")

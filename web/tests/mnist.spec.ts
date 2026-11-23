@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("MNIST active stages allow cancellation and show actual results", async ({
+test("Training active stages allow cancellation and show actual results", async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -32,6 +32,11 @@ test("MNIST active stages allow cancellation and show actual results", async ({
   });
   await page.route("**/api/mnist/cancel", (r) => r.fulfill({ json: {} }));
   await page.goto("/#mnist");
+  const title = page.getByRole("heading", { name: "图片分类模型配置与训练" });
+  await expect(title).toBeVisible();
+  await page.getByRole("button", { name: "模型训练", exact: true }).click();
+  await expect(page).toHaveURL(/#training$/);
+  await expect(title).toBeVisible();
   await expect(page.getByText("本地服务已连接")).toBeVisible();
   const task = {
     id: "test",
@@ -61,17 +66,26 @@ test("MNIST active stages allow cancellation and show actual results", async ({
   await page.evaluate(
     (task) =>
       window.dispatchEvent(new CustomEvent("test:mnist", { detail: { task } })),
+    { ...task, status: "failed", error: "无法加载 MNIST 数据集" },
+  );
+  await expect(page.getByRole("alert")).toHaveText("无法加载 图片分类 数据集");
+  await page.evaluate(
+    (task) =>
+      window.dispatchEvent(new CustomEvent("test:mnist", { detail: { task } })),
     {
       ...task,
       status: "completed",
       test_accuracy: 0.98,
       train_loss: 0.02,
       total_seconds: 12.34,
-      log_text: `${"epoch=1 loss=0.1234567890 ".repeat(500)}\n训练完成`,
+      last_message: "正在加载 MNIST 测试集",
+      log_text: `正在检查并下载 MNIST 数据\n${"epoch=1 loss=0.1234567890 ".repeat(500)}\n训练完成`,
       download_url: "/api/mnist/archive?task_id=test",
     },
   );
   await expect(page.getByText("98.00%")).toBeVisible();
+  await expect(page.getByText("正在加载 图片分类 测试集")).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("MNIST");
   await expect(page.getByText("总耗时：12.340 s")).toBeVisible();
   await expect(
     page.getByText("实际配置：small · 3 轮 · batch 64 · lr 0.002"),

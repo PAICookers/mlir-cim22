@@ -26,7 +26,7 @@ import { Progress } from "@/components/ui/progress";
 
 type Framework = "tensorflow" | "pytorch";
 type Runtime = "simulator" | "usb";
-type View = Framework | "dvs" | "mnist";
+type View = Framework | "dvs" | "training";
 
 type Row = {
   index: number;
@@ -228,16 +228,22 @@ function useEventStream<T>(
   return connected;
 }
 
+function viewFromHash(hash: string): View | undefined {
+  const view = hash.slice(1);
+  if (view === "mnist") return "training";
+  if (
+    view === "tensorflow" ||
+    view === "pytorch" ||
+    view === "dvs" ||
+    view === "training"
+  )
+    return view;
+}
+
 export default function App() {
-  const [view, setView] = useState<View>(() => {
-    const value = window.location.hash.slice(1);
-    return value === "tensorflow" ||
-      value === "pytorch" ||
-      value === "dvs" ||
-      value === "mnist"
-      ? value
-      : "dvs";
-  });
+  const [view, setView] = useState<View>(
+    () => viewFromHash(window.location.hash) ?? "dvs",
+  );
   const importedTask = useRef<string | null>(null);
   const defaultsLoaded = useRef(false);
   const [task, setTask] = useState<DvsTask | null>(null);
@@ -256,14 +262,8 @@ export default function App() {
   const [showImport, setShowImport] = useState(true);
   useEffect(() => {
     const onHash = () => {
-      const value = window.location.hash.slice(1);
-      if (
-        value === "tensorflow" ||
-        value === "pytorch" ||
-        value === "dvs" ||
-        value === "mnist"
-      )
-        setView(value);
+      const next = viewFromHash(window.location.hash);
+      if (next) setView(next);
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -363,7 +363,7 @@ export default function App() {
   const connected =
     view === "dvs"
       ? dvsConnected
-      : view === "mnist"
+      : view === "training"
         ? mnistConnected
         : exampleConnected;
   const frameworkBusy = !!exampleTask && activeStates.has(exampleTask.status);
@@ -388,7 +388,7 @@ export default function App() {
             </div>
           </div>
           <nav className="order-3 flex w-full gap-1 overflow-x-auto rounded-xl bg-muted p-1 sm:order-none sm:w-auto">
-            {(["tensorflow", "pytorch", "dvs", "mnist"] as const).map(
+            {(["tensorflow", "pytorch", "dvs", "training"] as const).map(
               (entry) => (
                 <button
                   key={entry}
@@ -402,7 +402,7 @@ export default function App() {
                       ? "PyTorch"
                       : entry === "dvs"
                         ? "DVS 应用"
-                        : "MNIST 训练"}
+                        : "模型训练"}
                 </button>
               ),
             )}
@@ -440,7 +440,7 @@ export default function App() {
           setShowImport={setShowImport}
           operate={operate}
         />
-      ) : view === "mnist" ? (
+      ) : view === "training" ? (
         <MnistPage
           connected={mnistConnected}
           error={error}
@@ -470,6 +470,10 @@ type MnistPageProps = {
   task: MnistTask | null;
   operate: (path: string, body?: object) => Promise<void>;
 };
+
+function trainingText(text: string): string {
+  return text.replace(/\bMNIST\b/g, "图片分类");
+}
 function MnistPage({
   connected,
   error,
@@ -503,7 +507,7 @@ function MnistPage({
       <div className="mb-8">
         <div className="eyebrow mb-2">模型训练支持</div>
         <h1 className="text-3xl font-semibold tracking-tight">
-          MNIST 模型配置与训练
+          图片分类模型配置与训练
         </h1>
       </div>
       {(error || task?.error) && (
@@ -511,7 +515,7 @@ function MnistPage({
           role="alert"
           className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
         >
-          {error || task?.error}
+          {trainingText(error || task?.error || "")}
         </div>
       )}
       <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
@@ -589,8 +593,8 @@ function MnistPage({
               </label>
             </div>
             <div className="mt-5 rounded-xl bg-muted/60 p-4 text-xs leading-6 text-muted-foreground">
-              使用 CPU 训练两层全连接模型；MNIST
-              数据缺失时自动下载，已有缓存可直接使用。
+              使用 CPU
+              训练两层全连接模型。缺少数据集时自动下载，已有缓存可直接使用。
             </div>
             <div className="mt-5 flex gap-3 border-t border-border pt-4">
               <Button disabled={disabled} onClick={() => void run()}>
@@ -657,7 +661,7 @@ function MnistPage({
                 <p>总耗时：{seconds(task.total_seconds)}</p>
                 <p>
                   {task.last_message && !task.last_message.startsWith("{")
-                    ? task.last_message
+                    ? trainingText(task.last_message)
                     : "逐轮结果见下方日志"}
                 </p>
               </div>
@@ -667,7 +671,7 @@ function MnistPage({
                 训练日志
               </p>
               <pre className="max-h-64 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-950 p-4 text-[13px] leading-5 text-slate-100">
-                {task?.log_text || "等待训练开始"}
+                {trainingText(task?.log_text || "等待训练开始")}
               </pre>
             </div>
             {task?.download_url && (

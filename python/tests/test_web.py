@@ -669,6 +669,9 @@ def test_mnist_archive_download_contains_training_outputs(
         response = client.get("/api/mnist/archive?task_id=task")
         assert response.status_code == 200
         assert response.headers["content-type"] == "application/zip"
+        assert response.headers["content-disposition"] == (
+            'attachment; filename="training-results-task.zip"'
+        )
         with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
             assert archive.namelist() == [
                 "model.pt",
