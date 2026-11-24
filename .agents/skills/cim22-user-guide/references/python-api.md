@@ -47,7 +47,7 @@ INT8 CIM 降低要求显式 `i8 × i8 → i32`、冻结权重和可证明的有�
 
 ### 编译选项
 
-两个前端接收同一份 `options` 字典。
+两个前端接受以下公共 `options`。按模块选层的选项由 PyTorch 后端提供。
 
 | 键                    | 行为                                                                                                                                        |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -62,51 +62,76 @@ PyTorch 的 `reference` 忽略 BF16 补偿策略，且不生成原生制品。Te
 
 ## 按模块名选择 CIM 执行
 
-`cim22.layers` 提供通用 PyTorch 分层执行接口，DVS Web 和 CLI 复用它。
-对其他网络同样使用完整的 `named_modules()` 名称选择 `Conv2d`、`Linear`
-叶子模块；其余模块继续由 PyTorch CPU 执行。
+在传给 `torch.compile` 的原模型上调用 `model.named_modules()`，查看名称非空的模块。
+其中的名称就是相对该模型的完整路径。例如 `encoder.0` 表示 `encoder` 中的
+第一个子模块，`head` 表示名为 `head` 的模块。单选时在 `options` 中传入
+`"cim_layers": "encoder.0"`，多选时传入 `"cim_layers": ["encoder.0", "head"]`。
+选择父模块也会覆盖后代和模块内直接调用的功能式算子，例如
+`torch.nn.functional.linear`。选择范围以外的算子由 PyTorch 在 CPU 上执行。
+`named_modules()` 列出模型结构。每个选择是否能部署由首次调用时的编译结果确认。
+
+Linux x86-64 和 Windows x64 使用相同的 Python 代码与选项。按
+[安装指南](install.md)准备对应平台的 wheel 和链接工具，即使使用模拟器也需要
+链接模型动态库。下面的示例从模型列出 `0`、`1`、`2`，再选择两个 `Linear`。
 
 ```python
 import torch
-from cim22.layers import LayerOffload, discover_cim_layers
+from cim22.backend import compilation_report
 
 torch.manual_seed(42)
 model = torch.nn.Sequential(
     torch.nn.Linear(4, 4), torch.nn.ReLU(), torch.nn.Linear(4, 2)
 ).cpu().eval()
+for name, module in model.named_modules():
+    if name:
+        print(name, type(module).__name__)
+
 x = torch.ones(1, 4)
-print(discover_cim_layers(model, (x,)))
 with torch.inference_mode():
-    expected = model(x)  # LayerOffload 随后会原地编译选中的层
-    compiled = LayerOffload(
-        model, ["0", "2"], (x,),
-        artifact_dir="artifacts/selected",
-        runtime="simulator",
+    expected = model(x)
+    compiled = torch.compile(
+        model,
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={
+            "cim_layers": ["0", "2"],
+            "compile_strictness": "strict",
+            "runtime": "simulator",
+            "artifact_dir": "artifacts/selected",
+        },
     )
     actual = compiled(x)
     torch.testing.assert_close(actual, expected, rtol=0.05, atol=0.05)
 
-print(compiled.layer_artifacts)
-print("CIM dispatches:", compiled.dispatch_count)
+report = compilation_report("artifacts/selected")
+assert report is not None
+print(report.layer_artifacts)
+print("CIM dispatches:", report.layer_dispatch_counts)
 ```
 
-- `LayerOffload` 原地编译选中的叶子层，构造时完成预热；参考模型请事先单独
-  构造或深拷贝。层名不可为空、重复、未知或指向共享模块实例。
-- 模型使用 CPU、eval、固定权重及后端支持的静态输入签名，执行采用
-  `torch.inference_mode()`；模块之外的控制流和输出结构由 PyTorch 保留。
-  不提供通用模型导入器，也不保证所有网络算子均可在 CIM 上执行。
-- 不传 `example_inputs` 的发现接口只枚举结构，尺寸列表为空。传入样本会
-  执行一次模型并通过临时 hook 记录尺寸；有状态模型由应用负责重置。
-- 有状态模型可传 `reset(model)` 回调，在每轮预热前和全部预热结束后重置；
-  正式推理的序列边界仍由应用负责重置，不假定所有网络都使用脉冲状态。
-- 每层独立保存产物及 IR。每次推理逐层检查是否实际执行了 CIM 计算，`dispatch_count` 给出该次调用的总数。
-  跳过选中的层或触发额外编译会报错。若预热失败，选中的层会恢复为调用前的状态。
-  使用不同输入尺寸或改变冻结权重时，请重新构造模型并编译。
+- 将示例中的 `"cim_layers": ["0", "2"]` 改成 `"cim_layers": "2"` 即可单选。
+  每次 `compiled(x)` 都执行完整模型，报告按所选模块列出实际 CIM 调用次数。
+- 省略 `cim_layers` 时整图自动映射。显式名单拒绝空路径、重复、未知路径、
+  父子重叠及共享模块导致的歧义。首次调用句柄时捕获并编译，未捕获的目标会报错。
+  模型需要产生 Dynamo 可提交给后端的 FX 图。只返回 Python 常量的模型可能跳过后端。
+- `compile_strictness` 默认 `"strict"`，每个所选模块至少产生一个 CIM
+  transaction。`"allow_host"` 允许成功编译但零 transaction 的模块继续在
+  Host 上运行，并记录含模块路径的警告。非法名单、未捕获目标、编译、
+  链接和设备错误在两种模式中都会报错。
+- 选层需要 CPU eval 模型、`fullgraph=True`、`dynamic=False` 和推理上下文。
+  原模型的输出结构由 PyTorch 恢复。有状态模型由应用在样本或序列边界重置。
+  仅供未选中区域使用的参数继续由 PyTorch 读取。
+- 选层产物位于 `artifact_dir/graph-<id>/submod_<n>.so`（Windows 为 `.dll`）。
+  配置 `debug_dir` 时，分区 IR 位于 `debug_dir/graph-<id>/submod_<n>/`。
+  一次成功调用后，`compilation_report(artifact_dir)` 提供该次特化的产物、
+  编译耗时和实际 CIM 调用计数，包含按模块汇总及全模型总数。一个模块
+  在一次推理中重复调用时，计数会累加。每个编译句柄应使用独立产物目录。
 - 默认运行时为 `usb`。板卡连接、设备权限、实际端点、时钟和等待参数需按
   [USB 与 PLL 配置](#usb-与-pll-配置) 准备。将示例切换到板卡时，改用 `runtime="usb", usb_config=config`。
-- Linux 和 Windows 上，多个选定层共享一个板卡连接、接收线程、物理权重驻留
-  和 PLL 控制器。每层仍有独立模型产物与调用计数；切换层时按实际驻留状态
-  加载权重，板卡故障不会回退到软件仿真。
+- Linux 和 Windows 上，多个选定模块共享一个板卡连接、接收线程、物理权重驻留
+  和 PLL 控制器。各编译分区分别保存模型产物，调用计数按模块汇总。切换分区时
+  按实际驻留状态加载权重，板卡故障直接报错。
 
 用户模型直接使用上述库接口；Web 的 DVS 页面与 `cim22-dvs` CLI 固定运行 DVS 应用。
 固定应用代码位于 `cim22.apps`：`dvs` 提供 DVS 命令行流程，

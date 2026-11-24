@@ -8,13 +8,42 @@
 - [PyTorch、TensorFlow、指定层执行和 USB 配置](../.agents/skills/cim22-user-guide/references/python-api.md)
 - [PyTorch 示例](examples/torch_compile.py)和 [TensorFlow 示例](examples/tensorflow_compile.py)
 
+## 按模块选层
+
+在原模型上用 `model.named_modules()` 查看完整模块路径。假设 `model` 含有
+`encoder.0` 和 `head`，`inputs` 是模型的静态 CPU 输入：
+
+```python
+import torch
+
+with torch.inference_mode():
+    compiled = torch.compile(
+        model.eval(),
+        backend="cim22",
+        fullgraph=True,
+        dynamic=False,
+        options={"cim_layers": ["encoder.0", "head"], "runtime": "simulator"},
+    )
+    output = compiled(inputs)
+```
+
+单选可写 `"cim_layers": "head"`，选择父模块会覆盖其后代与内部的功能式算子。
+首次调用时编译，返回完整模型的输出。未选中的区域由 PyTorch 在 CPU 上运行。
+省略 `cim_layers` 时自动映射整图。默认 `compile_strictness="strict"` 要求每个
+选中模块生成 CIM 运算。设为 `"allow_host"` 可让成功编译但没有 CIM 运算的
+模块继续在 CPU 上执行，并记录警告。路径无效、目标未捕获或编译失败均会报错。
+
+Linux x86-64 和 Windows x64 使用同一接口，分别需要 `cc` 和 MSVC x64 工具链。
+使用板卡时选 `runtime="usb"` 并传入 USB 配置。产物和计数见
+[选层与执行报告](../.agents/skills/cim22-user-guide/references/python-api.md#按模块名选择-cim-执行)。
+
 ## 源码开发
 
 [源码构建指南](../docs/BUILDING.md)给出了 Linux、Windows 的工具链配置、editable 安装和 wheel 打包命令。
 在 editable 环境中验证 Web 和 TensorFlow 时，给 `uv sync` 追加 `--extra web --extra tensorflow`。安装完成后，在 `python/` 下运行：
 
 ```sh
-uv run --no-sync pytest tests/test_backend.py tests/test_tensorflow.py
+uv run --no-sync pytest tests/test_backend.py tests/test_module_offload.py tests/test_tensorflow.py
 ```
 
 | 改动                            | 从哪里检查                                                                                                                                  |

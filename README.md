@@ -19,8 +19,8 @@ Python 发行包名为 `mlir-cim22`，导入包和后端名为 `cim22`。一个 
 
 首次使用请从[安装 wheel 并编译第一个模型](.agents/skills/cim22-user-guide/references/install.md)开始。指南涵盖 Linux x86-64 和 Windows x64，可用软件仿真完成第一次推理。
 
-- [接入 Python 模型](.agents/skills/cim22-user-guide/references/python-api.md)涵盖 PyTorch、TensorFlow、指定层执行和 USB 配置。
-- [启动 Web 工作台](.agents/skills/cim22-user-guide/references/web.md)可运行框架示例、固定 DVS 应用或 MNIST 训练。
+- PyTorch 可在 `torch.compile` 中通过 `options["cim_layers"]` 指定由 CIM 执行的模块。见 [Python 选层示例](python/README.md#按模块选层)。
+- [启动 Web 工作台](.agents/skills/cim22-user-guide/references/web.md)可运行框架示例、[为固定 DVS 模型选层](web/README.md#dvs-选层)或进行 MNIST 训练。
 
 可直接调用 [`$cim22-user-guide`](.agents/skills/cim22-user-guide/SKILL.md)，例如“用 $cim22-user-guide 帮我在没有板卡的 Linux 机器上编译并运行第一个 PyTorch 模型”。
 
