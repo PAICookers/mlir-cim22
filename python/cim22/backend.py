@@ -40,7 +40,7 @@ from .compiler import (
     _publish_library,
     _validate_options,
 )
-from .runtime import MODEL_SUFFIX, Session, _initialize_session
+from .runtime import MODEL_SUFFIX, _initialize_session
 
 type TensorCallable = Callable[..., Sequence[torch.Tensor]]
 
@@ -51,22 +51,6 @@ def compilation_report(artifact_dir: str | Path) -> CompilationReport | None:
     """Return a snapshot for the last executed specialization in this directory."""
     report = _REPORTS.get(Path(artifact_dir).resolve())
     return deepcopy(report) if report is not None else None
-
-
-_SESSIONS_BY_ARTIFACT: WeakValueDictionary[Path, Session] = (
-    WeakValueDictionary()
-)
-
-
-def session_for_artifact(artifact_dir: Path) -> Session | None:
-    """Return the most recently captured native session in an artifact dir."""
-    directory = artifact_dir.resolve()
-    matches = [
-        session
-        for path, session in _SESSIONS_BY_ARTIFACT.items()
-        if path.parent == directory
-    ]
-    return matches[-1] if matches else None
 
 
 def _is_module_input(node: torch.fx.Node) -> bool:
@@ -127,7 +111,6 @@ def backend(
     example_inputs: list[torch.Tensor],
     *,
     options: BackendOptions | None = None,
-    _on_session: Callable[[Session], None] | None = None,
 ) -> TensorCallable:
     """Compile a static CPU inference graph for torch.compile.
 
@@ -277,10 +260,6 @@ def backend(
                         rollback,
                     )
                     rollback.pop_all()
-                if artifact is not None:
-                    _SESSIONS_BY_ARTIFACT[artifact] = session
-                if _on_session is not None:
-                    _on_session(session)
 
                 def execute(*values: torch.Tensor) -> tuple[torch.Tensor, ...]:
                     result = tuple(

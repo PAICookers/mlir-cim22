@@ -1,4 +1,4 @@
-"""Fixed DVS adapter and optional leaf-layer CIM offload."""
+"""Fixed DVS application using the registered PyTorch backend."""
 
 import ctypes
 import importlib.util
@@ -12,10 +12,10 @@ import numpy as np
 import torch
 from spikingjelly.activation_based import functional, neuron, surrogate
 
-from cim22.backend import session_for_artifact
+from cim22.backend import CompilationReport, compilation_report
+from cim22.compiler import BackendOptions
 from cim22.layers import (
     CimLayerInfo,
-    LayerOffload,
     validate_cim_layers,
 )
 from cim22.layers import (
@@ -59,7 +59,7 @@ def _new_model(module: object, dropout: float = 0.2) -> torch.nn.Module:
 
 
 def discover_cim_layers(model_dir: Path) -> list[CimLayerInfo]:
-    """Discover the fixed DVS model using the shared SDK layer API."""
+    """Discover candidate leaves and their shapes for the fixed DVS model."""
     model = _new_model(_load_model_module(model_dir))
     try:
         return discover_model_layers(model, (torch.zeros(32, 1, 2, 128, 128),))
@@ -77,7 +77,7 @@ def validate_cim_layer_names(
 
 
 class DvsEngine:
-    """Own eager and hybrid compiled models for reset-per-sample inference."""
+    """Own eager and compiled models for reset-per-sample inference."""
 
     def __init__(self, config: Document, directory: Path) -> None:
         if config.get("runtime") != "usb":
@@ -104,6 +104,7 @@ class DvsEngine:
                     "compiler.py",
                     "runtime.py",
                     "layers.py",
+                    "_module_offload.py",
                 )
             },
         }
@@ -145,10 +146,8 @@ class DvsEngine:
 
         self.original = build()
         self.cim = build()
-        self.compiled: torch.nn.Module | LayerOffload | None = None
-        self.layer_artifacts: dict[str, list[str]] = {}
-        self.layer_compile_seconds: dict[str, float] = {}
-        self.dispatch_count: int | None = None
+        self.compiled: torch.nn.Module | None = None
+        self._report: CompilationReport | None = None
         self.last_outputs: dict[str, torch.Tensor] = {}
         self._libc = ctypes.CDLL(None) if sys.platform == "linux" else None
         validate_cim_layers(self.cim, config.get("cim_layers"))
@@ -165,68 +164,54 @@ class DvsEngine:
             raise ValueError(f"样本尺寸或数值无效：{entry['path']}")
         return torch.from_numpy(frames).unsqueeze(1).contiguous()
 
-    def _artifact_paths(self) -> set[Path]:
-        return set((self.directory / "artifacts").rglob(f"*{MODEL_SUFFIX}"))
-
-    def _compile_selected(self, sample: torch.Tensor) -> None:
-        offload = LayerOffload(
-            self.cim,
-            self.cim_layers,
-            (sample,),
-            artifact_dir=self.directory / "artifacts",
-            runtime="usb",
-            usb_config=self.usb_config,
-            reset=functional.reset_net,
-        )
-        self.layer_artifacts = offload.layer_artifacts
-        self.layer_compile_seconds = offload.layer_compile_seconds
-        self.dispatch_count = offload.dispatch_count
-        self.compiled = offload
-
     def compile(self, phase: Callable[[str], None]) -> float:
         sample = self.load(0)
         artifact_dir = self.directory / "artifacts"
-        artifact_dir.mkdir(exist_ok=True)
         with torch.inference_mode():
             functional.reset_net(self.cim)
             phase("compiling")
-            started = time.perf_counter()
+            options: BackendOptions = {
+                "runtime": "usb",
+                "usb_config": self.usb_config,
+                "artifact_dir": artifact_dir,
+            }
             if self.cim_layers:
-                self._compile_selected(sample)
-                functional.reset_net(self.cim)
-                self.prediction(self.compiled(sample))
-            else:
-                self.compiled = torch.compile(
-                    self.cim,
-                    backend="cim22",
-                    fullgraph=True,
-                    dynamic=False,
-                    options={
-                        "runtime": "usb",
-                        "usb_config": self.usb_config,
-                        "artifact_dir": artifact_dir,
-                    },
+                options.update(
+                    cim_layers=self.cim_layers, debug_dir=artifact_dir / "ir"
                 )
-                output = self.compiled(sample)
-                self.prediction(output)
-            self._check_dispatch()
-            elapsed = time.perf_counter() - started
-            functional.reset_net(self.cim)
+            compiled = torch.compile(
+                self.cim,
+                backend="cim22",
+                fullgraph=True,
+                dynamic=False,
+                options=options,
+            )
+            try:
+                self.prediction(compiled(sample))
+                report = self._execution_report()
+            finally:
+                functional.reset_net(self.cim)
         self.trim()
-        self.artifacts = self._artifact_paths()
-        if not self.artifacts:
-            raise RuntimeError(f"编译未生成模型 {MODEL_SUFFIX}")
-        return elapsed
+        self._report = report
+        self.compiled = compiled
+        return report.compile_seconds
 
-    def _check_dispatch(self) -> None:
+    def _execution_report(self) -> CompilationReport:
         # A valid Host-only artifact does not establish CIM board execution.
-        if self.cim_layers:
-            self.dispatch_count = self.compiled.dispatch_count
-        else:
-            session = session_for_artifact(self.directory / "artifacts")
-            self.dispatch_count = session.dispatch_count if session else 0
-        if not self.dispatch_count:
+        report = compilation_report(self.directory / "artifacts")
+        if report is None or not report.dispatch_count:
             raise RuntimeError("模型未执行 CIM 板卡计算，请检查编译产物")
+        if not report.artifacts:
+            raise RuntimeError(f"编译未生成模型 {MODEL_SUFFIX}")
+        for path in self.cim_layers:
+            if not report.layer_dispatch_counts.get(path):
+                raise RuntimeError(f"所选模块未执行 CIM 板卡计算：{path}")
+        return report
+
+    @property
+    def dispatch_count(self) -> int | None:
+        """Return the CIM calls in the last accepted inference."""
+        return self._report.dispatch_count if self._report else None
 
     @staticmethod
     def prediction(output: torch.Tensor) -> int:
@@ -245,16 +230,18 @@ class DvsEngine:
             started = time.perf_counter()
             output = model(sample)
             elapsed = time.perf_counter() - started
-            if not hasattr(self, "last_outputs"):
-                self.last_outputs = {}
-            self.last_outputs[side] = output.detach().float().cpu()
+            prediction = self.prediction(output)
             if side == "cim":
-                if self._artifact_paths() != self.artifacts:
+                report = self._execution_report()
+                if (
+                    self._report is None
+                    or report.artifacts != self._report.artifacts
+                ):
                     raise RuntimeError(
                         "样本触发额外编译，未计入结果；请重新导入"
                     )
-                self._check_dispatch()
-            prediction = self.prediction(output)
+                self._report = report
+            self.last_outputs[side] = output.detach().float().cpu()
         self.trim()
         return prediction, elapsed
 
@@ -273,8 +260,12 @@ class DvsEngine:
         return {
             "cim_layers": list(self.cim_layers) or None,
             "execution_mode": "hybrid" if self.cim_layers else "full_model",
-            "layer_artifacts": self.layer_artifacts,
-            "layer_compile_seconds": self.layer_compile_seconds,
+            "layer_artifacts": self._report.layer_artifacts
+            if self._report
+            else {},
+            "layer_compile_seconds": (
+                self._report.layer_compile_seconds if self._report else {}
+            ),
             "dispatch_count": self.dispatch_count,
         }
 
