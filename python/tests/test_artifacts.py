@@ -2,6 +2,7 @@
 
 import hashlib
 import subprocess
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -181,12 +182,15 @@ def test_embedded_protobuf_contract(
 
 @pytest.mark.parametrize("owner_first", [True, False])
 def test_model_lifetime_and_unicode_path(
-    tmp_path: Path, owner_first: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owner_first: bool
 ) -> None:
     """Two models and duplicate loads retain their own code and release files."""
     folder = tmp_path / "\u6a21\u578b with spaces"
     first_path = folder / f"first{MODEL_SUFFIX}"
     second_path = folder / f"second{MODEL_SUFFIX}"
+    session_dir = tmp_path / "sessions"
+    session_dir.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(session_dir))
 
     class Scale(torch.nn.Module):
         def __init__(self, factor: int):
@@ -212,8 +216,9 @@ def test_model_lifetime_and_unicode_path(
         ) as second,
         Session(first_path) as duplicate,
     ):
+        assert set(folder.iterdir()) == {first_path, second_path}
         if MODEL_SUFFIX == ".dll":
-            private_dlls = list(folder.glob(".cim22-*/model.dll"))
+            private_dlls = list(session_dir.rglob("*.dll"))
             assert len(private_dlls) == 2
             assert all(not first_path.samefile(path) for path in private_dlls)
         np.testing.assert_array_equal(first(value.numpy())[0], 2)
@@ -224,7 +229,7 @@ def test_model_lifetime_and_unicode_path(
             duplicate.close()
             np.testing.assert_array_equal(first(value.numpy())[0], 2)
         np.testing.assert_array_equal(second(value.numpy())[0], 3)
-    assert not list(folder.glob(".cim22-*"))
+    assert not list(session_dir.iterdir())
     # Deletion fails on Windows if any loader still owns the DLL.
     first_path.unlink()
     second_path.unlink()
