@@ -176,6 +176,14 @@ def _compile(
     )
 
 
+def _publish_library(source: Path, destination: Path) -> None:
+    """Atomically publish a native model without replacing an existing file."""
+    if os.name == "nt":
+        source.rename(destination)
+    else:
+        destination.hardlink_to(source)
+
+
 def _compile_linalg(
     linalg_ir: str,
     *,
@@ -304,29 +312,28 @@ def _compile_linalg(
                 ],
                 "shared-library link",
             )
-        with dynamo_timed("cim22.load"):
-            session = Session(shared, library=library)
+        model_to_load = shared
+        with ExitStack() as loaded_files:
+            if os.name == "nt":
+                # Keep the loaded DLL outside any artifact publication staging
+                # directory, which must be movable while the Session is live.
+                private = Path(
+                    loaded_files.enter_context(
+                        tempfile.TemporaryDirectory(prefix="cim22-model-")
+                    )
+                )
+                model_to_load = private / shared.name
+                shutil.copyfile(shared, model_to_load)
+            with dynamo_timed("cim22.load"):
+                session = Session(model_to_load, library=library)
+            session._resources.callback(loaded_files.pop_all().close)
         try:
             if debug_dir is not None:
                 debug_dir.mkdir(parents=True)
                 for path in (linalg, packet, object_file):
                     shutil.copyfile(path, debug_dir / path.name)
             if artifact_path is not None:
-                if os.name == "nt":
-                    # A saved DLL must not keep the Session's private DLL locked.
-                    publication = folder / "artifact.dll"
-                    shutil.copyfile(shared, publication)
-                    # Windows rename is atomic and refuses an existing target.
-                    os.rename(publication, artifact_path)
-                else:
-                    # Atomic publication without replacing a concurrent winner.
-                    os.link(shared, artifact_path)
-            if os.name == "nt":
-                # Retain only the locked DLL until native Session destruction.
-                for path in folder.iterdir():
-                    if path != shared:
-                        path.unlink()
-                session._resources.callback(cleanup.pop_all().close)
+                _publish_library(shared, artifact_path)
         except BaseException:
             session.close()
             raise
