@@ -489,6 +489,8 @@ def test_backend_usb_configuration_failure_closes_session(
     ):
         with pytest.raises(BackendCompilerFailed, match="device unavailable"):
             compiled(value)
+        assert not list((tmp_path / "models").iterdir())
+        assert not list((tmp_path / "ir").iterdir())
         # A mock successful configuration cannot open hardware. Reaching the
         # native dispatch proves retry passed publication and device setup.
         with pytest.raises(RuntimeError, match="USB runtime is not configured"):
@@ -496,8 +498,8 @@ def test_backend_usb_configuration_failure_closes_session(
     assert configure.call_count == 2
     sessions = [call.args[0] for call in configure.call_args_list]
     assert all(call.args[1] is usb_config for call in configure.call_args_list)
-    assert len(list((tmp_path / "models").glob(f"*{MODEL_SUFFIX}"))) == 2
-    assert len(list((tmp_path / "ir").iterdir())) == 2
+    assert len(list((tmp_path / "models").glob(f"*{MODEL_SUFFIX}"))) == 1
+    assert len(list((tmp_path / "ir").iterdir())) == 1
     with pytest.raises(RuntimeError, match="closed"):
         sessions[0](value.numpy())
     sessions[1].close()

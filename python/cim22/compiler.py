@@ -40,6 +40,9 @@ class BackendOptions(TypedDict, total=False):
             shared by this model. Mutually exclusive with usb_config.
         artifact_dir: Directory in which to keep each native model library.
         debug_dir: Directory in which to keep the IR for each specialization.
+        cim_layers: Full PyTorch module path or sequence of paths to compile.
+        compile_strictness: "strict" requires a CIM transaction per selected
+            module. "allow_host" permits successful zero-transaction modules.
     """
 
     runtime: RuntimeBackend | Literal["reference"]
@@ -48,6 +51,8 @@ class BackendOptions(TypedDict, total=False):
     usb_session: Session
     artifact_dir: str | Path
     debug_dir: str | Path
+    cim_layers: str | list[str] | tuple[str, ...]
+    compile_strictness: Literal["strict", "allow_host"]
 
 
 def _check_torch_mlir_compatibility() -> None:
@@ -70,6 +75,11 @@ def _validate_options(
     options: BackendOptions, *, allow_reference: bool = False
 ) -> None:
     """Reject unsupported runtime choices before capture or compilation."""
+    if (
+        not allow_reference
+        and {"cim_layers", "compile_strictness"} & options.keys()
+    ):
+        raise ValueError("CIM module selection requires the PyTorch backend")
     runtime = options.get("runtime", "usb")
     allowed = (
         ("reference", "simulator", "usb")
