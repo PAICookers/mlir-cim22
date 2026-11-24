@@ -33,7 +33,7 @@ def test_cancel_stops_blocked_download_and_persists(tmp_path, monkeypatch):
         while manager.snapshot()["task"]["status"] != "downloading":
             assert time.monotonic() < deadline
             time.sleep(0.05)
-        with pytest.raises(ValueError, match="已有 MNIST"):
+        with pytest.raises(ValueError, match="已有训练任务"):
             manager.ensure_idle()
         assert manager.cancel()["task"]["status"] == "cancelled"
         assert manager.process is None

@@ -2,6 +2,13 @@
 
 [启动与使用指南](../.agents/skills/cim22-user-guide/references/web.md)包含环境安装、框架验证、DVS 指定层执行与命令行、MNIST 训练说明。
 
+## DVS 选层
+
+在 **DVS 应用** 确认模型权重、测试集目录和 USB 配置，勾选
+**仅将选定叶子层部署到 CIM，其余层在 CPU 执行**，再从候选列表选择一层或多层。
+依次点击 **导入模型与测试集**、**编译模型**，编译完成后即可运行样本。
+取消选层模式可自动映射整图。两种模式的编译预热都需要连接 CIM22 板卡。
+
 ## 开发
 
 前端开发工具需要 Node.js `^22.22.2 || ^24.15.0 || >=26`（CI 使用 Node.js 24），
@@ -30,8 +37,8 @@ Tailwind CSS 4 的 `@theme`。运行 `pnpm lint:fix` 自动修复可修复的问
 依赖和原生工具链就绪后，在 `python/` 执行：
 
 ```sh
-uv run --no-sync python -m pytest -q tests/test_layers.py
+uv run --no-sync python -m pytest -q tests/test_layers.py tests/test_module_offload.py tests/test_web.py
 ```
 
-测试覆盖单层、连续两个 Linear 和中间保留 CPU Linear 的不连续选择，
-逐层检查真实 simulator dispatch、独立产物、重复执行及 CPU 数值对比。
+测试覆盖 DVS 候选解析、Web 选层提交，以及通用后端的单层和多层编译。
+模拟器回归检查实际 CIM 调用次数、产物、Host 保留及与 PyTorch 的输出对照。

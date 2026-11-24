@@ -11,7 +11,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from cim22.backend import session_for_artifact
+from cim22.backend import compilation_report
 
 logger = logging.getLogger(__name__)
 
@@ -115,8 +115,8 @@ def run(
         for case_name, inputs in _cases():
             reference = model(inputs)
             actual = compiled(inputs)
-            session = session_for_artifact(output)
-            dispatch_count = session.dispatch_count if session else 0
+            report = compilation_report(output)
+            dispatch_count = report.dispatch_count if report else 0
             if not dispatch_count:
                 raise RuntimeError(f"{case_name}: no CIM computation")
             torch.testing.assert_close(

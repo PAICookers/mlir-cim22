@@ -229,7 +229,9 @@ def board_check(
     folder.mkdir()
     backend = importlib.import_module("cim22.backend")
     initialize = backend._initialize_session
+    compile_graph = backend._compile
     sessions: list[Session] = []
+    staged: tuple[Path, Path] | None = None
     active_expectation: BoardExpectation | None = None
     observers: dict[Session, UsbObservation] = {}
 
@@ -252,20 +254,29 @@ def board_check(
         finally:
             session.close()
 
+    def capture_outputs(
+        *args: object, artifact_path: Path, debug_dir: Path, **kwargs: object
+    ) -> Session:
+        nonlocal staged
+        staged = (artifact_path, debug_dir / "model.packet.mlir")
+        return compile_graph(
+            *args, artifact_path=artifact_path, debug_dir=debug_dir, **kwargs
+        )
+
     def retain(
         session: Session,
         usb_config: UsbConfig | None = None,
         resources: ExitStack | None = None,
+        *,
+        usb_session: Session | None = None,
     ) -> Session:
         sessions.append(session)
         assert session.num_transactions > 0, (
             "model was retained entirely on Host"
         )
-        runtime = "usb" if usb_config is not None else "simulator"
-        directory = folder / runtime
         if usb_config is not None or active_expectation is not None:
-            (artifact,) = directory.glob(f"*{MODEL_SUFFIX}")
-            (packet,) = directory.glob("ir/*/model.packet.mlir")
+            assert staged is not None
+            artifact, packet = staged
             metadata = embedded_model(artifact)
             if active_expectation is not None:
                 active_expectation.inspect(
@@ -284,8 +295,11 @@ def board_check(
                 initialize(session, None, resources)
                 configure_session(session, usb_config, "wire")
                 return session
-        return initialize(session, usb_config, resources)
+        return initialize(
+            session, usb_config, resources, usb_session=usb_session
+        )
 
+    monkeypatch.setattr(backend, "_compile", capture_outputs)
     monkeypatch.setattr(backend, "_initialize_session", retain)
     torch.compiler.reset()
 

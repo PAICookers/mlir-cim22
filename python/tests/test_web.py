@@ -87,6 +87,11 @@ def test_unknown_classes_and_empty_dataset(inputs: Inputs) -> None:
 class FakeEngine:
     """Known predictions/times independent of IO and wall-clock overhead."""
 
+    dispatch_count = None
+
+    def max_abs_error(self) -> None:
+        return None
+
     def __init__(
         self,
         cancel: Event | None = None,
@@ -373,6 +378,9 @@ def _worker_with_stub_model(
         def compile(self, phase: Callable[[str], None]) -> float:
             return 0.0
 
+        def metadata(self) -> dict[str, object]:
+            return {}
+
     with patch.dict(
         "sys.modules",
         {"cim22.web.engine": SimpleNamespace(DvsEngine=StubEngine)},
@@ -522,16 +530,20 @@ def test_engine_resets_before_each_call_and_excludes_postprocessing(
 
     instance = implementation.DvsEngine.__new__(implementation.DvsEngine)
     instance.cim_layers = ()
+    report = implementation.CompilationReport(
+        artifacts=("test.so",), dispatch_count=2
+    )
     monkeypatch.setattr(
         implementation,
-        "session_for_artifact",
-        lambda _: SimpleNamespace(dispatch_count=2),
+        "compilation_report",
+        lambda _: report,
     )
     instance.original = Stateful()
     instance.cim = Stateful()
     instance.compiled = instance.cim
     instance.directory = tmp_path
-    instance.artifacts = set()
+    instance._report = report
+    instance.last_outputs = {}
     instance.trim = lambda: trace.append("trim")
     sample = torch.zeros(1)
     ticks = iter([1.0, 1.25, 5.0, 7.0, 10.0, 10.25])
@@ -545,7 +557,14 @@ def test_engine_resets_before_each_call_and_excludes_postprocessing(
 
 
 @pytest.mark.parametrize(
-    "changed_source", ["backend.py", "compiler.py", "runtime.py", "usb_config"]
+    "changed_source",
+    [
+        "backend.py",
+        "compiler.py",
+        "runtime.py",
+        "_module_offload.py",
+        "usb_config",
+    ],
 )
 def test_resume_rejects_changed_python_backend(
     monkeypatch: pytest.MonkeyPatch,
@@ -820,44 +839,66 @@ def test_dvs_compile_and_infer_require_usb_dispatch(
     instance.usb_config = parse_usb_config(USB_CONFIG)
     instance.load = lambda _: torch.zeros(1)
     instance.trim = lambda: None
+    instance.last_outputs = {}
     calls = []
-    session = SimpleNamespace(dispatch_count=dispatch_count or 0)
+    invocations = []
+    artifact = tmp_path / "artifacts" / ("model" + MODEL_SUFFIX)
+    report = engine.CompilationReport(
+        artifacts=(str(artifact),),
+        compile_seconds=0.25,
+        layer_dispatch_counts={"head": dispatch_count or 0},
+        dispatch_count=dispatch_count or 0,
+    )
     monkeypatch.setattr(
         engine,
-        "session_for_artifact",
-        lambda _: session if dispatch_count is not None else None,
+        "compilation_report",
+        lambda path: (
+            engine.CompilationReport(**vars(report))
+            if path == artifact.parent and dispatch_count is not None
+            else None
+        ),
     )
 
     class Compiled(torch.nn.Module):
-        layer_artifacts = {"head": ["model" + MODEL_SUFFIX]}
-        layer_compile_seconds = {"head": 0.1}
-
-        @property
-        def dispatch_count(self) -> int:
-            return session.dispatch_count
-
         def forward(self, _: torch.Tensor) -> torch.Tensor:
+            invocations.append(1)
             return torch.ones(32, 1, 11)
 
     def compile_model(*args: object, **kwargs: object) -> Compiled:
-        options = kwargs if selected else kwargs["options"]
+        options = kwargs["options"]
         calls.append(options)
+        assert args == (instance.cim,)
+        assert kwargs["backend"] == "cim22"
+        assert kwargs["fullgraph"] is True
+        assert kwargs["dynamic"] is False
         assert options["runtime"] == "usb"
         assert options["usb_config"] is instance.usb_config
         assert instance.usb_config.timing.work_delay_ms == 10
-        (options["artifact_dir"] / ("model" + MODEL_SUFFIX)).touch()
+        if selected:
+            assert options["cim_layers"] == ("head",)
+            assert options["debug_dir"] == artifact.parent / "ir"
+        else:
+            assert "cim_layers" not in options
+            assert "debug_dir" not in options
+        artifact.parent.mkdir()
+        artifact.touch()
         return Compiled()
 
-    monkeypatch.setattr(engine, "LayerOffload", compile_model)
     monkeypatch.setattr(engine.torch, "compile", compile_model)
     if not dispatch_count:
         with pytest.raises(RuntimeError, match="未执行 CIM 板卡计算"):
             instance.compile(lambda _: None)
     else:
-        instance.compile(lambda _: None)
+        assert instance.compile(lambda _: None) == report.compile_seconds
+        assert len(invocations) == 1
         assert instance.dispatch_count == dispatch_count
         assert instance.infer("cim", torch.zeros(1))[0] == 0
-        session.dispatch_count = 0
+        report.artifacts = ("unwarmed-specialization",)
+        with pytest.raises(RuntimeError, match="样本触发额外编译"):
+            instance.infer("cim", torch.zeros(1))
+        assert instance._report.artifacts == (str(artifact),)
+        report.artifacts = (str(artifact),)
+        report.dispatch_count = 0
         with pytest.raises(RuntimeError, match="未执行 CIM 板卡计算"):
             instance.infer("cim", torch.zeros(1))
 

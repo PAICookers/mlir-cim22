@@ -201,8 +201,14 @@ def simulator_check(
     sessions: list[Session] = []
     backend = importlib.import_module("cim22.backend")
 
-    def retain(session: Session, usb_config: None = None) -> Session:
+    def retain(
+        session: Session,
+        usb_config: None = None,
+        *,
+        usb_session: None = None,
+    ) -> Session:
         assert usb_config is None
+        assert usb_session is None
         assert session.num_transactions > 0
         sessions.append(session)
         return session

@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     tags: ['v*']
-    # Branch pushes are limited to inputs that can change the wheel bytes.
+    # Branch pushes cover wheel build inputs and validation scripts.
     # GitHub ignores paths for tag pushes, so release tags remain enabled.
     paths:
       - '.github/workflows/wheels.yml'
@@ -15,6 +15,9 @@ on:
       - '.github/scripts/build-windows-wheel.ps1'
       - '.github/scripts/prepare-wheel.py'
       - '.github/scripts/repack-native-wheel.py'
+      - '.github/scripts/test_*.py'
+      - '.github/scripts/check-wheel-contents.py'
+      - '.github/scripts/validate-installed-wheel.py'
       - 'CMakeLists.txt'
       - 'LICENSE'
       - 'cmake/**'
@@ -364,8 +367,7 @@ jobs:
 
       - name: Check packaging helpers and set wheel version
         run: |
-          python .github/scripts/test_repack_native_wheel.py
-          python .github/scripts/test_prepare_wheel.py
+          python -m unittest discover -s .github/scripts
           python .github/scripts/prepare-wheel.py
 
       - name: Extract shared Linux SDK
@@ -522,31 +524,5 @@ jobs:
         with:
           arch: x64
 
-      - name: Validate Linux checksum
-        if: matrix.platform == 'linux'
-        shell: bash
-        working-directory: python/dist/manylinux
-        run: sha256sum --check *.whl.sha256
-
-      - name: Validate Windows checksum
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        working-directory: python/dist/windows
-        run: |
-          $wheel = @(Get-ChildItem '*.whl')
-          if ($wheel.Count -ne 1) { throw 'Expected exactly one Windows wheel' }
-          $checksum = (Get-Content -Raw "$($wheel[0].Name).sha256").Trim() -split '  ', 2
-          if ($checksum.Count -ne 2 -or $checksum[1] -ne $wheel[0].Name -or
-              (Get-FileHash $wheel[0].FullName -Algorithm SHA256).Hash -ne $checksum[0]) {
-              throw 'Windows wheel checksum mismatch'
-          }
-
-      - name: Validate installed Linux wheel outside checkout
-        if: matrix.platform == 'linux'
-        shell: bash
-        run: bash .github/scripts/test-wheel.sh python/dist/manylinux
-
-      - name: Validate installed Windows wheel outside checkout
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: .github/scripts/test-windows-wheel.ps1 -DistDir python/dist/windows
+      - name: Validate installed wheel outside checkout
+        run: python .github/scripts/validate-installed-wheel.py python/dist/${{ matrix.dist-dir }}
