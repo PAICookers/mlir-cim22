@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from cim22.compiler import _compile_linalg, _emit_object
-from cim22.runtime import MODEL_SUFFIX, Session, _load_library, runtime_library
+from cim22.runtime import MODEL_SUFFIX, Session, _load_library
 
 from ._generated import cim22_model_pb2 as proto
 
@@ -96,7 +96,7 @@ def test_object_destination_failure(
     if destination == "directory":
         output.mkdir(parents=True)
     with pytest.raises(RuntimeError, match="cannot .* object file"):
-        _emit_object(packet, output, native_runtime)
+        _emit_object(packet, output)
     assert not list(tmp_path.rglob("*.tmp-*"))
     if destination == "missing":
         assert not output.exists()
@@ -108,7 +108,7 @@ def test_object_destination_failure(
     sys.platform == "win32", reason="requires POSIX RLIMIT_FSIZE"
 )
 def test_object_write_failure_preserves_previous_output(
-    packet: Path, tmp_path: Path, native_runtime: Path
+    packet: Path, tmp_path: Path
 ) -> None:
     output = tmp_path / "model.o"
     output.write_bytes(b"previous object")
@@ -119,12 +119,11 @@ import resource
 import signal
 import sys
 from pathlib import Path
-from cim22.compiler import _compile_linalg, _emit_object
+from cim22.compiler import _emit_object
 signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
 resource.setrlimit(resource.RLIMIT_FSIZE, (128, 128))
 try:
-    _emit_object(Path(sys.argv[1]), Path(sys.argv[2]),
-                 Path(sys.argv[3]))
+    _emit_object(Path(sys.argv[1]), Path(sys.argv[2]))
 except RuntimeError as error:
     assert 'CIM22 object emission failed:' in str(error), str(error)
 else:
@@ -137,7 +136,6 @@ else:
             script,
             str(packet),
             str(output),
-            str(native_runtime),
         ],
         capture_output=True,
         text=True,
@@ -196,7 +194,7 @@ func.func @main(%input: tensor<1x2x8x8xi8>) -> tensor<1x17x3x3xi32> {{
     if artifact_format == "shared":
         object_file = tmp_path / ("conv.obj" if os.name == "nt" else "conv.o")
         artifact = tmp_path / f"conv{MODEL_SUFFIX}"
-        _emit_object(packet, object_file, native_runtime, "simulator")
+        _emit_object(packet, object_file, "simulator")
         subprocess.run(
             [
                 os.environ.get("CIM22_CC", "cl"),
@@ -267,7 +265,7 @@ def test_packet_parser_rejects_invalid_return(packet: Path) -> None:
         )
     )
     with pytest.raises(RuntimeError, match="return"):
-        _emit_object(packet, packet.with_suffix(".o"), runtime_library())
+        _emit_object(packet, packet.with_suffix(".o"))
 
 
 @pytest.mark.parametrize("shape", [(), (1, 1, 1), (1, 8, 1), (2, 4, 3)])
@@ -414,7 +412,7 @@ def test_obsolete_correction_marker_rejected(packet: Path) -> None:
         )
     )
     with pytest.raises(RuntimeError, match="obsolete cim.bf16_corrected"):
-        _emit_object(packet, packet.with_suffix(".o"), runtime_library())
+        _emit_object(packet, packet.with_suffix(".o"))
 
 
 @pytest.mark.parametrize("mode", ['"unknown"', "true"])
@@ -426,7 +424,7 @@ def test_invalid_compensation_marker_rejected(packet: Path, mode: str) -> None:
         )
     )
     with pytest.raises(RuntimeError, match="BF16 compensation must"):
-        _emit_object(packet, packet.with_suffix(".o"), runtime_library())
+        _emit_object(packet, packet.with_suffix(".o"))
 
 
 @pytest.mark.usefixtures("native_toolchain")

@@ -6,10 +6,20 @@ build-backend = "scikit_build_core.build"
 name = "mlir-cim22"
 version = "1.0.0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["numpy>=1.26,<3", "pyserial>=3.5,<4", "torch>=2.14,<3", "torch-mlir"]
+dependencies = [
+    "numpy>=1.26,<3",
+    "pyserial>=3.5,<4",
+    "torch>=2.14,<3",
+    "torch-mlir",
+]
 
 [project.optional-dependencies]
-web = ["fastapi>=0.115,<1", "spikingjelly>=0.0.0.0.12,<1", "torchvision>=0.29,<0.30", "uvicorn>=0.34,<1"]
+web = [
+    "fastapi>=0.115,<1",
+    "spikingjelly>=0.0.0.0.12,<1",
+    "torchvision>=0.29,<0.30",
+    "uvicorn>=0.34,<1",
+]
 tensorflow = ["tensorflow==2.20.0", "tf2onnx==1.17.0", "onnx>=1.21.0,<2"]
 
 [project.scripts]

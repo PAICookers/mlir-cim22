@@ -261,10 +261,10 @@ def test_int8_matmul_execution(
     packets: list[str] = []
 
     def inspect_packet(
-        packet: Path, object_file: Path, library: Path, runtime: RuntimeBackend
+        packet: Path, object_file: Path, runtime: RuntimeBackend
     ) -> None:
         packets.append(packet.read_text(encoding="utf-8"))
-        _emit_object(packet, object_file, library, runtime)
+        _emit_object(packet, object_file, runtime)
 
     model = Int8Matmul().eval()
     compiled = torch.compile(
