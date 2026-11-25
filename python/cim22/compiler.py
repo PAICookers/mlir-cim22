@@ -106,7 +106,6 @@ def _validate_options(
 def _emit_object(
     packet: Path,
     object_file: Path,
-    library: Path,
     runtime: RuntimeBackend = "usb",
 ) -> None:
     """Emit a native object from packet-stage IR.
@@ -114,7 +113,6 @@ def _emit_object(
     Args:
         packet: Lowered packet IR file with the Host/device split.
         object_file: Destination object file.
-        library: Execution library used to link the final model.
         runtime: Backend embedded in the emitted model descriptor.
 
     Raises:
@@ -289,7 +287,7 @@ def _compile_linalg(
                 "CIM lowering",
             )
         with dynamo_timed("cim22.object"):
-            _emit_object(packet, object_file, library, runtime)
+            _emit_object(packet, object_file, runtime)
         # Bind model-local function names locally; different loaded models may
         # all have an entry called main. The common runtime remains external.
         with dynamo_timed("cim22.link"):

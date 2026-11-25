@@ -170,12 +170,10 @@ def test_harness_with_device_substitute(
         compiler = importlib.import_module("cim22.compiler")
         emit = compiler._emit_object
 
-        def alter_packet(
-            packet: Path, object_file: Path, library: Path, runtime: str
-        ) -> None:
+        def alter_packet(packet: Path, object_file: Path, runtime: str) -> None:
             if runtime == "usb":
                 packet.write_text(packet.read_text() + "\n// altered packet\n")
-            emit(packet, object_file, library, runtime)
+            emit(packet, object_file, runtime)
 
         monkeypatch.setattr(compiler, "_emit_object", alter_packet)
         with pytest.raises(RuntimeError, match="same lowered packet IR"):
