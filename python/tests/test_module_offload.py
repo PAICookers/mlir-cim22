@@ -122,6 +122,52 @@ def test_reports_only_selected_regions(
     assert paths == set(tmp_path.rglob(f"*{MODEL_SUFFIX}"))
 
 
+def test_strict_single_partition_does_not_copy_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cim22._module_offload as offload
+
+    def unexpected_copy(graph: torch.fx.Graph) -> torch.fx.Graph:
+        pytest.fail("strict single-partition compilation copied its graph")
+
+    monkeypatch.setattr(offload, "deepcopy", unexpected_copy)
+    model = nn.Sequential(make_linear()).eval()
+    compiled = compile_selected(model, tmp_path, "0")
+    value = torch.ones(1, 4)
+    with torch.inference_mode():
+        torch.testing.assert_close(compiled(value), model(value))
+
+
+def test_strict_repeated_module_partitions_preserve_graph_copies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cim22._module_offload as offload
+
+    copy_graph = offload.deepcopy
+    copied_graphs = 0
+
+    def record_copy(graph: torch.fx.Graph) -> torch.fx.Graph:
+        nonlocal copied_graphs
+        copied_graphs += 1
+        return copy_graph(graph)
+
+    class RepeatedBlock(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.block = nn.Sequential(make_linear(), make_linear())
+
+        def forward(self, value: torch.Tensor) -> torch.Tensor:
+            return self.block(value).relu() + self.block(value)
+
+    monkeypatch.setattr(offload, "deepcopy", record_copy)
+    model = RepeatedBlock().eval()
+    value = torch.ones(1, 4)
+    compiled = compile_selected(model, tmp_path, "block")
+    with torch.inference_mode():
+        torch.testing.assert_close(compiled(value), model(value))
+    assert copied_graphs == 2
+
+
 @pytest.mark.parametrize(
     ("selected", "message"),
     [

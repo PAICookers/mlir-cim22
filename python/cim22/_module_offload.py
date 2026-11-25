@@ -279,7 +279,7 @@ class _NativePartition(torch.nn.Module):
         session: Session,
         indices: list[int],
         strides: list[tuple[int, ...]],
-    ):
+    ) -> None:
         super().__init__()
         self.session = session
         self.indices = indices
@@ -311,6 +311,7 @@ def compile_selected(
     """Compile complete partitions before exposing a callable to AOTAutograd."""
     module, paths = _partition(graph, module_paths)
     mapped = set()
+    partition_counts = Counter(paths.values())
     report.layer_artifacts = {path: [] for path in selected}
     report.layer_compile_seconds = dict.fromkeys(selected, 0.0)
     sessions: list[tuple[str, Session]] = []
@@ -339,9 +340,14 @@ def compile_selected(
                 continue
             name = str(call.target)
             partition = module.get_submodule(name)
-            # Retain the original callable for zero-transaction Host execution.
-            native_graph = torch.fx.GraphModule(
-                partition, deepcopy(partition.graph)
+            preserve_host_graph = (
+                options.get("compile_strictness", "strict") == "allow_host"
+                or partition_counts[path] > 1
+            )
+            native_graph = (
+                torch.fx.GraphModule(partition, deepcopy(partition.graph))
+                if preserve_host_graph
+                else partition
             )
             artifact = (
                 artifacts / f"{name}{MODEL_SUFFIX}" if artifacts else None
