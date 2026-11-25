@@ -17,14 +17,20 @@ TensorFlow 和 PyTorch 页面在开始编译前选择 `软件仿真` 或 `CIM �
 
 ## 启动
 
-先完成 [Python 快速开始](install.md#创建环境并安装)，在自己的
-应用目录中创建虚拟环境并安装两个 wheel。Web 需要额外的 CPU torchvision、服务端与
-TensorFlow 依赖；在同一目录执行，将 `<cim22-wheel>` 替换为实际项目 wheel 文件名中 `.whl` 前的部分：
+先按[安装指南](install.md#安装到现有应用环境)在现有应用环境中装好两个 wheel。
+在同一环境中追加 Web 和 TensorFlow 依赖。若当前使用 CPU 版 PyTorch，且尚未安装
+匹配的 torchvision，可先从 PyTorch CPU 源安装。已有 torchvision 时，确认它与
+当前 PyTorch 版本匹配，并满足项目的 `torchvision>=0.29,<0.30` 约束。
 
 ```sh
-uv pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.14,<3" "torchvision>=0.29,<0.30"
-uv pip install "wheels/<cim22-wheel>.whl[web,tensorflow]" ml_dtypes
-uv pip check
+uv add --index pytorch-cpu=https://download.pytorch.org/whl/cpu "torchvision>=0.29,<0.30"
+```
+
+沿用安装指南中的 wheel 路径，将 `<cim22-wheel>` 换成文件名中 `.whl` 前的部分。
+
+```sh
+uv add "./wheels/<cim22-wheel>.whl[web,tensorflow]"
+uv run uv pip check
 ```
 
 `--model-dir` 指向只读的 DVS 模型包，目录至少包含以下路径：
@@ -44,21 +50,13 @@ uv run cim22-web --model-dir /path/to/model-package --examples-dir /path/to/mlir
 
 wheel 不包含框架示例脚本；`--examples-dir` 应指向项目 wheel 对应提交的 `python/examples/`。
 
-打开
-[http://127.0.0.1:8000](http://127.0.0.1:8000)，先在页面中确认 `/api/state` 返回成功，再选择
-PyTorch、TensorFlow、DVS 或 MNIST 操作。结果、日志和调试产物写入 `--data-dir`，默认
+打开[工作台](http://127.0.0.1:8000)，选择 PyTorch、TensorFlow、DVS 或 MNIST 操作。
+结果、日志和调试产物写入 `--data-dir`，默认
 为启动时工作目录下的 `./cim22-web`。同一个结果目录只能由一个服务使用。
 
 选择 USB 前，先确认板卡、
 驱动和 `UsbConfig` 字段已经按 [Python 配置说明](python-api.md#usb-与-pll-配置)
 准备好。
-
-快速检查服务和静态页面：
-
-```sh
-curl -fsS http://127.0.0.1:8000/api/state
-curl -fsS http://127.0.0.1:8000/ | head
-```
 
 ## DVS 指定层执行
 
@@ -78,11 +76,8 @@ uv run cim22-web --model-dir /path/to/model-package --cim-layers classifier.head
 
 `--cim-layers` 接受一个或多个不同的完整模块名，作为新任务的默认选择。
 DVS 导入表单可以修改选择，或关闭指定层模式以自动映射整图。
-两种模式均通过同一个 `torch.compile` 后端编译模型并预热一次。使用指定层
-模式时，名单以 `cim_layers` 传入后端，每个模块须生成 CIM transaction。
-DVS 新任务固定使用
-`usb`，整模型与指定层模式均使用导入表单中的板卡配置；板卡连接或计算失败
-会报错，不会回退到软件仿真。编译时的预热也会访问板卡。
+整图和选层均使用导入表单中的 USB 配置在板卡上预热。选层时，每个所选模块
+都须生成 CIM transaction。板卡连接或计算失败会报错。
 
 导入前确认板卡已连接、驱动及访问权限就绪，并核对 VID/PID、端点和等待参数。
 页面使用预先配置的板卡时钟，不会自动设置 PLL；等待时间应与实际时钟及已验证
@@ -133,7 +128,6 @@ Windows COM 名称）和 `clock_frequency_mhz`。不指定串口则预先手动�
 `summary.json`。
 错误以非零退出码结束，状态记为 `interrupted`，未完成的软件/板卡结果对不写入
 CSV。CLI 每次新建运行；需要取消后续跑时使用 Web UI。
-两平台均可使用 `uv run python -m cim22.apps.dvs` 代替 `uv run cim22-dvs`。
 
 ## MNIST 模型训练
 

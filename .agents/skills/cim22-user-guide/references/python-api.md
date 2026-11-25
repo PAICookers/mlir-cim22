@@ -38,27 +38,37 @@ with torch.inference_mode():
 
 ### 接口契约
 
-- 首次模型调用触发 Dynamo/AOTAutograd 捕获、torch-mlir 降低和原生编译。用 `fullgraph=True, dynamic=False` 检查整图静态捕获，稳态计时从预热后开始。
-- 在 `torch.inference_mode()` 或 `torch.no_grad()` 下传入连续 CPU Tensor。输入按编译签名传递，支持 FP32、INT8、INT32。改变形状、布局或推理上下文可能触发重新特化。
+- 通过 `torch.compile(model, backend="cim22", fullgraph=True, dynamic=False, options=...)`
+  接入。在原生模式下，首次调用触发 Dynamo 捕获及 AOTAutograd 处理，再由
+  torch-mlir 和原生编译器生成模型。后续调用可复用相同的静态特化，稳态计时从预热后开始。
+- 在 `torch.inference_mode()` 或 `torch.no_grad()` 下传入连续 CPU Tensor。
+  原生 Session 的输入和输出支持 FP32、INT8、INT32。改变形状、布局或推理
+  上下文可能触发重新特化。
 - 只读且无输出别名的模块参数可冻结为 CIM 权重。更改冻结参数后调用 `torch.compiler.reset()` 并重新编译。运行时权重走 Host。
-- 支持的状态写回与输入别名由 AOTAutograd 管理。带状态模型在独立序列前使用模型自身的重置接口，并保持输入存储重叠关系一致。
+- 原生模式下，支持的状态写回与输入别名由 AOTAutograd 管理。带状态模型在独立序列前使用模型自身的重置接口，并保持输入存储重叠关系一致。
 
 INT8 CIM 降低要求显式 `i8 × i8 → i32`、冻结权重和可证明的有符号 INT21 分块结果范围。FP32 收缩可走 CIM BF16，数值验证应使用对应的软件参考。Host 保留与 CIM dispatch 分别验证。
 
 ### 编译选项
 
-两个前端接受以下公共 `options`。按模块选层的选项由 PyTorch 后端提供。
+| `options` 键 | 行为 |
+| --- | --- |
+| `runtime` | 默认 `"usb"`，在 CIM 板卡上执行已映射的 CIM 运算。`"simulator"` 在 CPU 上模拟这些 CIM 运算。PyTorch 另支持 `"reference"`，用原始 CPU PyTorch 算子执行 Dynamo 捕获的图。 |
+| `bf16_compensation` | 原生模式默认 `"sign-split"`，可选 `"legacy"` 或 `"none"`。详见仓库中的 `docs/BF16.md`。 |
+| `usb_config` | `cim22.UsbConfig`，用于打开 USB 连接。仅用于 `"usb"`，与 `usb_session` 互斥。 |
+| `usb_session` | 已配置的 `cim22.Session`，新模型共享其板卡连接、权重驻留与时钟控制。仅用于 `"usb"`，与 `usb_config` 互斥。 |
+| `artifact_dir` | 可选 `str` 或 `Path`。整图编译保存 `graph-<id>.so` 或 `graph-<id>.dll`。 |
+| `debug_dir` | 可选 `str` 或 `Path`。整图编译在 `graph-<id>/` 下保存 `model.linalg.mlir`、`model.packet.mlir` 和 `model.o`（Windows 为 `model.obj`）。 |
+| `cim_layers` | 仅 PyTorch 原生模式。省略时整图自动映射。可传入一个模块路径、非空列表或非空元组。 |
+| `compile_strictness` | 需同时传入 `cim_layers`。默认 `"strict"`，要求每个所选模块至少映射一个 CIM transaction。`"allow_host"` 允许零 transaction 的所选模块在 Host 运行。 |
 
-| 键                    | 行为                                                                                                                                        |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `runtime`           | 默认 `"usb"`，使用 USB 连接 CIM 板卡。`"simulator"` 在 CPU 上模拟 CIM 计算。PyTorch 也支持 `"reference"`，直接执行 CPU PyTorch 算子。 |
-| `bf16_compensation` | 默认 `"sign-split"`，可选 `"legacy"` 或 `"none"` 建立对照。详见 仓库中的 `docs/BF16.md`。                                         |
-| `usb_config`        | `cim22.UsbConfig`，用于打开 USB 连接；与 `usb_session` 互斥。                                                                           |
-| `usb_session`       | 已配置的 `cim22.Session`，新模型共享其板卡连接、权重驻留与时钟控制；仅用于 USB。                                                          |
-| `artifact_dir`      | 可选 `str` 或 `Path`。保存每次编译的 `graph-<id>.so` 或 `graph-<id>.dll`。                                                          |
-| `debug_dir`         | 可选 `str` 或 `Path`。在同名 `graph-<id>/` 下保存 `model.linalg.mlir`、`model.packet.mlir` 和目标文件。                           |
+使用板卡执行 CIM 时，按[设备配置](#usb-与-pll-配置)提供 `usb_config` 或
+`usb_session`。整图自动映射时，编译器决定哪些算子部署到 CIM，编译成功的整图
+可能只有 Host 计算。
 
-PyTorch 的 `reference` 忽略 BF16 补偿策略，且不生成原生制品。TensorFlow 可直接调用原 `tf.function` 取得参考结果。
+`reference` 支持 CPU 输入，要求在无梯度的推理上下文中运行。它直接执行捕获的图，
+跳过 AOTAutograd 与原生编译，忽略 `bf16_compensation`，并拒绝 `cim_layers`、
+`artifact_dir` 和 `debug_dir`。TensorFlow 的参考结果可直接调用原 `tf.function` 获取。
 
 ## 按模块名选择 CIM 执行
 
@@ -67,8 +77,9 @@ PyTorch 的 `reference` 忽略 BF16 补偿策略，且不生成原生制品。Te
 第一个子模块，`head` 表示名为 `head` 的模块。单选时在 `options` 中传入
 `"cim_layers": "encoder.0"`，多选时传入 `"cim_layers": ["encoder.0", "head"]`。
 选择父模块也会覆盖后代和模块内直接调用的功能式算子，例如
-`torch.nn.functional.linear`。选择范围以外的算子由 PyTorch 在 CPU 上执行。
-`named_modules()` 列出模型结构。每个选择是否能部署由首次调用时的编译结果确认。
+`torch.nn.functional.linear`。后端按捕获到的模块归属拆分 AOT forward 图。
+未选中的区域在 PyTorch CPU 上执行。影响跨分区别名、原地更新或读取存储布局
+的操作也可保留在 PyTorch 中。每个选择是否能部署由首次调用时的编译结果确认。
 
 Linux x86-64 和 Windows x64 使用相同的 Python 代码与选项。按
 [安装指南](install.md)准备对应平台的 wheel 和链接工具，即使使用模拟器也需要
@@ -106,6 +117,7 @@ with torch.inference_mode():
 
 report = compilation_report("artifacts/selected")
 assert report is not None
+assert all(count > 0 for count in report.layer_dispatch_counts.values())
 print(report.layer_artifacts)
 print("CIM dispatches:", report.layer_dispatch_counts)
 ```
@@ -115,28 +127,35 @@ print("CIM dispatches:", report.layer_dispatch_counts)
 - 省略 `cim_layers` 时整图自动映射。显式名单拒绝空路径、重复、未知路径、
   父子重叠及共享模块导致的歧义。首次调用句柄时捕获并编译，未捕获的目标会报错。
   模型需要产生 Dynamo 可提交给后端的 FX 图。只返回 Python 常量的模型可能跳过后端。
-- `compile_strictness` 默认 `"strict"`，每个所选模块至少产生一个 CIM
-  transaction。`"allow_host"` 允许成功编译但零 transaction 的模块继续在
-  Host 上运行，并记录含模块路径的警告。非法名单、未捕获目标、编译、
-  链接和设备错误在两种模式中都会报错。
+- `strict` 按模块判断。一个模块拆成多个分区时，含 CIM transaction 的分区
+  使用原生 Session，编译结果为零 transaction 的分区继续用 PyTorch 执行。
+  `allow_host` 允许整个所选模块为零 transaction，并记录含模块路径的警告。
+  非法名单、未捕获目标、编译、链接和设备错误在两种模式中都会报错。
+  分区的编译或 USB 初始化失败时，整批编译失败并清理本次暂存的产物。
 - 选层需要 CPU eval 模型、`fullgraph=True`、`dynamic=False` 和推理上下文。
   原模型的输出结构由 PyTorch 恢复。有状态模型由应用在样本或序列边界重置。
   仅供未选中区域使用的参数继续由 PyTorch 读取。
-- 选层产物位于 `artifact_dir/graph-<id>/submod_<n>.so`（Windows 为 `.dll`）。
-  配置 `debug_dir` 时，分区 IR 位于 `debug_dir/graph-<id>/submod_<n>/`。
-  一次成功调用后，`compilation_report(artifact_dir)` 提供该次特化的产物、
-  编译耗时和实际 CIM 调用计数，包含按模块汇总及全模型总数。一个模块
-  在一次推理中重复调用时，计数会累加。每个编译句柄应使用独立产物目录。
-- 默认运行时为 `usb`。板卡连接、设备权限、实际端点、时钟和等待参数需按
-  [USB 与 PLL 配置](#usb-与-pll-配置) 准备。将示例切换到板卡时，改用 `runtime="usb", usb_config=config`。
-- Linux 和 Windows 上，多个选定模块共享一个板卡连接、接收线程、物理权重驻留
-  和 PLL 控制器。各编译分区分别保存模型产物，调用计数按模块汇总。切换分区时
-  按实际驻留状态加载权重，板卡故障直接报错。
+- 含 CIM transaction 的分区保存到
+  `artifact_dir/graph-<id>/submod_<n>.so`（Windows 为 `.dll`）。
+  调试文件通常位于 `debug_dir/graph-<id>/submod_<n>/`。两个输出目录相同时，
+  调试文件放在 `artifact_dir/graph-<id>/ir/submod_<n>/`。
+- 切换到板卡时，使用 `runtime="usb", usb_config=config`，参见
+  [USB 与 PLL 配置](#usb-与-pll-配置)。所选模块共享板卡连接和 PLL，
+  切换分区时按板卡上的权重驻留状态加载权重。
 
-用户模型直接使用上述库接口；Web 的 DVS 页面与 `cim22-dvs` CLI 固定运行 DVS 应用。
-固定应用代码位于 `cim22.apps`：`dvs` 提供 DVS 命令行流程，
-`mnist_training` 提供 MNIST 训练流程。
-DVS 命令和输入资源约定见 [Web/DVS 使用说明](web.md#dvs-命令行执行)。
+### 读取编译与执行报告
+
+整图和选层的 PyTorch 原生模式在设置 `artifact_dir` 且成功推理后，都可用
+`cim22.backend.compilation_report(artifact_dir)` 读取该目录最近一次成功执行的
+特化快照。报告由该特化在进程内持有，当前没有可用报告时返回 `None`。
+
+- `artifacts` 是已发布的模型动态库路径，`compile_seconds` 是该次特化的编译耗时。
+- `dispatch_count` 是最近一次成功推理的 CIM 调用总数。选层时还有按原模块路径
+  汇总的 `layer_artifacts`、`layer_compile_seconds`、`layer_dispatch_counts`。
+  同一模块在一次推理中多次执行，调用次数相加。完全留在 Host 的所选模块
+  对应空产物列表和零次 CIM 调用。
+
+固定 DVS 应用的命令和输入资源见 [Web/DVS 使用说明](web.md#dvs-命令行执行)。
 
 ## TensorFlow 接口
 
@@ -164,7 +183,9 @@ with compile_tf(infer, options={"runtime": "simulator"}) as compiled:
 - `compiled(*inputs)` 接收 eager TF 张量，返回保持原容器结构的 TF 张量。使用 `with` 或 `close()` 释放 Session。底层 NumPy 接口和 dispatch 计数通过 `compiled.session` 获取。
 - TF 主进程经 tf2onnx 导出 ONNX。编译 worker 使用安装的 torch-mlir wheel 将 ONNX 降低到 Linalg，再调用公共原生编译。应用进程加载模型产物并初始化 Session。
 - `MLIRCIM22_ENABLE_ONNX` 控制原生 ONNX 诊断工具的构建。TF 编译入口使用上面的 worker 路径。
-- 当前接口面向 eager 推理。在另一个 `tf.function` 中嵌入调用及训练不在此接口范围内。Linux 已加载 TensorFlow 时，CIM22 会拒绝首次在同一进程加载 PyTorch 路径的 torch-mlir FX 绑定。
+- 当前接口面向 eager 推理。Linux 上，如果进程已导入 TensorFlow，而
+  `torch_mlir.fx` 尚未加载，PyTorch 的 `cim22` 后端会报错，包括 `reference` 模式。
+  可在独立进程中运行 PyTorch 编译，再按需加载模型产物。
 
 仓库示例 `python/examples/tensorflow_compile.py` 使用两次二维 INT8 矩阵乘和截断 ReLU。`python/examples/torch_compile.py` 使用 Conv2d、ReLU 和 Linear，以 FP32 初始化权重并捕获模型，由编译器将符合条件的算子降为 BF16 CIM 运算。每次运行将 `compile.log`、`graph-<id>.so/.dll` 和 `ir/graph-<id>/` 调试文件保存在当前工作目录的示例输出目录，并打印 CIM 调用次数和输出误差。
 
@@ -172,9 +193,13 @@ with compile_tf(infer, options={"runtime": "simulator"}) as compiled:
 
 用 `cim22.Session(Path(...))` 重新加载已保存的同平台模型动态库。按 `input_shapes` 和 `input_dtypes` 顺序传入连续、对齐的 NumPy 数组，结果为平坦 tuple。框架输出结构由各自的适配层恢复。模型所需的原生运行库应与产物配套。
 
-当前公共 Session 边界支持 FP32、INT8 和 INT32；BF16 算子可在编译器内部执行，但原生 BF16 Tensor 作为直接输入或输出的公共 ABI 仍待后续工作树实现。PyTorch 示例在 FP32 边界传入输入并返回最终激活。
+公共 Session 的输入和输出支持 FP32、INT8 和 INT32，CIM 算子可在编译器内部使用
+BF16。PyTorch 示例使用 FP32 输入与输出。
 
-未设置 `artifact_dir` 时，临时模型随 Session 生命周期清理。PyTorch 编译后的 callable 持有 Session，TF callable 可显式关闭。Windows 上应在 Session 关闭后清理其加载的 DLL。
+未设置 `artifact_dir` 时，临时模型随 Session 生命周期清理。PyTorch 编译句柄
+持有 Session，TensorFlow 的编译句柄可显式关闭。Windows 上，PyTorch 编译
+使用 Session 所有的临时 DLL 副本，`artifact_dir` 中可另存发布的模型 DLL。
+用 Session 直接加载已保存的 DLL 时，关闭 Session 后再删除该文件。
 
 `num_transactions` 表示模型产物包含的 CIM transaction 数量，`dispatch_count` 表示最近一次调用实际发生的 dispatch 数量。使用 `debug_dir` 检查分区和降低结果，用实际 dispatch 验证执行路径。
 
