@@ -424,15 +424,8 @@ private:
         transfer->actual_length > transfer->length) {
       self.readError_ = "CIM USB IN completion returned invalid length " +
                         std::to_string(transfer->actual_length);
-    } else if (transfer->status == LIBUSB_TRANSFER_TIMED_OUT &&
-               !self.stopping_) {
-      // A timed-out async request is an idle polling cycle, not a device
-      // failure. Keep the persistent receive request alive.
-      const int result = self.submitRead();
-      if (result != LIBUSB_SUCCESS)
-        self.readError_ = "libusb_submit_transfer IN: " +
-                          std::string(libusb_error_name(result));
     } else if (transfer->status != LIBUSB_TRANSFER_COMPLETED &&
+               transfer->status != LIBUSB_TRANSFER_TIMED_OUT &&
                !(transfer->status == LIBUSB_TRANSFER_CANCELLED &&
                  self.stopping_)) {
       self.readError_ =
@@ -440,6 +433,7 @@ private:
           " requested=" + std::to_string(transfer->length) +
           " transferred=" + std::to_string(transfer->actual_length);
     } else {
+      // Deliver idle polls and any partial data before reusing the buffer.
       self.readComplete_ = true;
     }
   }
