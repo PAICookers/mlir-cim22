@@ -55,3 +55,7 @@ if "system-windows" in config.available_features:
     llvm_config.add_tool_substitutions(
         ["mlir-cim22-cyapi-driver-test"], tool_dirs
     )
+if {"system-linux", "cim22_runtime_usb"} <= config.available_features:
+    llvm_config.add_tool_substitutions(
+        ["mlir-cim22-libcyusb-driver-test"], tool_dirs
+    )

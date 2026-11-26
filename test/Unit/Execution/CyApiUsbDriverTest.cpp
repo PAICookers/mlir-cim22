@@ -159,6 +159,20 @@ int main() {
     driver->close();
   }
 
+  for (bool stopping : {false, true}) {
+    fake::reset();
+    llvm::cantFail(driver->open(config()));
+    fake::completeCancelled();
+    if (stopping) {
+      driver->cancel();
+      assert(llvm::cantFail(driver->drain(bytes)) == 0);
+    } else {
+      expectError(driver->read(bytes).takeError(), "IN FinishDataXfer");
+    }
+    driver->close();
+    assert(fake::finishes == 1 && fake::aborts == 0 && !fake::pending);
+  }
+
   // If Abort never signals completion, freeing the SDK buffer would be unsafe.
   // The adapter retains it until process exit and refuses to reopen.
   fake::reset();

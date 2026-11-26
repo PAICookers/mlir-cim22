@@ -280,7 +280,31 @@ void testRecordCodecWordByteOrder() {
 }
 
 void testPartialTransfersAndIndependentReturnSource() {
-  auto driver = std::make_unique<FakeUsbDriver>();
+  class FragmentedUsbDriver final : public FakeUsbDriver {
+  public:
+    llvm::Expected<size_t> read(llvm::MutableArrayRef<uint8_t> bytes) override {
+      // Split the first record and report an idle poll between its fragments.
+      constexpr std::array<size_t, 3> chunkSizes{5, 0, 7};
+      if (nextChunk_ == chunkSizes.size())
+        return FakeUsbDriver::read(bytes);
+      const size_t chunkSize = chunkSizes[nextChunk_];
+      if (chunkSize == 0) {
+        ++nextChunk_;
+        return size_t{0};
+      }
+      auto count = FakeUsbDriver::read(bytes.take_front(chunkSize));
+      if (count && *count != 0) {
+        assert(*count == chunkSize);
+        ++nextChunk_;
+      }
+      return count;
+    }
+
+  private:
+    size_t nextChunk_ = 0;
+  };
+
+  auto driver = std::make_unique<FragmentedUsbDriver>();
   FakeUsbDriver *driverView = driver.get();
   auto device = detail::createUsbCIMDevice(makeConfig(), std::move(driver));
   expectSuccess(device->open());
