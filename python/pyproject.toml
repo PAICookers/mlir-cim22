@@ -14,6 +14,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+jax = [
+    "jax>=0.8.1",
+    "jax2onnx==0.19.1",
+    "onnx>=1.21.0,<2",
+    "onnxruntime>=1.24.1,<2",
+]
 web = [
     "fastapi>=0.115,<1",
     "spikingjelly>=0.0.0.0.12,<1",
