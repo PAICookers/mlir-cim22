@@ -121,7 +121,7 @@ runpy.run_path(sys.argv[0], run_name='__main__')
     )
     assert result.returncode != 0
     assert (
-        "ERROR Example failed; see traceback and artifacts/compile.log"
+        f"ERROR Example failed; see traceback and {Path('artifacts/compile.log')}"
         in result.stdout
     )
     assert "Completed inference" not in result.stdout

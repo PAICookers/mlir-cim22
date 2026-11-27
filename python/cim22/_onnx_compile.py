@@ -1,4 +1,4 @@
-"""Compile exported TF ONNX using the released torch-mlir wheel in isolation."""
+"""Compile exported ONNX using the released torch-mlir wheel in isolation."""
 
 import argparse
 from pathlib import Path
@@ -43,7 +43,7 @@ def main() -> None:
         run_pipeline_with_repro_report(
             module,
             "builtin.module(torch-onnx-to-torch-backend-pipeline)",
-            "Importing TensorFlow ONNX into Torch backend IR",
+            "Importing ONNX into Torch backend IR",
         )
         lower_mlir_module(False, OutputType.LINALG_ON_TENSORS, module)
         linalg_ir = str(module)

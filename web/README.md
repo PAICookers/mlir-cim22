@@ -1,6 +1,6 @@
 # CIM22 本地编译验证工作台
 
-[启动与使用指南](../.agents/skills/cim22-user-guide/references/web.md)包含环境安装、框架验证、DVS 指定层执行与命令行、MNIST 训练说明。
+[启动与使用指南](../.agents/skills/cim22-user-guide/references/web.md)包含环境安装、PyTorch / TensorFlow / JAX 示例验证、DVS 指定层执行与命令行、MNIST 训练说明。
 
 ## DVS 选层
 

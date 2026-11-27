@@ -352,4 +352,4 @@ uv sync --project python --python 3.12 --locked --group dev `
 uv run --directory python --no-sync pytest tests/test_artifacts.py tests/test_backend.py tests/test_convolution.py tests/test_model_format.py tests/test_compile_tool.py tests/test_usb_runtime.py
 ```
 
-这组测试覆盖原生模型编译、BF16 软件执行、Host 运算、状态更新、静态 T/B 维度、模型 ABI、USB 错误边界和 DLL 生命周期；POSIX 文件大小限制测试仅在 Linux 运行。wheel validate 还会在两平台运行 `tensorflow_compile.py`、`test_web.py` 和 Web UI 首页/静态资源/API smoke check。完整 DVS 数据集和真实 USB 板卡测试需要另行验收。
+这组测试覆盖原生模型编译、BF16 软件执行、Host 运算、状态更新、静态 T/B 维度、模型 ABI、USB 错误边界和 DLL 生命周期；POSIX 文件大小限制测试仅在 Linux 运行。wheel validate 还会在两平台运行 `torch_compile.py`、`tensorflow_compile.py`、`jax_compile.py`、`test_web.py` 和 Web UI 首页/静态资源/API smoke check。完整 DVS 数据集和真实 USB 板卡测试需要另行验收。

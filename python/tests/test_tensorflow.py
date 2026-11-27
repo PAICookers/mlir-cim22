@@ -219,12 +219,13 @@ def test_default_usb_configuration_and_cleanup(
 ) -> None:
     """Configure only the parent Session; device errors must release it."""
     import cim22.tensorflow as frontend
+    from cim22 import _onnx_frontend
     from cim22.compiler import BackendOptions
 
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     config = UsbConfig(1, 2, 0x81, 1)
     sessions: list[Session] = []
-    run = frontend._run
+    run = _onnx_frontend._run
 
     def check_runtime(command: list[str], stage: str) -> None:
         assert command[command.index("--runtime") + 1] == "usb"
@@ -236,7 +237,7 @@ def test_default_usb_configuration_and_cleanup(
         if failure:
             raise RuntimeError("device unavailable")
 
-    monkeypatch.setattr(frontend, "_run", check_runtime)
+    monkeypatch.setattr(_onnx_frontend, "_run", check_runtime)
     monkeypatch.setattr(Session, "configure_usb", configure)
 
     @tf.function(input_signature=[tf.TensorSpec([2], tf.float32)])

@@ -93,73 +93,80 @@ test("a delayed action response cannot replace a newer SSE state", async ({
   await expect(page.getByText("已完成", { exact: true })).toBeVisible();
 });
 
-test("framework verification starts the fixed example with simulator by default", async ({
-  page,
-}) => {
-  await page.addInitScript(() => {
-    const streams = new Set<{
-      onopen?: (event: Event) => void;
-      onmessage?: (event: MessageEvent) => void;
-    }>();
-    window.EventSource = class {
-      onopen?: (event: Event) => void;
-      onmessage?: (event: MessageEvent) => void;
-      constructor(url: string | URL) {
-        if (String(url) === "/api/examples/events") streams.add(this);
-        queueMicrotask(() => this.onopen?.(new Event("open")));
-      }
-      close() {
-        streams.delete(this);
-      }
-    } as unknown as typeof EventSource;
-    window.addEventListener("test:example-snapshot", (event) => {
-      const data = JSON.stringify((event as CustomEvent).detail);
-      for (const stream of streams) {
-        stream.onmessage?.(new MessageEvent("message", { data }));
-      }
+for (const [framework, title] of [
+  ["tensorflow", "TensorFlow"],
+  ["jax", "JAX"],
+]) {
+  test(`${title} starts the fixed example with simulator by default`, async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      const streams = new Set<{
+        onopen?: (event: Event) => void;
+        onmessage?: (event: MessageEvent) => void;
+      }>();
+      window.EventSource = class {
+        onopen?: (event: Event) => void;
+        onmessage?: (event: MessageEvent) => void;
+        constructor(url: string | URL) {
+          if (String(url) === "/api/examples/events") streams.add(this);
+          queueMicrotask(() => this.onopen?.(new Event("open")));
+        }
+        close() {
+          streams.delete(this);
+        }
+      } as unknown as typeof EventSource;
+      window.addEventListener("test:example-snapshot", (event) => {
+        const data = JSON.stringify((event as CustomEvent).detail);
+        for (const stream of streams) {
+          stream.onmessage?.(new MessageEvent("message", { data }));
+        }
+      });
     });
-  });
-  let payload: unknown;
-  await page.route("**/api/examples/run", async (route) => {
-    payload = route.request().postDataJSON();
-    await route.fulfill({
-      json: {
-        task: {
-          framework: "tensorflow",
-          runtime: "simulator",
-          status: "starting",
+    let payload: unknown;
+    await page.route("**/api/examples/run", async (route) => {
+      payload = route.request().postDataJSON();
+      await route.fulfill({
+        json: {
+          task: {
+            framework,
+            runtime: "simulator",
+            status: "starting",
+          },
         },
-      },
+      });
     });
+    await page.goto("/");
+    await page.getByRole("button", { name: title, exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`#${framework}$`));
+    await expect(
+      page.getByRole("heading", { name: `${title} 编译验证` }),
+    ).toBeVisible();
+    await expect(page.getByText("软件仿真", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "编译验证" }).click();
+    await expect
+      .poll(() => payload)
+      .toEqual({ framework, runtime: "simulator" });
+    const fullLog =
+      "first output\n" +
+      "logged output\n".repeat(2000) +
+      `ImportError: ${framework} is not installed`;
+    await page.evaluate(
+      (task) => {
+        window.dispatchEvent(
+          new CustomEvent("test:example-snapshot", { detail: { task } }),
+        );
+      },
+      {
+        framework,
+        runtime: "simulator",
+        status: "interrupted",
+        log_text: fullLog,
+      },
+    );
+    await expect(page.locator("pre")).toHaveText(fullLog);
   });
-  await page.goto("/#tensorflow");
-  await expect(
-    page.getByRole("heading", { name: "TensorFlow 编译验证" }),
-  ).toBeVisible();
-  await expect(page.getByText("软件仿真", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "编译验证" }).click();
-  await expect
-    .poll(() => payload)
-    .toEqual({ framework: "tensorflow", runtime: "simulator" });
-  const fullLog =
-    "first output\n" +
-    "logged output\n".repeat(2000) +
-    "ImportError: tensorflow is not installed";
-  await page.evaluate(
-    (task) => {
-      window.dispatchEvent(
-        new CustomEvent("test:example-snapshot", { detail: { task } }),
-      );
-    },
-    {
-      framework: "tensorflow",
-      runtime: "simulator",
-      status: "interrupted",
-      log_text: fullLog,
-    },
-  );
-  await expect(page.locator("pre")).toHaveText(fullLog);
-});
+}
 
 test("framework verification exposes the USB configuration", async ({
   page,
