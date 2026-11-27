@@ -46,6 +46,10 @@ keep file ownership disjoint.
 - Follow the [shared build and test rules](.codex/project-rules.md#build-and-tests).
   `python/pyproject.toml` is the only Python project; scikit-build-core invokes
   the root CMake project and installs its native tools and libraries.
+- For JAX or TensorFlow static inference, use the framework adapter, the
+  shared ONNX compilation worker, and the native Session. Verify JAX export
+  against ONNX Runtime on the same graph and check device IR plus executed
+  dispatches. Exercise the CLI and Web example with the same runner.
 - Use `torch.compile(..., backend="cim22", fullgraph=True, dynamic=False)`
   for sequential inference. Select `runtime="simulator"` in backend options
   for simulation; the compilation default is USB. Dynamo/AOTAutograd owns

@@ -56,7 +56,7 @@ uv run uv pip check
 ```
 
 应用的 `pyproject.toml` 和 `uv.lock` 会记录 wheel 路径。将 wheel 保留在
-相应位置，供后续 `uv run` 或 `uv sync` 使用。Web 或 TensorFlow 应用按
+相应位置，供后续 `uv run` 或 `uv sync` 使用。Web、JAX 或 TensorFlow 应用按
 对应小节选择 extra。
 
 安装 `tensorflow` extra 会由 TensorFlow 自动带入 `ml_dtypes`。仅使用
@@ -139,7 +139,7 @@ Matches PyTorch reference
 `runtime="usb"`，并按 [USB 与 PLL 配置](python-api.md#usb-与-pll-配置)传入 `UsbConfig`。
 未显式指定 `runtime` 时默认为 `usb`。
 
-## 可选：TensorFlow 与仓库示例
+## 可选：框架依赖与仓库示例
 
 TensorFlow 应用在同一个环境中追加安装项目 wheel 的 `tensorflow` extra：
 
@@ -147,10 +147,13 @@ TensorFlow 应用在同一个环境中追加安装项目 wheel 的 `tensorflow` 
 uv add "./wheels/<cim22-wheel>.whl[tensorflow]"
 ```
 
+JAX 应用安装同一 wheel 的 `jax` extra（`uv add "./wheels/<cim22-wheel>.whl[jax]"`），其中包含导出和参考推理所需的依赖。见 [JAX 接口](python-api.md#jax-接口)。
+
 [TensorFlow 接口](python-api.md#tensorflow-接口)给出了自己的程序中可用的完整示例。
 仓库的示例脚本不随 wheel 安装，请选用项目 wheel 对应提交的脚本。在应用目录运行，并将下面的路径替换为实际路径：
 
 ```sh
 uv run python /path/to/mlir-cim22/python/examples/torch_compile.py
 uv run python /path/to/mlir-cim22/python/examples/tensorflow_compile.py
+uv run python /path/to/mlir-cim22/python/examples/jax_compile.py --runtime simulator
 ```
