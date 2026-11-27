@@ -24,6 +24,7 @@ PYTEST_FILES = (
     "tests/test_module_offload.py",
     "tests/test_convolution.py",
     "tests/test_tensorflow.py",
+    "tests/test_jax.py",
 )
 
 
@@ -92,7 +93,7 @@ def _install_and_validate(dist_dir: Path) -> None:
             "pip",
             "install",
             torch_mlir,
-            f"{wheel}[web,tensorflow]",
+            f"{wheel}[web,tensorflow,jax]",
             "ml_dtypes==0.6.0",
             "pytest>=8.3,<10",
             "httpx>=0.28,<1",
@@ -193,6 +194,7 @@ def _validate_installed() -> None:
     _check_sdk_cli()
     _run("examples/torch_compile.py")
     _run("examples/tensorflow_compile.py")
+    _run("examples/jax_compile.py")
     _run("-m", "pytest", "--import-mode=importlib", "-q", *PYTEST_FILES)
     _check_web_ui()
     print("Installed wheel framework, pytest, and Web UI validation: PASS")
