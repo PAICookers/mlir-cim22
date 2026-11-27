@@ -270,6 +270,42 @@ def test_api_validation_and_local_origin(
         )
 
 
+def test_failed_example_keeps_group_results(
+    tmp_path: Path, inputs: Inputs
+) -> None:
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    (examples / "torch_compile.py").write_text(
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "path = Path(sys.argv[sys.argv.index('--result-json') + 1])\n"
+        "rows = [dict(name=f'Group {i}', correct=True, dispatch_count=n, passed=n > 0)\n"
+        "        for i, n in enumerate([1, 0, 1], start=1)]\n"
+        "path.write_text(json.dumps(dict(cases=rows, passed_groups=2)))\n"
+        "print('2/3 passed')\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    with TestClient(
+        create_app(tmp_path / "results", inputs[0], examples),
+        base_url="http://127.0.0.1",
+    ) as client:
+        client.post(
+            "/api/examples/run",
+            json={"framework": "pytorch", "runtime": "simulator"},
+        ).raise_for_status()
+        deadline = time.monotonic() + 10
+        while (state := client.get("/api/examples/state").json()["task"])[
+            "status"
+        ] == "running":
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        assert state["status"] == "interrupted"
+        assert state["log_text"].splitlines() == ["2/3 passed"]
+        assert state["passed_groups"] == 2
+        assert [row["passed"] for row in state["cases"]] == [True, False, True]
+
+
 def test_example_usb_config_reuses_runtime_validation() -> None:
     config = parse_usb_config(
         {
