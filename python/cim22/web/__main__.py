@@ -32,7 +32,7 @@ def main() -> None:
         "--examples-dir",
         type=Path,
         default=Path(__file__).resolve().parents[2] / "examples",
-        help="TensorFlow/PyTorch scripts (default: examples beside the cim22 package)",
+        help="Framework example scripts (default: examples beside the cim22 package)",
     )
     parser.add_argument(
         "--port",

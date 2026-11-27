@@ -441,7 +441,13 @@ def test_http_thread_retirement_keeps_compute_worker_alive(
         assert state["compiled"]
 
 
+@pytest.mark.parametrize(
+    ("framework", "script"),
+    [("pytorch", "torch_compile.py"), ("jax", "jax_compile.py")],
+)
 def test_framework_board_run_releases_idle_dvs_worker(
+    framework: str,
+    script: str,
     tmp_path: Path,
     inputs: Inputs,
     monkeypatch: pytest.MonkeyPatch,
@@ -451,7 +457,7 @@ def test_framework_board_run_releases_idle_dvs_worker(
     monkeypatch.setattr(implementation, "worker_main", _worker_with_stub_model)
     examples = tmp_path / "examples"
     examples.mkdir()
-    (examples / "torch_compile.py").write_text(
+    (examples / script).write_text(
         "from pathlib import Path\nimport sys\n"
         "Path(sys.argv[sys.argv.index('--result-json') + 1]).write_text('{}')\n",
         encoding="utf-8",
@@ -487,7 +493,7 @@ def test_framework_board_run_releases_idle_dvs_worker(
             client.post(
                 "/api/examples/run",
                 json={
-                    "framework": "pytorch",
+                    "framework": framework,
                     "runtime": "usb",
                     "usb_config": USB_CONFIG,
                 },

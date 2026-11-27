@@ -24,7 +24,26 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 
-type Framework = "tensorflow" | "pytorch";
+const frameworkExamples = {
+  tensorflow: {
+    title: "TensorFlow",
+    script: "tensorflow_compile.py",
+    structure:
+      "二维 INT8 矩阵乘(4×16, 16×32) → 截断 ReLU → 矩阵乘(4×32, 32×16)",
+  },
+  pytorch: {
+    title: "PyTorch",
+    script: "torch_compile.py",
+    structure:
+      "Conv2d(3→4, 3×3) → ReLU → Linear(256, 8) · FP32 权重 · BF16 CIM 运算 · 5 组输入",
+  },
+  jax: {
+    title: "JAX",
+    script: "jax_compile.py",
+    structure: "FP32 矩阵乘(2×64, 64×16) → 加偏置 → ReLU",
+  },
+};
+type Framework = keyof typeof frameworkExamples;
 type Runtime = "simulator" | "usb";
 type View = Framework | "dvs" | "training";
 
@@ -74,6 +93,7 @@ type DvsTask = {
 type ExampleCase = {
   name?: string;
   reference?: unknown;
+  onnx_runtime?: unknown;
   actual?: unknown;
   cim?: unknown;
   max_abs_error?: number | null;
@@ -234,6 +254,7 @@ function viewFromHash(hash: string): View | undefined {
   if (
     view === "tensorflow" ||
     view === "pytorch" ||
+    view === "jax" ||
     view === "dvs" ||
     view === "training"
   )
@@ -368,10 +389,7 @@ export default function App() {
         : exampleConnected;
   const frameworkBusy = !!exampleTask && activeStates.has(exampleTask.status);
   const visibleExampleTask =
-    (view === "tensorflow" || view === "pytorch") &&
-    exampleTask?.framework === view
-      ? exampleTask
-      : null;
+    exampleTask?.framework === view ? exampleTask : null;
   return (
     <div className="min-h-screen">
       <header className="border-b border-border bg-white">
@@ -388,7 +406,7 @@ export default function App() {
             </div>
           </div>
           <nav className="order-3 flex w-full gap-1 overflow-x-auto rounded-xl bg-muted p-1 sm:order-none sm:w-auto">
-            {(["tensorflow", "pytorch", "dvs", "training"] as const).map(
+            {(["tensorflow", "pytorch", "jax", "dvs", "training"] as const).map(
               (entry) => (
                 <button
                   key={entry}
@@ -396,13 +414,11 @@ export default function App() {
                   onClick={() => navigate(entry)}
                   className={`whitespace-nowrap rounded-lg px-4 py-2 text-xs font-medium transition ${view === entry ? "bg-white text-primary shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                 >
-                  {entry === "tensorflow"
-                    ? "TensorFlow"
-                    : entry === "pytorch"
-                      ? "PyTorch"
-                      : entry === "dvs"
-                        ? "DVS 应用"
-                        : "模型训练"}
+                  {entry === "dvs"
+                    ? "DVS 应用"
+                    : entry === "training"
+                      ? "模型训练"
+                      : frameworkExamples[entry].title}
                 </button>
               ),
             )}
@@ -808,15 +824,7 @@ function FrameworkPage({
   const [usb, setUsb] = useState<UsbConfig>(initialUsb);
   const active = !!task && activeStates.has(task.status);
   const disabled = active || busy || pending || !connected;
-  const title = framework === "tensorflow" ? "TensorFlow" : "PyTorch";
-  const description =
-    framework === "tensorflow"
-      ? "验证 TensorFlow 框架支持"
-      : "验证 PyTorch 框架支持";
-  const structure =
-    framework === "tensorflow"
-      ? "二维 INT8 矩阵乘(4×16, 16×32) → 截断 ReLU → 矩阵乘(4×32, 32×16)"
-      : "Conv2d(3→4, 3×3) → ReLU → Linear(256, 8) · FP32 权重 · BF16 CIM 运算 · 5 组输入";
+  const { title, structure, script } = frameworkExamples[framework];
   const status = task
     ? task.status === "loading"
       ? "加载数据"
@@ -838,7 +846,7 @@ function FrameworkPage({
             {title} 编译验证
           </h1>
           <p className="mt-3 max-w-3xl text-sm text-muted-foreground">
-            {description}
+            验证 {title} 框架支持
           </p>
         </div>
         <div className="flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-4 py-2 text-xs font-medium text-primary">
@@ -875,11 +883,7 @@ function FrameworkPage({
                 <Layers3 size={25} />
               </div>
               <div>
-                <p className="text-sm font-semibold">
-                  {framework === "tensorflow"
-                    ? "tensorflow_compile.py"
-                    : "torch_compile.py"}
-                </p>
+                <p className="text-sm font-semibold">{script}</p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {structure}
                 </p>
@@ -1041,6 +1045,7 @@ function ExampleResults({ task }: { task: ExampleTask | null }) {
               <tr>
                 <th>测试项目</th>
                 <th>参考输出</th>
+                {task?.framework === "jax" && <th>ONNX Runtime 输出</th>}
                 <th>{board ? "CIM 板卡输出" : "CIM 仿真输出"}</th>
                 <th>最大绝对误差</th>
                 <th>CIM 调用次数</th>
@@ -1058,6 +1063,13 @@ function ExampleResults({ task }: { task: ExampleTask | null }) {
                       {formatValue(item.reference)}
                     </code>
                   </td>
+                  {task?.framework === "jax" && (
+                    <td>
+                      <code className="break-all text-[13px]">
+                        {formatValue(item.onnx_runtime)}
+                      </code>
+                    </td>
+                  )}
                   <td>
                     <code className="break-all text-[13px]">
                       {formatValue(item.actual ?? item.cim)}

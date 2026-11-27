@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .example_manager import ExampleManager, Runtime
+from .example_manager import ExampleManager, Framework, Runtime
 from .manager import USE_DEFAULT_CIM_LAYERS, TaskManager
 from .mnist_manager import MnistManager
 from .storage import Document, read_bytes
@@ -46,8 +46,8 @@ class ActionRequest(BaseModel):
 class ExampleRunRequest(BaseModel):
     """Fixed framework example and native execution backend."""
 
-    framework: Literal["tensorflow", "pytorch"]
-    runtime: Literal["simulator", "usb"] = "simulator"
+    framework: Framework
+    runtime: Runtime = "simulator"
     usb_config: dict[str, object] | None = None
 
 

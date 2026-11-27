@@ -12,10 +12,14 @@ from uuid import uuid4
 from .storage import Document, read_json, save_json
 from .usb import parse_usb_config
 
-Framework = Literal["tensorflow", "pytorch"]
+Framework = Literal["tensorflow", "pytorch", "jax"]
 Runtime = Literal["simulator", "usb"]
 ACTIVE = {"starting", "running"}
-SCRIPTS = {"tensorflow": "tensorflow_compile.py", "pytorch": "torch_compile.py"}
+SCRIPTS = {
+    "tensorflow": "tensorflow_compile.py",
+    "pytorch": "torch_compile.py",
+    "jax": "jax_compile.py",
+}
 
 
 class ExampleManager:
