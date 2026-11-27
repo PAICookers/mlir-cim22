@@ -2,8 +2,9 @@
 
 import importlib.util
 import json
+import logging
 import os
-import re
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,12 @@ requires_tensorflow = pytest.mark.skipif(
 @pytest.mark.parametrize(
     ("script", "framework", "model", "shape"),
     [
+        (
+            "torch_compile.py",
+            "PyTorch",
+            "Conv2d(3→4, 3×3) + Clipped ReLU + Linear(1024→8)",
+            (1, 8),
+        ),
         pytest.param(
             "tensorflow_compile.py",
             "TensorFlow",
@@ -138,72 +145,31 @@ runpy.run_path(sys.argv[0], run_name='__main__')
 
 
 def test_torch_usb_requires_board_dispatch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    import runpy
-
+    """CPU-only execution still matches the reference but fails every group."""
     import torch
 
-    example = Path(__file__).resolve().parents[1] / "examples/torch_compile.py"
-    run = runpy.run_path(str(example))["run"]
+    run = runpy.run_path(str(EXAMPLES / "torch_compile.py"))["run"]
     monkeypatch.setattr(torch, "compile", lambda model, **kwargs: model)
-    with pytest.raises(RuntimeError, match="no CIM computation"):
+    caplog.set_level(logging.INFO, logger="cim22.apps.framework_example")
+    with pytest.raises(RuntimeError, match="0/3"):
         run(tmp_path, runtime="usb")
-    assert not (tmp_path / "result.json").exists()
-
-
-@pytest.mark.integration
-@pytest.mark.usefixtures("native_toolchain")
-def test_torch_example_logging(tmp_path: Path) -> None:
-    script, framework, count = "torch_compile.py", "PyTorch", 5
-    example = Path(__file__).resolve().parents[1] / "examples" / script
-    (tmp_path / "artifacts").mkdir()
-    log = tmp_path / "artifacts/compile.log"
-    log.write_text("existing process output\n", encoding="utf-8")
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(example),
-            "--runtime",
-            "simulator",
-            "--output",
-            "artifacts",
-            "--result-json",
-            "custom-result.json",
-        ],
-        cwd=tmp_path,
-        env=os.environ | {"PYTHONSAFEPATH": "1"},
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=120,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    lines = result.stdout.splitlines()
-    assert all(
-        re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} INFO .+", line)
-        for line in lines
-    )
-    messages = [line[25:] for line in lines]
-    assert messages[0] == f"Starting {framework} example (runtime=simulator)"
-    assert messages[2] == "Compiling and running inference"
-    assert result.stdout.count("Output matches reference:") == count
-    assert (
-        f"Completed inference (cases={count}, outputs match reference)"
-        in result.stdout
-    )
-    assert "Results saved to custom-result.json" in result.stdout
-    assert "[[[" not in result.stdout
-    evidence = json.loads((tmp_path / "custom-result.json").read_text())
-    assert len(evidence["cases"]) == count
-    assert evidence["dispatch_count"] > 0
-    assert all(case["dispatch_count"] > 0 for case in evidence["cases"])
-    assert all(case["max_abs_error"] == 0 for case in evidence["cases"])
-    assert list((tmp_path / "artifacts").glob(f"graph-*{MODEL_SUFFIX}"))
-    assert (tmp_path / "artifacts/ir").is_dir()
-    assert log.read_text(encoding="utf-8").startswith(
-        "existing process output\n"
-    )
+    assert [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "cim22.apps.framework_example"
+    ][-4:] == [
+        "Group 1 | Correct | CIM dispatches: 0",
+        "Group 2 | Correct | CIM dispatches: 0",
+        "Group 3 | Correct | CIM dispatches: 0",
+        "0/3 passed",
+    ]
+    report = json.loads((tmp_path / "result.json").read_text("utf-8"))
+    assert report["passed_groups"] == 0
+    assert all(row["correct"] and not row["passed"] for row in report["cases"])
 
 
 @pytest.mark.parametrize(
