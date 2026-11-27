@@ -65,11 +65,12 @@ class ExampleManager:
         if self.current is None:
             return
         state = read_json(self.current / "state.json")
-        if code == 0 and (self.current / "result.json").is_file():
+        result_path = self.current / "result.json"
+        if state.get("status") != "cancelled" and result_path.is_file():
             state.update(
-                read_json(self.current / "result.json"),
-                status="completed",
-                error=None,
+                read_json(result_path),
+                status="completed" if code == 0 else "interrupted",
+                error=None if code == 0 else "示例验证未通过，详情见逐组结果",
                 updated_at=time.time(),
             )
         elif state.get("status") == "cancelled":

@@ -28,19 +28,18 @@ const frameworkExamples = {
   tensorflow: {
     title: "TensorFlow",
     script: "tensorflow_compile.py",
-    structure:
-      "二维 INT8 矩阵乘(4×16, 16×32) → 截断 ReLU → 矩阵乘(4×32, 32×16)",
+    structure: "INT8 Dense(64→16) → ReLU · 输入 4×64 · INT32 输出 · 3 组输入",
   },
   pytorch: {
     title: "PyTorch",
     script: "torch_compile.py",
     structure:
-      "Conv2d(3→4, 3×3) → ReLU → Linear(256, 8) · FP32 权重 · BF16 CIM 运算 · 5 组输入",
+      "INT8 Conv2d(3→4, 3×3) → 截断 ReLU → Linear(1024→8) · 输入 1×3×16×16 · INT32 输出 · 3 组输入",
   },
   jax: {
     title: "JAX",
     script: "jax_compile.py",
-    structure: "FP32 矩阵乘(2×64, 64×16) → 加偏置 → ReLU",
+    structure: "INT8 Dense(64→16) → ReLU · 输入 4×64 · INT32 输出 · 3 组输入",
   },
 };
 type Framework = keyof typeof frameworkExamples;
@@ -92,6 +91,7 @@ type DvsTask = {
 };
 type ExampleCase = {
   name?: string;
+  passed?: boolean;
   reference?: unknown;
   onnx_runtime?: unknown;
   actual?: unknown;
@@ -1082,8 +1082,10 @@ function ExampleResults({ task }: { task: ExampleTask | null }) {
                     {item.dispatch_count == null ? "—" : item.dispatch_count}
                   </td>
                   <td>
-                    {item.error ? (
-                      <span className="text-rose-600">{item.error}</span>
+                    {item.error || item.passed === false ? (
+                      <span className="text-rose-600">
+                        {item.error ?? "未通过"}
+                      </span>
                     ) : (
                       <span className="inline-flex items-center gap-1 text-emerald-700">
                         <Check size={14} />
