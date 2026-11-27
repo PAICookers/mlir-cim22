@@ -8,8 +8,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
+from cim22.apps.framework_example import group_result
 from cim22.runtime import MODEL_SUFFIX
 
 requires_tensorflow = pytest.mark.skipif(
@@ -141,3 +143,11 @@ def test_torch_usb_requires_board_dispatch(
     with pytest.raises(RuntimeError, match="no CIM computation"):
         run(tmp_path, runtime="usb")
     assert not (tmp_path / "result.json").exists()
+
+
+@pytest.mark.parametrize(
+    "actual", [np.zeros((1,), dtype=np.int32), np.zeros((1, 1), dtype=np.int8)]
+)
+def test_group_requires_matching_shape_and_dtype(actual: np.ndarray) -> None:
+    row = group_result(1, np.zeros((1, 1), dtype=np.int32), actual, 1)
+    assert not row["correct"] and not row["passed"]
