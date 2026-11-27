@@ -1,4 +1,4 @@
-"""Examples log their progress and fail on incorrect inference."""
+"""Exercise the integer examples' group output, verdicts and saved evidence."""
 
 import importlib.util
 import json
@@ -14,6 +14,7 @@ import pytest
 from cim22.apps.framework_example import group_result
 from cim22.runtime import MODEL_SUFFIX
 
+EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 requires_tensorflow = pytest.mark.skipif(
     any(
         importlib.util.find_spec(name) is None
@@ -26,18 +27,135 @@ requires_tensorflow = pytest.mark.skipif(
 @pytest.mark.integration
 @pytest.mark.usefixtures("native_toolchain")
 @pytest.mark.parametrize(
-    ("script", "framework", "count"),
+    ("script", "framework", "model", "shape"),
     [
-        ("torch_compile.py", "PyTorch", 5),
         pytest.param(
-            "tensorflow_compile.py", "TensorFlow", 1, marks=requires_tensorflow
+            "tensorflow_compile.py",
+            "TensorFlow",
+            "Dense(64→16) + ReLU",
+            (4, 16),
+            marks=requires_tensorflow,
         ),
     ],
 )
 def test_example_logging(
-    tmp_path: Path, script: str, framework: str, count: int
+    tmp_path: Path,
+    script: str,
+    framework: str,
+    model: str,
+    shape: tuple[int, int],
 ) -> None:
-    """Both CLIs log progress and result paths without dumping tensors."""
+    output = tmp_path / "artifacts"
+    output.mkdir()
+    log = output / "compile.log"
+    log.write_text("existing process output\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(EXAMPLES / script),
+            "--runtime",
+            "simulator",
+            "--output",
+            "artifacts",
+            "--result-json",
+            "custom-result.json",
+        ],
+        cwd=tmp_path,
+        env=os.environ | {"PYTHONSAFEPATH": "1"},
+        capture_output=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads((tmp_path / "custom-result.json").read_text("utf-8"))
+    assert len(report["cases"]) == report["passed_groups"] == 3
+    lines = [f"Framework: {framework} | Backend: simulator | Model: {model}"]
+    for index, row in enumerate(report["cases"], 1):
+        assert row["name"] == f"Group {index}"
+        assert row["passed"] and row["correct"]
+        assert row["actual_dtype"] == "int32"
+        assert np.shape(row["actual"]) == shape
+        assert row["actual"] == row["reference"]
+        assert row["max_abs_error"] == 0
+        count = row["dispatch_count"]
+        assert count > 0
+        lines.append(f"Group {index} | Correct | CIM dispatches: {count}")
+    lines.append("3/3 passed")
+    assert result.stdout.splitlines() == lines
+    assert log.read_text("utf-8").splitlines() == [
+        "existing process output",
+        *lines,
+    ]
+    assert list(output.glob(f"graph-*{MODEL_SUFFIX}"))
+    assert (output / "ir").is_dir()
+    assert not (output / "result.json").exists()
+
+
+@requires_tensorflow
+def test_tensorflow_mismatch_fails(tmp_path: Path) -> None:
+    """A wrong middle group cannot hide either its failure or the last result."""
+    example = EXAMPLES / "tensorflow_compile.py"
+    script = """
+import runpy
+import sys
+from types import SimpleNamespace
+import cim22.tensorflow as frontend
+class IncorrectModel:
+    def __init__(self, model):
+        self.model = model
+        self.session = SimpleNamespace(dispatch_count=0)
+        self.group = 0
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        pass
+    def __call__(self, inputs):
+        self.group += 1
+        self.session.dispatch_count = (2, 4, 6)[self.group - 1]
+        return self.model(inputs) + int(self.group == 2)
+frontend.compile = lambda model, **kwargs: IncorrectModel(model)
+sys.argv = [sys.argv[1], '--output', 'artifacts']
+runpy.run_path(sys.argv[0], run_name='__main__')
+"""
+    result = subprocess.run(
+        [sys.executable, "-P", "-c", script, str(example)],
+        cwd=tmp_path,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert result.returncode != 0
+    assert result.stdout.splitlines() == [
+        "Framework: TensorFlow | Backend: simulator | Model: Dense(64→16) + ReLU",
+        "Group 1 | Correct | CIM dispatches: 2",
+        "Group 2 | Incorrect | CIM dispatches: 4",
+        "Group 3 | Correct | CIM dispatches: 6",
+        "2/3 passed",
+    ]
+    report = json.loads((tmp_path / "artifacts/result.json").read_text("utf-8"))
+    assert report["passed_groups"] == 2
+    assert [case["max_abs_error"] for case in report["cases"]] == [0, 1, 0]
+
+
+def test_torch_usb_requires_board_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import runpy
+
+    import torch
+
+    example = Path(__file__).resolve().parents[1] / "examples/torch_compile.py"
+    run = runpy.run_path(str(example))["run"]
+    monkeypatch.setattr(torch, "compile", lambda model, **kwargs: model)
+    with pytest.raises(RuntimeError, match="no CIM computation"):
+        run(tmp_path, runtime="usb")
+    assert not (tmp_path / "result.json").exists()
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("native_toolchain")
+def test_torch_example_logging(tmp_path: Path) -> None:
+    script, framework, count = "torch_compile.py", "PyTorch", 5
     example = Path(__file__).resolve().parents[1] / "examples" / script
     (tmp_path / "artifacts").mkdir()
     log = tmp_path / "artifacts/compile.log"
@@ -86,63 +204,6 @@ def test_example_logging(
     assert log.read_text(encoding="utf-8").startswith(
         "existing process output\n"
     )
-
-
-@requires_tensorflow
-def test_tensorflow_mismatch_fails(tmp_path: Path) -> None:
-    """A mismatched inference logs an error and cannot report completion."""
-    example = (
-        Path(__file__).resolve().parents[1] / "examples/tensorflow_compile.py"
-    )
-    script = """
-import runpy
-import sys
-from types import SimpleNamespace
-import cim22.tensorflow as frontend
-class IncorrectModel:
-    def __init__(self, model):
-        self.model = model
-        self.session = SimpleNamespace(dispatch_count=0)
-    def __enter__(self):
-        return self
-    def __exit__(self, *args):
-        pass
-    def __call__(self, inputs):
-        return self.model(inputs) + 1
-frontend.compile = lambda model, **kwargs: IncorrectModel(model)
-sys.argv = [sys.argv[1], '--output', 'artifacts']
-runpy.run_path(sys.argv[0], run_name='__main__')
-"""
-    result = subprocess.run(
-        [sys.executable, "-P", "-c", script, str(example)],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=120,
-    )
-    assert result.returncode != 0
-    assert (
-        f"ERROR Example failed; see traceback and {Path('artifacts/compile.log')}"
-        in result.stdout
-    )
-    assert "Completed inference" not in result.stdout
-    assert not (tmp_path / "artifacts/result.json").exists()
-
-
-def test_torch_usb_requires_board_dispatch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import runpy
-
-    import torch
-
-    example = Path(__file__).resolve().parents[1] / "examples/torch_compile.py"
-    run = runpy.run_path(str(example))["run"]
-    monkeypatch.setattr(torch, "compile", lambda model, **kwargs: model)
-    with pytest.raises(RuntimeError, match="no CIM computation"):
-        run(tmp_path, runtime="usb")
-    assert not (tmp_path / "result.json").exists()
 
 
 @pytest.mark.parametrize(

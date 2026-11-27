@@ -1,22 +1,22 @@
-"""Compare a fixed JAX Dense/ReLU model with ONNX Runtime and CIM22."""
+"""Compare an INT8 JAX Dense/ReLU model with NumPy, ONNX Runtime and CIM22."""
 
-import argparse
-import json
-import logging
-import os
-import sys
 import tempfile
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
+from cim22.apps.framework_example import (
+    cli,
+    dense_data,
+    finish,
+    group_result,
+    header,
+)
+
 if TYPE_CHECKING:
     from cim22.runtime import UsbConfig
-
-logger = logging.getLogger(__name__)
 
 
 def run(
@@ -26,9 +26,11 @@ def run(
     usb_config: "UsbConfig | None" = None,
     result_json: Path | None = None,
 ) -> dict[str, Any]:
-    """Compile once and run both oracles against the selected native target."""
+    """Compile once and compare each group with all three software references."""
     if runtime not in {"simulator", "usb"}:
         raise ValueError("runtime must be simulator or usb")
+    header("JAX", runtime, "Dense(64→16) + ReLU")
+
     import jax
     import jax.numpy as jnp
     import onnxruntime as ort
@@ -36,23 +38,16 @@ def run(
     from cim22.compiler import BackendOptions
     from cim22.jax import compile
 
-    weights = jnp.full((64, 16), 0.5, dtype=jnp.float32)
-    bias = jnp.ones(16, dtype=jnp.float32)
+    weights, bias, inputs = dense_data()
+    jax_weights, jax_bias = jnp.asarray(weights), jnp.asarray(bias)
 
     def model(x: jax.Array) -> jax.Array:
-        return jax.nn.relu(x @ weights + bias)
-
-    value = np.ones((2, 64), dtype=np.float32)
-    value[1] = -1
-    inputs = jnp.asarray(value)
-    reference = np.asarray(model(inputs))
-    # These dyadic values exercise both ReLU branches and are exact in BF16.
-    expected = np.broadcast_to(np.array([[33], [0]], dtype=np.float32), (2, 16))
-    np.testing.assert_array_equal(reference, expected, strict=True)
+        product = jnp.matmul(x, jax_weights, preferred_element_type=jnp.int32)
+        return jax.nn.relu(product + jax_bias)
 
     ir_root = output / "ir"
     ir_root.mkdir(parents=True, exist_ok=True)
-    # An explicit --output may be shared or reused across independent runs.
+    # Select the ONNX and packet files from this compilation on repeated runs.
     run_ir = Path(tempfile.mkdtemp(prefix="run-", dir=ir_root))
     options: BackendOptions = {
         "runtime": runtime,
@@ -61,8 +56,8 @@ def run(
     }
     if usb_config is not None:
         options["usb_config"] = usb_config
-    logger.info("Compiling FP32 relu(x @ W + b) for %s", runtime)
-    signature = (jax.ShapeDtypeStruct(value.shape, value.dtype),)
+    signature = (jax.ShapeDtypeStruct((4, 64), jnp.int8),)
+    cases = []
     started = time.perf_counter()
     with compile(model, signature, options=options) as compiled:
         compile_seconds = time.perf_counter() - started
@@ -71,11 +66,7 @@ def run(
             str(source), providers=["CPUExecutionProvider"]
         )
         (input_spec,) = ort_session.get_inputs()
-        (exported,) = ort_session.run(None, {input_spec.name: value})
-        np.testing.assert_array_equal(exported, reference, strict=True)
-
-        # MatMul is the only contraction in this graph. Its mapping must exist
-        # in packet IR even when a Host implementation yields identical values.
+        # MatMul is the only contraction; check it was mapped to device IR.
         packet = source.with_name("model.packet.mlir")
         device_ir = (
             packet.read_text(encoding="utf-8")
@@ -86,53 +77,44 @@ def run(
             line.lstrip().startswith("cim.dispatch ")
             for line in device_ir.splitlines()
         )
-        if not dispatch_ops:
-            raise RuntimeError(
-                f"Matrix multiply has no cim.dispatch in {packet}"
+        for index, value in enumerate(inputs, start=1):
+            x = jnp.asarray(value)
+            reference = np.asarray(model(x))
+            expected = np.maximum(
+                value.astype(np.int32) @ weights.astype(np.int32) + bias, 0
             )
-        actual = np.asarray(compiled(inputs))
-        dispatch_count = compiled.session.dispatch_count
-        if not dispatch_count:
-            raise RuntimeError(f"{runtime} executed no CIM dispatch")
-        np.testing.assert_array_equal(actual, reference, strict=True)
+            (exported,) = ort_session.run(None, {input_spec.name: value})
+            actual = np.asarray(compiled(x))
+            row = group_result(
+                index,
+                reference,
+                actual,
+                compiled.session.dispatch_count,
+                numpy_reference=expected,
+                onnx_runtime=exported,
+            )
+            row["onnx_max_abs_error"] = (
+                int(np.abs(exported.astype(np.int64) - reference).max())
+                if exported.shape == reference.shape
+                and exported.dtype == np.int32
+                else None
+            )
+            row["passed"] = row["passed"] and dispatch_ops > 0
+            cases.append(row)
 
-    result: dict[str, Any] = {
+    result = {
         "framework": "jax",
         "runtime": runtime,
         "compile_seconds": compile_seconds,
-        "dispatch_count": dispatch_count,
-        "cases": [
-            {
-                "name": "fp32_dense_relu",
-                "reference": reference.tolist(),
-                "onnx_runtime": exported.tolist(),
-                "actual": actual.tolist(),
-                "onnx_max_abs_error": float(
-                    np.max(np.abs(exported - reference))
-                ),
-                "max_abs_error": float(np.max(np.abs(actual - reference))),
-                "dispatch_count": dispatch_count,
-            }
-        ],
+        "dispatch_count": cases[-1]["dispatch_count"],
+        "cases": cases,
         "artifact_dir": str(output.resolve()),
         "ir_dir": str(source.parent.resolve()),
         "onnx_path": str(source.resolve()),
         "packet_ir": str(packet.resolve()),
         "dispatch_ops": dispatch_ops,
     }
-    destination = result_json or output / "result.json"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(
-        json.dumps(result, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    logger.info(
-        "JAX, ONNX Runtime and %s agree; %d CIM dispatches; results in %s",
-        runtime,
-        dispatch_count,
-        destination,
-    )
-    return result
+    return finish(result, output, result_json)
 
 
 def main(
@@ -152,51 +134,4 @@ def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--runtime", choices=("simulator", "usb"), default="simulator"
-    )
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--usb-config", type=Path)
-    parser.add_argument("--result-json", type=Path)
-    args = parser.parse_args()
-    output = args.output or Path("outputs/jax") / datetime.now().strftime(
-        "%Y%m%d-%H%M%S-%f"
-    )
-    output.mkdir(parents=True, exist_ok=True)
-    logger.setLevel(logging.INFO)
-    # The Web worker already sends stdout/stderr to compile.log.
-    with (output / "compile.log").open("a", encoding="utf-8") as log:
-        handler = logging.StreamHandler(
-            sys.stdout
-            if os.path.samestat(
-                os.fstat(sys.stdout.fileno()), os.fstat(log.fileno())
-            )
-            else log
-        )
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-        )
-        logger.addHandler(handler)
-        if handler.stream is log:
-            logger.addHandler(logging.StreamHandler(sys.stdout))
-        try:
-            usb_config = None
-            if args.usb_config:
-                from cim22 import CIMTimingConfig, UsbConfig
-
-                fields = json.loads(args.usb_config.read_text(encoding="utf-8"))
-                if not isinstance(fields, dict):
-                    raise ValueError("USB configuration must be a JSON object")
-                if "timing" in fields:
-                    fields["timing"] = CIMTimingConfig(**fields["timing"])
-                usb_config = UsbConfig(**fields)
-            main(
-                output,
-                runtime=args.runtime,
-                usb_config=usb_config,
-                result_json=args.result_json,
-            )
-        except Exception:
-            logger.exception("JAX example failed")
-            raise
+    cli(main, __doc__, Path("outputs/jax"))
