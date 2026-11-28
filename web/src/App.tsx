@@ -34,7 +34,7 @@ const frameworkExamples = {
     title: "PyTorch",
     script: "torch_compile.py",
     structure:
-      "INT8 Conv2d(3→4, 3×3) → 截断 ReLU → Linear(1024→8) · 输入 1×3×16×16 · INT32 输出 · 3 组输入",
+      "Conv2d(3→4, 3×3) → ReLU · 输入 1×3×16×16 · FP32 输入输出 · BF16 CIM 卷积 · 3 组输入",
   },
   jax: {
     title: "JAX",
