@@ -8,7 +8,7 @@
 - **DVS 应用**：在实板上运行固定 DVS 模型，与同一样本的 PyTorch CPU 结果对比。
 - **MNIST 训练**：配置并训练两层全连接模型，查看训练日志与结果。
 
-JAX 和 TensorFlow 运行相同的 INT8 Dense/ReLU 模型；PyTorch 运行 INT8 卷积和全连接模型。每项分别运行三组输入。页面日志逐组显示结果正确性和实际 CIM 调度次数，末行汇总通过组数。
+JAX 和 TensorFlow 运行相同的 INT8 Dense/ReLU 模型；PyTorch 运行 FP32 Conv2d 和 ReLU 模型，卷积编译为 BF16 CIM 运算。每项分别运行三组输入。页面日志逐组显示结果正确性和实际 CIM 调度次数，末行汇总通过组数。
 “CIM 调用次数”表示实际调用次数；接口未提供该信息时显示“—”。
 框架运行日志和 MNIST 训练日志均显示完整已保存输出，可滚动查看和下载。
 
