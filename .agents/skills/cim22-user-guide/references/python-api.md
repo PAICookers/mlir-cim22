@@ -188,8 +188,9 @@ with compile_tf(infer, options={"runtime": "simulator"}) as compiled:
   可在独立进程中运行 PyTorch 编译，再按需加载模型产物。
 
 仓库 JAX 和 TensorFlow 示例使用相同的 INT8 全连接模型和 ReLU，输入为
-`(4,64)`，输出为 `(4,16)`。PyTorch 示例采用 INT8 卷积、截断 ReLU 和全连接层，
-输入为 `(1,3,16,16)`，输出为 `(1,8)`。三项均使用 INT32 累加、偏置和输出。
+`(4,64)`，输出为 `(4,16)`，使用 INT32 累加、偏置和输出。
+PyTorch 示例依次调用 `nn.Conv2d` 和 `nn.ReLU`，输入为 `(1,3,16,16)`，
+输出为 `(1,4,16,16)`。输入、权重、偏置和输出为 FP32，卷积使用 BF16 CIM 运算。
 每组输出与软件参考逐元素相等且 CIM 调度次数大于零时计为通过。
 `compile.log` 显示三组英文结果和通过数，`result.json` 保存逐组明细。
 
@@ -223,7 +224,7 @@ with compile(infer, signature, options={"runtime": "simulator"}) as model:
 用 `cim22.Session(Path(...))` 重新加载已保存的同平台模型动态库。按 `input_shapes` 和 `input_dtypes` 顺序传入连续、对齐的 NumPy 数组，结果为平坦 tuple。框架输出结构由各自的适配层恢复。模型所需的原生运行库应与产物配套。
 
 公共 Session 的输入和输出支持 FP32、INT8 和 INT32，CIM 算子可在编译器内部使用
-BF16。上述 PyTorch 框架验证示例使用 INT8 输入与 INT32 输出。
+BF16。上述 PyTorch 框架验证示例使用 FP32 输入与输出。
 
 未设置 `artifact_dir` 时，临时模型随 Session 生命周期清理。PyTorch 编译句柄
 持有 Session，TensorFlow 和 JAX 的编译句柄可显式关闭。Windows 上，PyTorch 编译
