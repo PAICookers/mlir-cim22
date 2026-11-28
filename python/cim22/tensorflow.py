@@ -1,20 +1,15 @@
 """Static TensorFlow inference through released ONNX and torch-mlir frontends."""
 
-import sys
-import tempfile
-from contextlib import ExitStack
-from pathlib import Path
 from types import TracebackType
 from typing import Self
-from uuid import uuid4
 
 import numpy as np
-import onnx
 import tensorflow as tf
 import tf2onnx
 
-from .compiler import BackendOptions, _run, _validate_options
-from .runtime import MODEL_SUFFIX, Session, _initialize_session
+from ._onnx_frontend import compile_onnx
+from .compiler import BackendOptions, _validate_options
+from .runtime import Session
 
 type TensorOutputs = (
     tf.Tensor
@@ -122,10 +117,6 @@ def compile(
     """
     options = options or {}
     _validate_options(options)
-    runtime = options.get("runtime", "usb")
-    usb_config = options.get("usb_config")
-    artifact_dir = options.get("artifact_dir")
-    debug_dir = options.get("debug_dir")
     if not isinstance(function, tf.types.experimental.PolymorphicFunction):
         raise TypeError("Wrap inference in tf.function with input_signature")
     signature = function.input_signature
@@ -161,68 +152,6 @@ def compile(
         input_signature=signature,
         opset=18,
     )
-    model.graph.name = "main"
-    model = onnx.shape_inference.infer_shapes(
-        model, strict_mode=True, data_prop=True
+    return CompiledModel(
+        compile_onnx(model, options, "TensorFlow"), output_specs
     )
-    onnx.checker.check_model(model)
-    for output in model.graph.output:
-        tensor = output.type.tensor_type
-        if (
-            tensor.elem_type
-            not in (
-                onnx.TensorProto.FLOAT,
-                onnx.TensorProto.INT8,
-                onnx.TensorProto.INT32,
-            )
-            or not tensor.HasField("shape")
-            or any(
-                not dim.HasField("dim_value") or dim.dim_value <= 0
-                for dim in tensor.shape.dim
-            )
-        ):
-            raise ValueError(
-                "TensorFlow outputs require static positive FP32/INT8/INT32 shapes"
-            )
-
-    graph_name = f"graph-{uuid4().hex}"
-    # Keep TensorFlow and the wheel's LLVM in separate processes. The child
-    # publishes a native library; only the execution runtime is loaded here.
-    with ExitStack() as cleanup:
-        folder = Path(
-            cleanup.enter_context(
-                tempfile.TemporaryDirectory(prefix=".cim22-tensorflow-")
-            )
-        )
-        source = folder / "model.onnx"
-        shared = (
-            (Path(artifact_dir) / f"{graph_name}{MODEL_SUFFIX}").absolute()
-            if artifact_dir is not None
-            else folder / f"model{MODEL_SUFFIX}"
-        )
-        onnx.save_model(model, source)
-        command = [
-            sys.executable,
-            # Keep the working directory from shadowing the installed package.
-            "-P",
-            "-m",
-            "cim22._tensorflow_compile",
-            str(source),
-            str(shared),
-            "--runtime",
-            runtime,
-            "--bf16-compensation",
-            options.get("bf16_compensation", "sign-split"),
-        ]
-        if debug_dir is not None:
-            command.extend(
-                ["--debug-dir", str((Path(debug_dir) / graph_name).absolute())]
-            )
-        _run(command, "TensorFlow compilation")
-        session = _initialize_session(
-            Session(shared),
-            usb_config,
-            cleanup.pop_all() if artifact_dir is None else None,
-            usb_session=options.get("usb_session"),
-        )
-        return CompiledModel(session, output_specs)

@@ -1,12 +1,12 @@
 # CIM22 Python 后端
 
-`mlir-cim22` 通过 Python entry point 注册 PyTorch 后端 `cim22`。TensorFlow 接口使用同一 wheel 的 `tensorflow` extra。
+`mlir-cim22` 通过 Python entry point 注册 PyTorch 后端 `cim22`。TensorFlow 和 JAX 分别使用同一 wheel 的 `tensorflow` 和 `jax` extra。
 
 ## 用户快速开始
 
 - [安装预编译 wheel、编译并运行第一个模型](../.agents/skills/cim22-user-guide/references/install.md)
-- [PyTorch、TensorFlow、指定层执行和 USB 配置](../.agents/skills/cim22-user-guide/references/python-api.md)
-- [PyTorch 示例](examples/torch_compile.py)和 [TensorFlow 示例](examples/tensorflow_compile.py)
+- [PyTorch、TensorFlow、JAX、指定层执行和 USB 配置](../.agents/skills/cim22-user-guide/references/python-api.md)
+- [PyTorch 示例](examples/torch_compile.py)、[TensorFlow 示例](examples/tensorflow_compile.py)和 [JAX 示例](examples/jax_compile.py)
 
 ## 按模块选层
 
@@ -40,16 +40,17 @@ Linux x86-64 和 Windows x64 使用同一接口，分别需要 `cc` 和 MSVC x64
 ## 源码开发
 
 [源码构建指南](../docs/BUILDING.md)给出了 Linux、Windows 的工具链配置、editable 安装和 wheel 打包命令。
-在 editable 环境中验证 Web 和 TensorFlow 时，给 `uv sync` 追加 `--extra web --extra tensorflow`。安装完成后，在 `python/` 下运行：
+在 editable 环境中同时验证 Web、TensorFlow 和 JAX 时，给 `uv sync` 追加 `--extra web --extra tensorflow --extra jax`。安装完成后，在 `python/` 下运行：
 
 ```sh
-uv run --no-sync pytest tests/test_backend.py tests/test_module_offload.py tests/test_tensorflow.py
+uv run --no-sync pytest tests/test_backend.py tests/test_module_offload.py tests/test_tensorflow.py tests/test_jax.py tests/test_jax_example.py
 ```
 
 | 改动                            | 从哪里检查                                                                                                                                  |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | PyTorch 捕获、冻结与 AOT 边界   | [backend.py](cim22/backend.py) 和 [test_backend.py](tests/test_backend.py)                                                                    |
-| TF 签名、输出结构与编译进程隔离 | [tensorflow.py](cim22/tensorflow.py)、[_tensorflow_compile.py](cim22/_tensorflow_compile.py) 和 [test_tensorflow.py](tests/test_tensorflow.py) |
+| TensorFlow 和 JAX 静态签名及输出结构 | [tensorflow.py](cim22/tensorflow.py)、[jax.py](cim22/jax.py) |
+| 共用 ONNX 导入、编译与 Session 加载 | [_onnx_frontend.py](cim22/_onnx_frontend.py)、[_onnx_compile.py](cim22/_onnx_compile.py) |
 | 原生编译、链接及模型发布        | [compiler.py](cim22/compiler.py)、[test_compile_tool.py](tests/test_compile_tool.py) 和 [test_artifacts.py](tests/test_artifacts.py)           |
 | Session 所有权、USB 与 PLL      | [runtime.py](cim22/runtime.py) 和 [test_usb_runtime.py](tests/test_usb_runtime.py)                                                            |
 

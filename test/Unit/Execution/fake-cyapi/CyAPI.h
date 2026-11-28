@@ -40,6 +40,10 @@ inline void complete(LONG length) {
   std::fill_n(buffer, std::min(length, capacity), 0x5a);
   SetEvent(pending->hEvent);
 }
+inline void completeCancelled() {
+  cancelled = true;
+  complete(0);
+}
 } // namespace fake_cyapi
 
 inline GUID CYUSBDRV_GUID{};
@@ -85,10 +89,8 @@ public:
       return false;
     if (abortTail)
       complete(abortTail);
-    else {
-      cancelled = true;
-      SetEvent(pending->hEvent);
-    }
+    else
+      completeCancelled();
     return true;
   }
 };

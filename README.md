@@ -1,6 +1,6 @@
 # MLIR-CIM22 Compiler
 
-基于 MLIR 的 CIM22 编译器，以及可通过 `torch.compile` 使用的 PyTorch 推理后端。编译器将适合 CIM 的计算降低为目标指令，其余计算生成 CPU 代码；运行时负责加载模型并执行。
+基于 MLIR 的 CIM22 编译器，支持 PyTorch、TensorFlow 和 JAX 的静态推理。编译器将适合 CIM 的计算降低为目标指令，其余计算生成 CPU 代码；运行时负责加载模型并执行。
 
 ## 项目组成
 
@@ -8,7 +8,7 @@
 | --------------- | ----------------------------------------- | ------------------------------------------------------------------- |
 | 编译器          | `include/`、`lib/`、`tools/`        | 方言、转换、映射、`mlir-cim22-opt` 和 `mlir-cim22-compile` 工具 |
 | 运行时          | `runtime/`、`lib/Execution/`          | 模型加载、CPU/CIM 执行和 Linux/Windows USB 通信                     |
-| PyTorch 后端    | [python/](python/README.md)                | 将捕获的模型经 torch-mlir 交给本编译器                              |
+| Python 前端     | [python/](python/README.md)                | PyTorch 经 FX、TensorFlow 和 JAX 经 ONNX 接入 torch-mlir                              |
 | 本地 Web 工作台 | [web/](web/README.md)                      | 框架验证、DVS 板卡执行与 MNIST 训练                                 |
 | 模型格式        | [schema/](schema/README.md)                | 内嵌模型数据、字段约束与格式维护                                    |
 | 测试            | [test/](test/README.md)、`python/tests/` | 编译器、数值、接口与软件执行回归                                    |
@@ -20,6 +20,7 @@ Python 发行包名为 `mlir-cim22`，导入包和后端名为 `cim22`。一个 
 首次使用请从[安装 wheel 并编译第一个模型](.agents/skills/cim22-user-guide/references/install.md)开始。指南涵盖 Linux x86-64 和 Windows x64，可用软件仿真完成第一次推理。
 
 - PyTorch 可在 `torch.compile` 中通过 `options["cim_layers"]` 指定由 CIM 执行的模块。见 [Python 选层示例](python/README.md#按模块选层)。
+- JAX 模型通过 `cim22.jax.compile` 接入。安装 `jax` extra 后，可运行[固定权重的 Dense/ReLU 示例](python/examples/jax_compile.py)，对照 JAX、ONNX Runtime 和所选 CIM22 目标的输出。
 - [启动 Web 工作台](.agents/skills/cim22-user-guide/references/web.md)可运行框架示例、[为固定 DVS 模型选层](web/README.md#dvs-选层)或进行 MNIST 训练。
 
 可直接调用 [`$cim22-user-guide`](.agents/skills/cim22-user-guide/SKILL.md)，例如“用 $cim22-user-guide 帮我在没有板卡的 Linux 机器上编译并运行第一个 PyTorch 模型”。

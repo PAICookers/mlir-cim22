@@ -382,11 +382,11 @@ def board_check(
                         )
                         if expectation is not None:
                             assert counts[-1] == expectation.dispatches
-                        if expected is not None:
-                            assert_output(actual, expected[index])
-                        if actual.dtype == np.float32:
-                            assert np.isfinite(actual).all()
                         if runtime == "simulator":
+                            if expected is not None:
+                                assert_output(actual, expected[index])
+                            if actual.dtype == np.float32:
+                                assert np.isfinite(actual).all()
                             references.append(actual)
                         else:
                             assert_output(actual, references[index])

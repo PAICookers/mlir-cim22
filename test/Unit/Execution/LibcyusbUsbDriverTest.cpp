@@ -473,11 +473,17 @@ void testTransferTimeoutResubmits() {
   auto driver = createPlatformUsbDriver();
   requireSuccess(driver->open(config()));
   fake.queue({LIBUSB_TRANSFER_TIMED_OUT, 0, {}});
+  fake.queue({LIBUSB_TRANSFER_TIMED_OUT, 3, {1, 2, 3}});
   fake.queue({LIBUSB_TRANSFER_COMPLETED, 2, {6, 7}});
   std::array<uint8_t, 32768> bytes{};
   auto count = driver->read(bytes);
+  assert(count && *count == 0 && fake.submits == 2);
+  count = driver->read(bytes);
+  assert(count && *count == 3 && fake.submits == 3);
+  assert(bytes[0] == 1 && bytes[1] == 2 && bytes[2] == 3);
+  count = driver->read(bytes);
   assert(count && *count == 2 && bytes[0] == 6 && bytes[1] == 7);
-  assert(fake.callbacks == 2 && fake.submits == 3);
+  assert(fake.callbacks == 3 && fake.submits == 4);
   driver->close();
   checkCleanup();
 }

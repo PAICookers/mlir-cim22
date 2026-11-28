@@ -1,24 +1,25 @@
 # CIM22 本地编译验证工作台
 
-这是一个面向 Linux x86-64 和 Windows x64 的本地 Web 界面，提供四个独立入口：
+这是一个面向 Linux x86-64 和 Windows x64 的本地 Web 界面，提供五个独立入口：
 
+- **JAX**：运行固定权重的 Dense/ReLU 示例，查看 JAX、ONNX Runtime、CIM22 的输出和 CIM 调用次数。
 - **TensorFlow**：验证 TensorFlow 框架支持。
 - **PyTorch**：验证 PyTorch 框架支持。
 - **DVS 应用**：在实板上运行固定 DVS 模型，与同一样本的 PyTorch CPU 结果对比。
 - **MNIST 训练**：配置并训练两层全连接模型，查看训练日志与结果。
 
-框架页面的参考结果由软件直接计算，CIM 结果由编译后的模型执行得到。
+JAX 和 TensorFlow 运行相同的 INT8 Dense/ReLU 模型；PyTorch 运行 FP32 Conv2d 和 ReLU 模型，卷积编译为 BF16 CIM 运算。每项分别运行三组输入。页面日志逐组显示结果正确性和实际 CIM 调度次数，末行汇总通过组数。
 “CIM 调用次数”表示实际调用次数；接口未提供该信息时显示“—”。
 框架运行日志和 MNIST 训练日志均显示完整已保存输出，可滚动查看和下载。
 
-TensorFlow 和 PyTorch 页面在开始编译前选择 `软件仿真` 或 `CIM 板卡`，
+框架示例页面在开始编译前选择 `软件仿真` 或 `CIM 板卡`，
 默认是软件仿真。USB 模式复用 Python API 的 `UsbConfig` 参数，页面会
 校验 VID、PID、端点、设备选择和时序；它需要已连接且有访问权限的 CIM 板卡。
 
 ## 启动
 
 先按[安装指南](install.md#安装到现有应用环境)在现有应用环境中装好两个 wheel。
-在同一环境中追加 Web 和 TensorFlow 依赖。若当前使用 CPU 版 PyTorch，且尚未安装
+追加 `web` 和所需框架的 extra。下面的命令启用全部框架示例。若当前使用 CPU 版 PyTorch，且尚未安装
 匹配的 torchvision，可先从 PyTorch CPU 源安装。已有 torchvision 时，确认它与
 当前 PyTorch 版本匹配，并满足项目的 `torchvision>=0.29,<0.30` 约束。
 
@@ -29,7 +30,7 @@ uv add --index pytorch-cpu=https://download.pytorch.org/whl/cpu "torchvision>=0.
 沿用安装指南中的 wheel 路径，将 `<cim22-wheel>` 换成文件名中 `.whl` 前的部分。
 
 ```sh
-uv add "./wheels/<cim22-wheel>.whl[web,tensorflow]"
+uv add "./wheels/<cim22-wheel>.whl[web,tensorflow,jax]"
 uv run uv pip check
 ```
 
@@ -50,7 +51,7 @@ uv run cim22-web --model-dir /path/to/model-package --examples-dir /path/to/mlir
 
 wheel 不包含框架示例脚本；`--examples-dir` 应指向项目 wheel 对应提交的 `python/examples/`。
 
-打开[工作台](http://127.0.0.1:8000)，选择 PyTorch、TensorFlow、DVS 或 MNIST 操作。
+打开[工作台](http://127.0.0.1:8000)，选择 PyTorch、TensorFlow、JAX、DVS 或 MNIST 操作。
 结果、日志和调试产物写入 `--data-dir`，默认
 为启动时工作目录下的 `./cim22-web`。同一个结果目录只能由一个服务使用。
 

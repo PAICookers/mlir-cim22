@@ -159,7 +159,7 @@ print("CIM dispatches:", report.layer_dispatch_counts)
 
 ## TensorFlow 接口
 
-在当前 wheel 环境按[安装指南](install.md#可选tensorflow-与仓库示例)追加 `tensorflow` extra。两套最小示例分别在新 Python 进程中运行。
+在当前 wheel 环境按[安装指南](install.md#可选框架依赖与仓库示例)追加 `tensorflow` extra。两套最小示例分别在新 Python 进程中运行。
 
 ```python
 import tensorflow as tf
@@ -187,17 +187,47 @@ with compile_tf(infer, options={"runtime": "simulator"}) as compiled:
   `torch_mlir.fx` 尚未加载，PyTorch 的 `cim22` 后端会报错，包括 `reference` 模式。
   可在独立进程中运行 PyTorch 编译，再按需加载模型产物。
 
-仓库示例 `python/examples/tensorflow_compile.py` 使用两次二维 INT8 矩阵乘和截断 ReLU。`python/examples/torch_compile.py` 使用 Conv2d、ReLU 和 Linear，以 FP32 初始化权重并捕获模型，由编译器将符合条件的算子降为 BF16 CIM 运算。每次运行将 `compile.log`、`graph-<id>.so/.dll` 和 `ir/graph-<id>/` 调试文件保存在当前工作目录的示例输出目录，并打印 CIM 调用次数和输出误差。
+仓库 JAX 和 TensorFlow 示例使用相同的 INT8 全连接模型和 ReLU，输入为
+`(4,64)`，输出为 `(4,16)`，使用 INT32 累加、偏置和输出。
+PyTorch 示例依次调用 `nn.Conv2d` 和 `nn.ReLU`，输入为 `(1,3,16,16)`，
+输出为 `(1,4,16,16)`。输入、权重、偏置和输出为 FP32，卷积使用 BF16 CIM 运算。
+每组输出与软件参考逐元素相等且 CIM 调度次数大于零时计为通过。
+`compile.log` 显示三组英文结果和通过数，`result.json` 保存逐组明细。
+
+## JAX 接口
+
+安装 `jax` extra 后，将纯函数和位置输入的静态签名传给编译入口。闭包捕获的权重在导出时固定。返回的 callable 接受 JAX 数组，并按原函数的 pytree 结构返回 JAX 数组。
+
+```python
+import jax
+import jax.numpy as jnp
+from cim22.jax import compile
+
+weight = jnp.full((64, 16), 0.5, dtype=jnp.float32)
+bias = jnp.ones(16, dtype=jnp.float32)
+
+def infer(x):
+    return jax.nn.relu(x @ weight + bias)
+
+signature = (jax.ShapeDtypeStruct((2, 64), jnp.float32),)
+with compile(infer, signature, options={"runtime": "simulator"}) as model:
+    result = model(jnp.ones((2, 64), dtype=jnp.float32))
+    print(result, model.session.dispatch_count)
+```
+
+输入签名为平坦的位置参数序列，输入和输出支持 FP32、INT8 和 INT32。固定形状的模型须能由 jax2onnx 导出并被共用的 ONNX → torch-mlir → Linalg 链路接受。示例用同一份 ONNX 对照参考输出，检查 `model.packet.mlir` 中的设备 dispatch 和推理后的计数。
+
+从仓库根目录运行 `python python/examples/jax_compile.py --runtime simulator`。板卡执行使用同一脚本，加上 `--runtime usb --usb-config <现场配置.json>`，配置方式见下方 USB 一节。选择 `--output` 可以保存模型、IR、日志与比较结果。
 
 ## Session 与产物
 
 用 `cim22.Session(Path(...))` 重新加载已保存的同平台模型动态库。按 `input_shapes` 和 `input_dtypes` 顺序传入连续、对齐的 NumPy 数组，结果为平坦 tuple。框架输出结构由各自的适配层恢复。模型所需的原生运行库应与产物配套。
 
 公共 Session 的输入和输出支持 FP32、INT8 和 INT32，CIM 算子可在编译器内部使用
-BF16。PyTorch 示例使用 FP32 输入与输出。
+BF16。上述 PyTorch 框架验证示例使用 FP32 输入与输出。
 
 未设置 `artifact_dir` 时，临时模型随 Session 生命周期清理。PyTorch 编译句柄
-持有 Session，TensorFlow 的编译句柄可显式关闭。Windows 上，PyTorch 编译
+持有 Session，TensorFlow 和 JAX 的编译句柄可显式关闭。Windows 上，PyTorch 编译
 使用 Session 所有的临时 DLL 副本，`artifact_dir` 中可另存发布的模型 DLL。
 用 Session 直接加载已保存的 DLL 时，关闭 Session 后再删除该文件。
 
