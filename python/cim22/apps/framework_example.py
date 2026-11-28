@@ -56,26 +56,33 @@ def group_result(
     reference: np.ndarray,
     actual: np.ndarray,
     dispatch_count: int,
+    *,
+    expected_dtype: type[np.int32] | type[np.float32] = np.int32,
     **oracles: np.ndarray,
 ) -> dict[str, Any]:
-    """Record exact INT32 equality separately from dispatch evidence."""
+    """Record exact output equality separately from dispatch evidence."""
     reference = np.asarray(reference)
     actual = np.asarray(actual)
     outputs = (actual, *oracles.values())
-    correct = reference.dtype == np.int32 and all(
-        value.dtype == np.int32 and np.array_equal(value, reference)
+    correct = reference.dtype == expected_dtype and all(
+        value.dtype == expected_dtype and np.array_equal(value, reference)
         for value in outputs
     )
+    max_abs_error = None
+    if (
+        actual.dtype == reference.dtype == expected_dtype
+        and actual.shape == reference.shape
+    ):
+        wide_dtype = np.float64 if expected_dtype == np.float32 else np.int64
+        max_abs_error = (
+            np.abs(actual.astype(wide_dtype) - reference).max().item()
+        )
     row = {
         "name": f"Group {index}",
         "reference": reference.tolist(),
         "actual": actual.tolist(),
         "actual_dtype": str(actual.dtype),
-        "max_abs_error": (
-            int(np.max(np.abs(actual.astype(np.int64) - reference)))
-            if actual.dtype == np.int32 and actual.shape == reference.shape
-            else None
-        ),
+        "max_abs_error": max_abs_error,
         "dispatch_count": dispatch_count,
         "correct": correct,
         "passed": correct and dispatch_count > 0,
