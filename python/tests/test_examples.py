@@ -1,4 +1,4 @@
-"""Exercise the integer examples' group output, verdicts and saved evidence."""
+"""Exercise the framework examples' group output, verdicts and saved evidence."""
 
 import importlib.util
 import json
@@ -28,19 +28,21 @@ requires_tensorflow = pytest.mark.skipif(
 @pytest.mark.integration
 @pytest.mark.usefixtures("native_toolchain")
 @pytest.mark.parametrize(
-    ("script", "framework", "model", "shape"),
+    ("script", "framework", "model", "shape", "dtype"),
     [
         (
             "torch_compile.py",
             "PyTorch",
-            "Conv2d(3→4, 3×3) + Clipped ReLU + Linear(1024→8)",
-            (1, 8),
+            "Conv2d(3→4, 3×3) + ReLU",
+            (1, 4, 16, 16),
+            "float32",
         ),
         pytest.param(
             "tensorflow_compile.py",
             "TensorFlow",
             "Dense(64→16) + ReLU",
             (4, 16),
+            "int32",
             marks=requires_tensorflow,
         ),
     ],
@@ -50,7 +52,8 @@ def test_example_logging(
     script: str,
     framework: str,
     model: str,
-    shape: tuple[int, int],
+    shape: tuple[int, ...],
+    dtype: str,
 ) -> None:
     output = tmp_path / "artifacts"
     output.mkdir()
@@ -80,7 +83,7 @@ def test_example_logging(
     for index, row in enumerate(report["cases"], 1):
         assert row["name"] == f"Group {index}"
         assert row["passed"] and row["correct"]
-        assert row["actual_dtype"] == "int32"
+        assert row["actual_dtype"] == dtype
         assert np.shape(row["actual"]) == shape
         assert row["actual"] == row["reference"]
         assert row["max_abs_error"] == 0
@@ -96,6 +99,12 @@ def test_example_logging(
     assert list(output.glob(f"graph-*{MODEL_SUFFIX}"))
     assert (output / "ir").is_dir()
     assert not (output / "result.json").exists()
+    if framework == "PyTorch":
+        (ir,) = (output / "ir").glob("graph-*")
+        assert (
+            "linalg.conv_2d_nchw_fchw" in (ir / "model.linalg.mlir").read_text()
+        )
+        assert "cim.dispatch" in (ir / "model.packet.mlir").read_text()
 
 
 @requires_tensorflow
